@@ -1,6 +1,7 @@
 use super::*;
 impl AppState {
     pub(crate) fn set_runtime_mod_active(&self, id: &str, active: bool) {
+        let native_dll_status = self.native_dll_status(id);
         let native_dll_state = self.native_dll_state(id);
         let mut active_mods = self.runtime_active_mods.borrow_mut();
         if active {
@@ -11,9 +12,19 @@ impl AppState {
         drop(active_mods);
         if !active {
             self.loaded_resource_indexes.borrow_mut().remove_owner(id);
+            self.release_lua_map_owner(id);
         }
-        if let Some(status) = native_dll_state {
+        if let Some(status) = native_dll_status {
             self.report_native_dll_effect(&status);
+        } else if let Some(state) = native_dll_state {
+            let detail = match state {
+                "loading" => "native DLL is still loading",
+                "retained" => {
+                    "native plugin remains resident because safe unload was not confirmed"
+                }
+                _ => "native DLL remains loaded for this game session",
+            };
+            self.report_runtime_effect(id, state, detail);
         } else {
             let mut effects = self.runtime_effects.borrow_mut();
             if effects

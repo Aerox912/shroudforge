@@ -13,6 +13,15 @@ impl AppState {
         // prepare configuration
 
         let options = args.options;
+        let generated_assets = options.current_asset_mods.is_some();
+        if options.defer_current_commit && !generated_assets {
+            error!("Deferred publication requires current-composition mode");
+            return Err(());
+        }
+        if generated_assets && (options.phase != RuntimePhase::Pregame || !options.patch) {
+            error!("Current-composition asset generation requires a writing pregame session");
+            return Err(());
+        }
         let game_root = env.game_dir().as_std_path();
         let default_export_dir =
             PathBuf::from_path_buf(shroudforge_loader_config::paths::export_dir(game_root))
@@ -103,7 +112,16 @@ impl AppState {
         let type_registry = Rc::new(type_registry);
 
         let kfc_path = game_dir.join(file_name).with_extension("kfc");
-        let (ref_file, reader) = if phase == RuntimePhase::Ingame {
+        if generated_assets
+            && shroudforge_game_assets::transaction::directory(game_dir.as_std_path(), file_name)
+                .exists()
+        {
+            error!(
+                "Resolve the existing asset transaction under the startup lease before reading the current composition"
+            );
+            return Err(());
+        }
+        let (ref_file, reader) = if phase == RuntimePhase::Ingame || generated_assets {
             (
                 crate::game_files::load_kfc_file(&kfc_path)?,
                 crate::game_files::create_reader_with_extension(game_dir, file_name, "kfc")?,
@@ -129,11 +147,14 @@ impl AppState {
             }
         };
         let writer = if options.patch {
-            let stage =
-                shroudforge_game_assets::transaction::begin(game_dir.as_std_path(), file_name)
-                    .map_err(|error| {
-                        error!(error = %error, "Failed to begin typed asset transaction");
-                    })?;
+            let begin = if generated_assets {
+                shroudforge_game_assets::transaction::begin_generated
+            } else {
+                shroudforge_game_assets::transaction::begin
+            };
+            let stage = begin(game_dir.as_std_path(), file_name).map_err(|error| {
+                error!(error = %error, "Failed to begin typed asset transaction");
+            })?;
             let staged_writer = (|| {
                 for suffix in ["kfc", "kfc_resources"] {
                     let name = format!("{file_name}.{suffix}");
@@ -144,7 +165,13 @@ impl AppState {
                 let stage = PathBuf::from_path_buf(stage.clone()).map_err(|_| {
                     error!("Asset staging path is not valid UTF-8");
                 })?;
-                crate::game_files::create_writer(&stage, file_name, &type_registry, &ref_file)
+                crate::game_files::create_writer_with_policy(
+                    &stage,
+                    file_name,
+                    &type_registry,
+                    &ref_file,
+                    generated_assets,
+                )
             })();
             match staged_writer {
                 Ok(writer) => Some(writer),
@@ -165,10 +192,16 @@ impl AppState {
         Ok(Self {
             runtime_configured: Cell::new(false),
             runtime_active_mods: RefCell::new(HashSet::new()),
+            map_lua_owners: RefCell::new(HashMap::new()),
             runtime_effects: RefCell::new(HashMap::new()),
             runtime_write_fault: RefCell::new(None),
             runtime_ownership: Rc::new(RefCell::new(
                 crate::lua::ingame::overrides::claim_runtime_storage::OwnershipStore::default(),
+            )),
+            native_dlls: RefCell::new(Vec::new()),
+            pending_native_dlls: RefCell::new(Vec::new()),
+            native_plugin_services: RefCell::new(std::sync::Arc::new(
+                super::native_plugin_abi::NoNativePluginServices,
             )),
             env,
             api,
@@ -183,6 +216,8 @@ impl AppState {
             reader: RefCell::new(reader),
             writer: RefCell::new(writer),
             asset_transaction: Cell::new(options.patch),
+            generated_asset_transaction: generated_assets,
+            defer_current_commit: options.defer_current_commit,
             asset_stem: file_name.clone(),
 
             new_contents: RefCell::new(HashMap::new()),

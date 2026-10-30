@@ -138,7 +138,16 @@ pub(super) type WorldEntityFinish = unsafe extern "C" fn(bool, *mut u32) -> bool
 pub(super) type RuntimePatchAvailable = unsafe extern "C" fn(*const c_char) -> bool;
 pub(super) type RuntimePatchSetEnabled =
     unsafe extern "C" fn(*const c_char, bool, *mut u32) -> bool;
+pub(super) type QueryMapOverlayService =
+    unsafe extern "C" fn(*const u8, u32, u64, *const u8, u32, u32, u32, *mut c_void) -> i32;
+pub(super) type RevokeMapOverlayServices = unsafe extern "C" fn(*const u8, u32, u64) -> i32;
+pub(super) type DrainMapOverlayServices = unsafe extern "C" fn(*const u8, u32, u64, u32) -> i32;
+pub(super) type ReadInputKeys = unsafe extern "C" fn(*const u32, u32, u32, *mut c_void) -> i32;
 pub(super) struct Provider {
+    pub(super) read_input_keys: Option<ReadInputKeys>,
+    pub(super) query_map_overlay_service: Option<QueryMapOverlayService>,
+    pub(super) revoke_map_overlay_services: Option<RevokeMapOverlayServices>,
+    pub(super) drain_map_overlay_services: Option<DrainMapOverlayServices>,
     pub(super) configure: Configure,
     pub(super) ready: Ready,
     pub(super) prop_query_ready: Option<Ready>,

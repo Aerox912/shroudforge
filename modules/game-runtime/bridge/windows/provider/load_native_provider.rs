@@ -49,6 +49,19 @@ pub(in crate::windows) fn provider() -> Option<&'static Provider> {
                     ))
                 } else {
                     Ok(Provider {
+                        read_input_keys: optional_symbol!("KfcRuntimeReadInputKeys", ReadInputKeys),
+                        query_map_overlay_service: optional_symbol!(
+                            "KfcRuntimeQueryMapOverlayService",
+                            QueryMapOverlayService
+                        ),
+                        revoke_map_overlay_services: optional_symbol!(
+                            "KfcRuntimeRevokeMapOverlayServices",
+                            RevokeMapOverlayServices
+                        ),
+                        drain_map_overlay_services: optional_symbol!(
+                            "KfcRuntimeDrainMapOverlayServices",
+                            DrainMapOverlayServices
+                        ),
                         configure: symbol!("KfcRuntimeEcsConfigure", Configure),
                         ready: symbol!("KfcRuntimeEcsReady", Ready),
                         prop_query_ready: optional_symbol!("KfcRuntimeEcsPropQueryReady", Ready),

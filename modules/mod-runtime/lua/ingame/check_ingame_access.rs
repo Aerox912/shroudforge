@@ -17,6 +17,10 @@ pub(crate) fn available(state: &AppState, r#mod: &Mod, feature: &str) -> bool {
         "export" => {
             state.has_feature(AppFeatures::EXPORT) && has_capability(r#mod, Capability::Export)
         }
+        "runtime.map.frame" | "runtime.map.markers" | "runtime.map.fog" | "runtime.map.status" => {
+            state.phase()==RuntimePhase::Ingame && state.is_client() && state.api().has_runtime(feature)
+                && has_capability(r#mod,Capability::Runtime)
+        }
         "runtime.lifecycle" => {
             state.phase() == RuntimePhase::Ingame
                 && state.api().has_runtime("runtime.lifecycle")
@@ -189,6 +193,9 @@ pub(super) fn operation_status(
                 reason: format!("mod '{}' lacks the required capability", r#mod.info().id),
             },
         );
+    }
+    if feature.starts_with("runtime.map.") && state.is_server() {
+        return availability_to_lua(lua,Availability::Unavailable{reason:"map services require a client process".into()});
     }
     let availability = state.api().runtime(&feature);
     if feature == "runtime.is_main_menu"
