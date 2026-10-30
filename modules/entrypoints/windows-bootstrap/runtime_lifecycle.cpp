@@ -100,8 +100,23 @@ DWORD WINAPI run(void*) {
         // The reviewed recipe verified these existing loader bytes before
         // preparation. Activate them explicitly outside DllMain/loader lock;
         // do not assume file presence or system dbghelp happens to load them.
-        for (const auto name : {L"dbgcore.dll", L"winmm.dll"}) {
-            if (!LoadLibraryW((root / name).c_str())) {
+        using LoaderDemand = unsigned (__cdecl*)(const wchar_t*);
+        const auto loader_demand = reinterpret_cast<LoaderDemand>(GetProcAddress(runtime, "shroudforge_take_startup_loader_demand"));
+        if (!loader_demand) {
+            startup_failed(root, "preserved-native-loader", "Runtime/bootstrap source pair lacks the preserved-loader contract");
+            return 1;
+        }
+        const unsigned declared = loader_demand(root.c_str());
+        if ((declared != 0 && (declared & ~0x80000003u) != 0) ||
+            (declared != 0 && (declared & 0x80000000u) == 0)) {
+            startup_failed(root, "preserved-native-loader", "Preserved-loader demand is invalid");
+            return 1;
+        }
+        const unsigned mask = declared == 0 ? 3u : declared & 3u;
+        const wchar_t* names[] = {L"dbgcore.dll", L"winmm.dll"};
+        const unsigned flags[] = {2u, 1u};
+        for (unsigned i=0; i<2; ++i) {
+            if ((mask & flags[i]) != 0 && !LoadLibraryW((root / names[i]).c_str())) {
                 startup_failed(root, "preserved-native-loader", windows_error(GetLastError()));
                 return 1;
             }
