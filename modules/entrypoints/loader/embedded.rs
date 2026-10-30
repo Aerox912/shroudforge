@@ -269,6 +269,17 @@ pub unsafe extern "C" fn shroudforge_take_startup_zoom_demand(game: *const u16) 
 /// ECS runtime is created. This lets a normal game start use the bundled
 /// loader instead of requiring a separate `prepare` command.
 #[unsafe(no_mangle)]
+pub unsafe extern "C" fn shroudforge_take_startup_loader_demand(game: *const u16) -> u32 {
+    std::panic::catch_unwind(|| {
+        if game.is_null(){return u32::MAX;}
+        let mut length=0;unsafe{while length<32768 && *game.add(length)!=0{length+=1;}}
+        if length==32768{return u32::MAX;}
+        let Ok(path)=String::from_utf16(unsafe{std::slice::from_raw_parts(game,length)}) else{return u32::MAX;};
+        shroudforge_api::current_assets::take_startup_loader_demand(Path::new(&path))
+    }).unwrap_or(u32::MAX)
+}
+
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn shroudforge_prepare_startup(game: *const u16) -> bool {
     shroudforge_api::current_assets::clear_zoom_demand();
     fn path(value: *const u16) -> Option<PathBuf> {

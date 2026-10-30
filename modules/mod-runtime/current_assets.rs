@@ -25,6 +25,9 @@ type Stamp = (u64, String);
 mod zoom;
 #[path = "current_assets/zoom_demand.rs"]
 mod zoom_demand;
+#[path = "current_assets/manager_generation.rs"]
+mod manager_generation;
+pub use manager_generation::take_loader_demand as take_startup_loader_demand;
 #[path = "current_assets/layout_migration.rs"]
 mod layout_migration;
 pub use zoom_demand::{clear as clear_zoom_demand, take as take_zoom_demand};
@@ -681,6 +684,7 @@ fn rewrite_selected_with_layout(
 /// startup; callers must never recover them through the legacy backup path.
 pub fn prepare(root: &Path) -> Result<bool> {
     clear_zoom_demand();
+    manager_generation::clear_loader_demand();
     let policy_path = joined(root, POLICY)?;
     if !policy_path.try_exists()? {
         ensure!(
@@ -688,6 +692,14 @@ pub fn prepare(root: &Path) -> Result<bool> {
             "current-assets policy missing from an owned installation"
         );
         return Ok(false);
+    }
+    // Manager already generated the complete selected composition offline.
+    // This ownership mode validates published bytes and hands off zoom demand;
+    // it must never enter the map-only recipe or a baseline/backup path.
+    let document: serde_json::Value = read_json(&policy_path)?;
+    if document.get("schemaVersion").and_then(serde_json::Value::as_u64) == Some(3) {
+        manager_generation::verify(root)?;
+        return Ok(true);
     }
     plain(root)?;
     let root = fs::canonicalize(root)?;
