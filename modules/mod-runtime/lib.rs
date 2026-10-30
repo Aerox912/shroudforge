@@ -10,6 +10,7 @@ mod lua;
 pub mod reflection;
 mod session;
 mod startup;
+pub mod current_assets;
 mod type_aliases;
 use ingame as runtime;
 use lua::bindings as env;
@@ -20,6 +21,12 @@ use reflection as runtime_resolution;
 use shroudforge_runtime_bridge as runtime_provider;
 use startup::cache;
 use startup::open_game_assets as game_files;
+
+/// Read the planned, enabled client packages' explicit native overlay demand.
+/// Call before releasing the executable entrypoint; enabling later requires restart.
+pub fn native_overlay_startup_demand(environment: &mod_loader::ModEnvironment) -> Result<bool, String> {
+    session::native_overlay_startup_demand(environment)
+}
 
 pub const API_VERSION: &str = env!("CARGO_PKG_VERSION");
 
@@ -110,6 +117,13 @@ impl RuntimePhase {
 
 #[derive(Debug, Clone, Default)]
 pub struct RunOptions {
+    /// Apply only these explicitly selected pregame mods to the current composed
+    /// assets, using generated-output forward recovery and no baseline backups.
+    /// The caller owns the startup lease, output validation and inverse lifecycle.
+    pub current_asset_mods: Option<Vec<String>>,
+    /// Leave validated generated output in its stage for the scoped startup
+    /// coordinator to record and publish. Requires current_asset_mods.
+    pub defer_current_commit: bool,
     /// If true, it will ignore the cache and re-apply all mods.
     pub skip_cache: bool,
     /// If true, keep the asset writer enabled even when input fingerprints match.

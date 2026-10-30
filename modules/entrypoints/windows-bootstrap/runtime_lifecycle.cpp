@@ -1,4 +1,5 @@
 #include "bootstrap_state.h"
+#include "startup_zoom.h"
 
 using namespace BootstrapImplementation;
 
@@ -51,12 +52,20 @@ DWORD WINAPI run(void*) {
     log("Log session started for game PID " + std::to_string(GetCurrentProcessId()) +
         ". Archived log files contain earlier sessions");
     log_shroudforge_banner(is_dedicated_server_process());
+    const auto current_config = root / L"shroudforge" / L"config";
+    const bool assets_only = std::filesystem::exists(current_config / L"current-assets.json") ||
+        std::filesystem::exists(current_config / L"current-assets-state.json") ||
+        std::filesystem::exists(current_config / L"current-assets-pending.json");
+    if (assets_only && is_dedicated_server_process()) {
+        startup_failed(root, "current-assets", "Current-composition policy is client-only");
+        return 1;
+    }
     // Check the release manifest before starting any UI or loading runtime DLLs.
     startup_stage(root, "startup-update-check");
-    if (!run_startup_update_check(root)) return 1;
+    if (!assets_only && !run_startup_update_check(root)) return 1;
     // Start the independent log viewer before any ShroudForge DLL or mod code
     // can fail during process startup.
-    start_debug_console(root);
+    if (!assets_only) start_debug_console(root);
     const auto runtime_path = shroudforge_directory(root) / L"shroudforge-runtime.dll";
     startup_stage(root, "runtime-dll-load");
     const auto runtime = LoadLibraryW(runtime_path.c_str());
@@ -71,24 +80,65 @@ DWORD WINAPI run(void*) {
     const auto create = reinterpret_cast<CreateRuntime>(GetProcAddress(runtime, "shroudforge_create"));
     const auto update = reinterpret_cast<UpdateRuntime>(GetProcAddress(runtime, "shroudforge_update"));
     const auto destroy = reinterpret_cast<DestroyRuntime>(GetProcAddress(runtime, "shroudforge_destroy"));
-    if (!prepare_startup || !create || !update || !destroy) {
+    if (!prepare_startup || (!assets_only && (!create || !update || !destroy))) {
         startup_failed(root, "runtime-exports", "runtime exports are incomplete");
         FreeLibrary(runtime);
         return 1;
     }
     startup_stage(root, "runtime-exports-resolved");
-    start_modloader_ui(root);
-    start_world_editor_ui(root);
+    if (!assets_only) {
+        start_modloader_ui(root);
+        start_world_editor_ui(root);
+    }
     startup_stage(root, "startup-assets");
     if (!prepare_startup(root.c_str())) {
         startup_failed(root, "startup-assets", "Asset preparation and baseline recovery failed. Game startup stopped before loading inconsistent assets");
         FreeLibrary(runtime);
         return 1;
     }
+    if (assets_only) {
+        // The reviewed recipe verified these existing loader bytes before
+        // preparation. Activate them explicitly outside DllMain/loader lock;
+        // do not assume file presence or system dbghelp happens to load them.
+        for (const auto name : {L"dbgcore.dll", L"winmm.dll"}) {
+            if (!LoadLibraryW((root / name).c_str())) {
+                startup_failed(root, "preserved-native-loader", windows_error(GetLastError()));
+                return 1;
+            }
+        }
+        using ZoomDemand = unsigned (__cdecl*)(const wchar_t*);
+        const auto zoom_demand = reinterpret_cast<ZoomDemand>(GetProcAddress(runtime, "shroudforge_take_startup_zoom_demand"));
+        StartupZoom::Cap zoom_cap;
+        const auto zoom_result = zoom_cap.Apply(zoom_demand ? zoom_demand(root.c_str()) : 2u);
+        if (zoom_result == StartupZoom::Result::Unsafe) {
+            const bool restored = zoom_cap.Rollback();
+            startup_failed(root, "startup-zoom", restored ?
+                "Extended Zoom write failed and was rolled back; startup stopped" :
+                "Extended Zoom write or ownership uncertain; startup stopped");
+            return 1;
+        }
+        if (zoom_result == StartupZoom::Result::Applied)
+            log("Extended Zoom fifth level activated before game entrypoint release");
+        else if (zoom_result == StartupZoom::Result::Disabled)
+            log("Extended Zoom native cap disabled by verified current composition");
+        else
+            log('W', "Extended Zoom native cap unavailable; no executable change accepted");
+        startup_stage(root, "current-assets-ready");
+        log("Current-composition assets ready; preserved native loaders activated; ShroudForge native provider and ingame runtime remain inactive");
+        zoom_cap.Commit();
+        startup.release();
+        // Keep runtime and existing-loader modules resident until process exit.
+        // Their shutdown code is not safe to invent or unload from this worker.
+        return 0;
+    }
     // Install native hooks while the executable entrypoint is still parked.
     // Releasing it first races hook writes against short-lived startup threads.
     startup_stage(root, "native-provider-init");
-    if (!EcsRuntime::Initialize()) {
+    using OverlayDemand = unsigned (__cdecl*)(const wchar_t*);
+    const auto overlay_demand = reinterpret_cast<OverlayDemand>(GetProcAddress(runtime, "shroudforge_startup_overlay_demand"));
+    const auto demand = overlay_demand ? overlay_demand(root.c_str()) : 2u;
+    if (demand == 2) log('W', "Native overlay boot demand unavailable. Repair package configuration and restart before rendering");
+    if (!EcsRuntime::Initialize(demand == 1)) {
         log('W', "KFC Runtime initialization failed: " + EcsRuntime::Status());
     }
     log("Startup assets and native-provider setup complete. Releasing the game entrypoint");

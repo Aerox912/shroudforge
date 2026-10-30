@@ -202,11 +202,50 @@ fn panic_detail(payload: &(dyn Any + Send)) -> String {
     }
 }
 
+/// 0: no demand; 1: explicit enabled client native-overlay demand; 2: unavailable.
+/// Kept separate from runtime creation so the bootstrap can arm before main.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn shroudforge_startup_overlay_demand(game: *const u16) -> u32 {
+    std::panic::catch_unwind(|| {
+        if game.is_null() { return 2; }
+        let mut length = 0;
+        unsafe { while length < 32768 && *game.add(length) != 0 { length += 1; } }
+        if length == 32768 { return 2; }
+        let root = PathBuf::from(String::from_utf16_lossy(unsafe { std::slice::from_raw_parts(game, length) }));
+        if !root.join("enshrouded.exe").is_file() { return 0; }
+        let Some(path) = root.to_str() else { return 2; };
+        let result = shroudforge_package::ModEnvironment::load(path)
+            .map_err(|error| format!("{error:?}"))
+            .and_then(|env| shroudforge_api::native_overlay_startup_demand(&env));
+        match result {
+            Ok(value) => u32::from(value),
+            Err(error) => { tracing::warn!(target: "shroudforge::startup", %error, "Overlay startup demand unavailable; rendering requires restart after configuration repair"); 2 }
+        }
+    }).unwrap_or(2)
+}
+
+/// Consume only the current caller's successfully verified preparation.
+/// This export never writes executable memory or starts the native provider.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn shroudforge_take_startup_zoom_demand(game: *const u16) -> u32 {
+    std::panic::catch_unwind(|| {
+        if game.is_null() { shroudforge_api::current_assets::clear_zoom_demand(); return 2; }
+        let mut length = 0;
+        unsafe { while length < 32768 && *game.add(length) != 0 { length += 1; } }
+        if length == 32768 { shroudforge_api::current_assets::clear_zoom_demand(); return 2; }
+        let Ok(path) = String::from_utf16(unsafe { std::slice::from_raw_parts(game, length) }) else {
+            shroudforge_api::current_assets::clear_zoom_demand(); return 2;
+        };
+        shroudforge_api::current_assets::take_zoom_demand(Path::new(&path))
+    }).unwrap_or(2)
+}
+
 /// Applies stale pregame asset mods from the bootstrap thread before the live
 /// ECS runtime is created. This lets a normal game start use the bundled
 /// loader instead of requiring a separate `prepare` command.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn shroudforge_prepare_startup(game: *const u16) -> bool {
+    shroudforge_api::current_assets::clear_zoom_demand();
     fn path(value: *const u16) -> Option<PathBuf> {
         if value.is_null() {
             return None;
@@ -227,6 +266,18 @@ pub unsafe extern "C" fn shroudforge_prepare_startup(game: *const u16) -> bool {
         };
         let _ = shroudforge_logging::initialize(&game, false);
         let started = std::time::Instant::now();
+        // This policy owns only the selected current-composition asset pass.
+        // Do not migrate other mods, start update controllers, or restore a
+        // legacy baseline on its error path.
+        match shroudforge_api::current_assets::active(&game) {
+            Ok(true) => return match pregame::run_startup(&game) {
+                Ok(()) => {let _=shroudforge_logging::append(&game,'I',"startup-assets",
+                    "Current-composition assets verified; unrelated asset mods were not replayed");true},
+                Err(error) => {let _=shroudforge_logging::append(&game,'E',"startup-assets",&error.to_string());false}
+            },
+            Err(error) => {let _=shroudforge_logging::append(&game,'E',"startup-assets",&error.to_string());return false;},
+            Ok(false) => {}
+        }
         let migrations_ready = match run_post_install_migrations(&game) {
             Ok(()) => true,
             Err(error) => {

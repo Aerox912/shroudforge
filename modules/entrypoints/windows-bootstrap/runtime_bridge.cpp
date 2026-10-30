@@ -14,7 +14,7 @@ StatusFunction status{};
 std::string error{"provider-not-loaded"};
 }
 namespace EcsRuntime {
-bool Initialize() {
+bool Initialize(bool overlay_demand) {
     HMODULE self{};
     if (!GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
         reinterpret_cast<LPCWSTR>(&Initialize), &self)) return false;
@@ -37,7 +37,11 @@ bool Initialize() {
         tick = nullptr; shutdown = nullptr; status = nullptr;
         FreeLibrary(provider); provider = nullptr; return false;
     }
-    return initialize();
+    const auto initialized = initialize();
+    const auto prepare_overlay = reinterpret_cast<bool (__cdecl*)(unsigned)>(GetProcAddress(provider, "KfcRuntimePrepareOverlay"));
+    if (prepare_overlay) prepare_overlay(overlay_demand ? 1u : 0u);
+    else if (overlay_demand) OutputDebugStringA("[ESM overlay] provider lacks early broker; restart with matching native provider\n");
+    return initialized;
 }
 void Tick() { if (tick) tick(); }
 void Shutdown() { if (shutdown) shutdown(); }

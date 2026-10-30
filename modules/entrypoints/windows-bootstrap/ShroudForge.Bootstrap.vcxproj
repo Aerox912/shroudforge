@@ -22,15 +22,16 @@
   </PropertyGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.props" />
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
-    <TargetName>winmm</TargetName>
+    <BootstrapTargetName Condition="'$(BootstrapTargetName)' == ''">winmm</BootstrapTargetName>
+    <TargetName>$(BootstrapTargetName)</TargetName>
     <OutDir>$(MSBuildThisFileDirectory)..\..\..\build\x64\</OutDir>
-    <IntDir>$(MSBuildThisFileDirectory)..\..\..\build\obj\bootstrap\</IntDir>
+    <IntDir>$(MSBuildThisFileDirectory)..\..\..\build\obj\bootstrap\$(BootstrapTargetName)\</IntDir>
   </PropertyGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
     <ClCompile>
       <LanguageStandard>stdcpp20</LanguageStandard>
       <WarningLevel>Level4</WarningLevel>
-      <AdditionalIncludeDirectories>$(MSBuildThisFileDirectory)..\..\game-runtime\native\json\single_include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>$(MSBuildThisFileDirectory)..\..\game-runtime\native;$(MSBuildThisFileDirectory)..\..\game-runtime\native\json\single_include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
       <PreprocessorDefinitions>WIN32_LEAN_AND_MEAN;NOMINMAX;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <RuntimeLibrary>MultiThreaded</RuntimeLibrary>
     </ClCompile>
@@ -44,6 +45,8 @@
     <ClCompile Include="startup.cpp" />
     <ClCompile Include="module_processes.cpp" />
     <ClCompile Include="runtime_lifecycle.cpp" />
+    <ClCompile Include="startup_zoom.cpp" />
+    <ClCompile Include="..\..\game-runtime\native\engine-hooks\write_executable_bytes.cpp" />
     <ClCompile Include="logging.cpp" />
     <ClCompile Include="winmm_proxy.cpp" />
     <ClCompile Include="runtime_bridge.cpp" />
@@ -53,6 +56,8 @@
     <ClInclude Include="runtime_bridge.h" />
     <ClInclude Include="logging_config.h" />
     <ClInclude Include="startup_gate.h" />
+    <ClInclude Include="startup_zoom.h" />
+    <ClInclude Include="startup_zoom_profile.h" />
     <ClInclude Include="..\..\game-runtime\native\abi\runtime_api.h" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />

@@ -12,6 +12,7 @@ pub(super) fn commit_asset_changes(lua: &mlua::Lua, app_state: &AppState) -> any
     let mut writer = app_state.take_writer()?;
     let resources = app_state.get_cached_resources();
     let mut applied_resources = 0;
+    let mut expected_resources = Vec::new();
 
     for resource in resources.iter() {
         let value = resource.apply(lua)?;
@@ -28,11 +29,13 @@ pub(super) fn commit_asset_changes(lua: &mlua::Lua, app_state: &AppState) -> any
                 .write_into(app_state.type_registry(), r#type, &mut buf)
                 .unwrap();
             writer.write_resource(&resource.resource_id, &buf)?;
+            expected_resources.push((resource.resource_id, buf.clone()));
             applied_resources += 1;
         }
     }
 
     writer.finalize()?;
+    app_state.validate_generated_assets(&expected_resources)?;
     app_state.commit_assets()?;
 
     info!("Committed {} changed resources", applied_resources);

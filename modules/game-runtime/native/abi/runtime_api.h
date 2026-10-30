@@ -24,10 +24,18 @@ extern "C" {
 #define KFC_RUNTIME_ABI_VERSION 12u
 KFC_RUNTIME_API uint32_t KFC_RUNTIME_CALL KfcRuntimeAbi(void);
 KFC_RUNTIME_API bool KFC_RUNTIME_CALL KfcRuntimeInitialize(void);
+/* Optional ABI-12 bootstrap control: 0 disabled, 1 declared enabled overlay demand. */
+KFC_RUNTIME_API bool KFC_RUNTIME_CALL KfcRuntimePrepareOverlay(unsigned demand);
 KFC_RUNTIME_API void KFC_RUNTIME_CALL KfcRuntimeTick(void);
 KFC_RUNTIME_API void KFC_RUNTIME_CALL KfcRuntimeShutdown(void);
 KFC_RUNTIME_API void KFC_RUNTIME_CALL KfcRuntimeStatus(char* buffer, size_t capacity);
 KFC_RUNTIME_API void KFC_RUNTIME_CALL KfcRuntimeDiagnostics(char* buffer, size_t capacity);
+/* Optional owner-scoped map/overlay services. ABI12 is unchanged. The trusted
+ * host establishes package authority; all queried tables are bounded copies. */
+KFC_RUNTIME_API int32_t KFC_RUNTIME_CALL KfcRuntimeQueryMapOverlayService(const uint8_t*,uint32_t,uint64_t,const uint8_t*,uint32_t,uint32_t,uint32_t,void*);
+KFC_RUNTIME_API int32_t KFC_RUNTIME_CALL KfcRuntimeRevokeMapOverlayServices(const uint8_t*,uint32_t,uint64_t);
+KFC_RUNTIME_API int32_t KFC_RUNTIME_CALL KfcRuntimeDrainMapOverlayServices(const uint8_t*,uint32_t,uint64_t,uint32_t);
+KFC_RUNTIME_API int32_t KFC_RUNTIME_CALL KfcRuntimeReadInputKeys(const uint32_t*,uint32_t,uint32_t,void*);
 /* Optional Steam Networking Messages transport used by runtime.network. */
 KFC_RUNTIME_API int32_t KFC_RUNTIME_CALL KfcRuntimeNetworkStatus(uint64_t* local_steam_id);
 /* Registers an ISteamNetworkingMessages session-request callback without

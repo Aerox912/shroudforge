@@ -148,43 +148,15 @@ pub fn create(lua: &mlua::Lua, r#mod: &Mod) -> mlua::Result<Table> {
 }
 
 fn is_game_key_down(key: &str) -> bool {
-    #[cfg(windows)]
-    {
-        use windows_sys::Win32::{
-            System::Threading::GetCurrentProcessId,
-            UI::{
-                Input::KeyboardAndMouse::GetAsyncKeyState,
-                WindowsAndMessaging::{GetForegroundWindow, GetWindowThreadProcessId},
-            },
-        };
-
-        let virtual_key = match key {
-            "F1" => 0x70,
-            "F2" => 0x71,
-            "F3" => 0x72,
-            "F4" => 0x73,
-            "F5" => 0x74,
-            "F6" => 0x75,
-            "F7" => 0x76,
-            "F8" => 0x77,
-            _ => return false,
-        };
-        let foreground = unsafe { GetForegroundWindow() };
-        if foreground.is_null() {
-            return false;
-        }
-        let mut process_id = 0;
-        unsafe { GetWindowThreadProcessId(foreground, &mut process_id) };
-        if process_id != unsafe { GetCurrentProcessId() } {
-            return false;
-        }
-        return unsafe { GetAsyncKeyState(virtual_key) } < 0;
-    }
-    #[cfg(not(windows))]
-    {
-        let _ = key;
-        false
-    }
+    parse_virtual_key(key).and_then(|key|shroudforge_runtime_bridge::read_input_keys(&[key]).ok())
+        .is_some_and(|states|states.first().is_some_and(|state|state.flags&1!=0))
+}
+fn parse_virtual_key(key:&str)->Option<u32> {
+    let key=key.trim().to_ascii_uppercase();
+    if let Some(code)=key.strip_prefix("0X").and_then(|code|u32::from_str_radix(code,16).ok()).filter(|code|(1..=255).contains(code)){return Some(code);}
+    if let Some(number)=key.strip_prefix('F').and_then(|number|number.parse::<u32>().ok()).filter(|n|(1..=24).contains(n)){return Some(0x6f+number);}
+    if key.len()==1 {let byte=key.as_bytes()[0];if byte.is_ascii_alphanumeric(){return Some(u32::from(byte));}}
+    match key.as_str(){"PLUS"|"OEMPLUS"|"="|"+"=>Some(0xbb),"MINUS"|"OEMMINUS"|"-"=>Some(0xbd),"NUMPAD+"|"NUMPADPLUS"|"ADD"=>Some(0x6b),"NUMPAD-"|"NUMPADMINUS"|"SUBTRACT"=>Some(0x6d),"SPACE"=>Some(0x20),"TAB"=>Some(9),"HOME"=>Some(0x24),"END"=>Some(0x23),_=>None}
 }
 
 pub(super) fn action_registry_key(mod_id: &str, action: &str) -> String {
@@ -197,4 +169,13 @@ pub(super) fn valid_identifier(value: &str) -> bool {
         && value
             .bytes()
             .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'-' | b'_'))
+}
+
+#[cfg(test)]mod input_key_tests {use super::*;
+    #[test]fn configured_minimap_keys_use_one_bounded_mapping(){
+        for (key,expected) in [("M",77),("f24",135),("+",187),("-",189),("NUMPAD+",107),("0x6A",106),("ADD",107)]{
+            let parsed=if key=="+"{parse_virtual_key("PLUS")}else{parse_virtual_key(key)};assert_eq!(parsed,Some(expected));
+        }
+        assert_eq!(parse_virtual_key("F25"),None);assert_eq!(parse_virtual_key("unknown"),None);
+    }
 }

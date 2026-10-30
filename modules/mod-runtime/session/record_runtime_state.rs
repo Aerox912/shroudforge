@@ -11,10 +11,14 @@ impl AppState {
         drop(active_mods);
         if !active {
             self.loaded_resource_indexes.borrow_mut().remove_owner(id);
+            self.release_lua_map_owner(id);
         }
         if let Some(state) = native_dll_state {
             let detail = match state {
                 "loading" => "native DLL is still loading",
+                "retained" => {
+                    "native plugin remains resident because safe unload was not confirmed"
+                }
                 _ => "native DLL remains loaded for this game session",
             };
             self.report_runtime_effect(id, state, detail);

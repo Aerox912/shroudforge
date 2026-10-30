@@ -1,4 +1,7 @@
 #include "abi/runtime_api.h"
+#include "graphics/render_overlay.h"
+#include "map/capture_game_map.h"
+#include <windows.h>
 #include "ecs/entity_session.h"
 #include "loaded-resources/loaded_resource_access.h"
 #include <algorithm>
@@ -21,6 +24,13 @@ KFC_RUNTIME_API void __cdecl KfcRuntimeDiagnostics(char* buffer, std::size_t cap
     try {
         auto diagnostics = nlohmann::json::parse(EcsRuntime::Diagnostics());
         diagnostics["resourceService"] = nlohmann::json::parse(ResourceRuntime::Status());
+        const auto overlay=OverlayRuntime::GraphicsStatus();const auto map=MapRuntime::CapturedFrames().Acquire(0,GetTickCount64());
+        diagnostics["mapOverlay"]={{"mapStatus",map.frame.status},{"supportedFeatures",map.frame.supported_features},
+            {"hudAdmitted",bool(map.frame.supported_features&SF_MAP_FEATURE_HUD)},{"discoveryAdmitted",bool(map.frame.supported_features&SF_MAP_FEATURE_DISCOVERY)},
+            {"overlayStatus",overlay.status},{"overlayReason",overlay.reason},{"deviceGeneration",overlay.device_generation},
+            {"renderedFrames",overlay.rendered_frames},{"busyFrames",overlay.busy_frames},{"failedFrames",overlay.failed_frames},
+            {"terrainUploadBytes",overlay.terrain_upload_bytes},{"terrainUploadRegions",overlay.terrain_upload_regions},{"cpuFallbackFrames",overlay.cpu_fallback_frames},
+            {"action",overlay.reason==SF_OVERLAY_REASON_AWAIT_OBSERVED_CREATE?"requires an observed swapchain recreation after interception; initial swapchain metadata is unavailable":overlay.reason==SF_OVERLAY_REASON_DEVICE_LOST?"requires a valid recreated device/swapchain":""}};
         const auto text = diagnostics.dump();
         if (text.size() >= capacity) { write_error("report-too-large", text.size() + 1); return; }
         std::memcpy(buffer, text.data(), text.size()); buffer[text.size()] = 0;

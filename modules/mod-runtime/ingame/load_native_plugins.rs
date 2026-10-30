@@ -6,16 +6,10 @@ pub(super) fn load_native_plugins(
     runner: &LuaModRunner,
     errors: &mut serde_json::Map<String, serde_json::Value>,
 ) {
-    let is_server = runner.lua.app_data_ref::<AppState>().unwrap().is_server();
     for target_mod in env.enabled_mods() {
         if let Some(reason) = errors.get(&target_mod.info().id) {
             tracing::warn!(target: "shroudforge::runtime", mod_id = %target_mod.info().id,
             reason = %reason, "Skipping native DLL scan for blocked mod");
-            continue;
-        }
-        if !target_mod.info().target.supports_process(is_server) {
-            tracing::debug!(target: "shroudforge::runtime", mod_id = %target_mod.info().id,
-            server = is_server, "Skipping native DLL scan for wrong process target");
             continue;
         }
         let app_state = runner.lua.app_data_ref::<AppState>().unwrap();

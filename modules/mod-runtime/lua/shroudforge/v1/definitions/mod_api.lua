@@ -42,9 +42,10 @@ function shroudforge_notifications.publish(notice) end
 --- @class ShroudForgeInput
 shroudforge_input = {}
 
---- Returns true while F1 through F8 is held and the game window is focused.
+--- Returns true while a supported configured key is held and the game window is focused.
+--- Uses the native sampler shared with native packages; admitted HUD menus suppress input.
 --- Poll from a runtime `on_update` callback and detect rising edges.
---- @param key 'F1'|'F2'|'F3'|'F4'|'F5'|'F6'|'F7'|'F8'
+--- @param key string F1..F24, A..Z, 0..9, PLUS/+, MINUS/-, NUMPAD+, NUMPAD-, SPACE, TAB, HOME, END.
 --- @return boolean
 function shroudforge_input.is_key_down(key) end
 

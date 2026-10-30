@@ -37,12 +37,15 @@ use crate::{
 pub struct AppState {
     pub(crate) runtime_configured: Cell<bool>,
     runtime_active_mods: RefCell<HashSet<String>>,
+    map_lua_owners: RefCell<HashMap<String,u64>>,
     runtime_effects: RefCell<HashMap<String, serde_json::Value>>,
     runtime_write_fault: RefCell<Option<(u64, String)>>,
     runtime_ownership:
         Rc<RefCell<crate::lua::ingame::overrides::claim_runtime_storage::OwnershipStore>>,
     native_dlls: RefCell<Vec<NativeDll>>,
     pending_native_dlls: RefCell<Vec<PendingNativeDll>>,
+    native_plugin_services:
+        RefCell<std::sync::Arc<dyn native_plugin_abi::NativePluginServiceLifetime>>,
     env: ModEnvironment,
     api: ShroudForgeApi,
     config: AppConfig,
@@ -57,6 +60,8 @@ pub struct AppState {
     reader: RefCell<KFCCursor<KFCReader>>,
     writer: RefCell<Option<KFCWriter<Rc<KFCFile>, Rc<TypeRegistry>>>>,
     asset_transaction: Cell<bool>,
+    generated_asset_transaction: bool,
+    defer_current_commit: bool,
     asset_stem: String,
 
     // NOTE: the `Vec<u8>` must always be treated as immutable
@@ -212,16 +217,22 @@ impl Drop for AppState {
             }
         }
         self.shutdown_native_dlls();
+        self.release_all_lua_map_owners();
     }
 }
 
 mod asset_resources;
+mod validate_generated_assets;
 pub(crate) mod configure_component_contract;
 mod create_mod_session;
 pub(crate) mod loaded_resource_indexes;
 mod loaded_resources;
+mod native_plugin_abi;
+mod native_plugin_lifecycle;
 mod native_plugins;
+mod map_overlay_services;
 mod read_native_plugin_declaration;
+pub(crate) use read_native_plugin_declaration::native_overlay_startup_demand;
 mod record_runtime_state;
 pub use asset_resources::ResourceInfo;
 use asset_resources::ResourceSource;

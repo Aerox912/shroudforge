@@ -72,6 +72,30 @@ Copy-Item -LiteralPath (Join-Path $output 'winmm.dll'),(Join-Path $output 'dbghe
 $dataPackage = Join-Path $package 'shroudforge'
 New-Item -ItemType Directory -Force -Path $dataPackage | Out-Null
 Copy-Item -LiteralPath (Join-Path $output 'shroudforge-runtime.dll'),(Join-Path $output 'shroudforge.exe'),(Join-Path $output 'kfc-runtime.dll') -Destination $dataPackage
+# Optional component for a host that explicitly loads this sidecar as its only
+# ShroudForge bootstrap. Keep it out of the package root beside standard winmm.
+$componentsPackage = Join-Path $dataPackage 'components'
+New-Item -ItemType Directory -Force -Path $componentsPackage | Out-Null
+$sidecarName = 'shroudforge-assets-bootstrap.dll'
+$sidecarOutput = Join-Path $output $sidecarName
+Copy-Item -LiteralPath $sidecarOutput -Destination $componentsPackage
+Copy-Item -LiteralPath (Join-Path $root 'LICENSE') -Destination (Join-Path $componentsPackage 'LICENSE')
+$sourceCommit = & git -C $root rev-parse HEAD
+if ($LASTEXITCODE -ne 0) { throw 'Could not identify the bootstrap source commit.' }
+[ordered]@{
+    sourceVersion = (Get-Content -LiteralPath (Join-Path $root 'VERSION') -Raw).Trim()
+    sourceCommit = $sourceCommit.Trim()
+    sourceBaseline = '46b59da1b3642f91fee3808c513efb996ec33f23'
+    build = $BuildNumber
+    project = 'modules/entrypoints/windows-bootstrap/ShroudForge.Bootstrap.vcxproj'
+    configuration = 'Release|x64'
+    targetProperty = 'BootstrapTargetName=shroudforge-assets-bootstrap'
+    buildOutput = "build/x64/$sidecarName"
+    packagePath = "shroudforge/components/$sidecarName"
+    hostFilename = $sidecarName
+    sha256 = (Get-FileHash -LiteralPath $sidecarOutput -Algorithm SHA256).Hash.ToLowerInvariant()
+    loadingContract = 'Explicitly load this sidecar as the only ShroudForge bootstrap. Preserve the host winmm.dll. Do not install the standard ShroudForge winmm.dll alongside this selection.'
+} | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $componentsPackage 'assets-bootstrap.json') -Encoding utf8
 if (-not $WithoutUpdater) {
     Copy-Item -LiteralPath (Join-Path $output 'shroudforge-updater.exe') -Destination $dataPackage
 }
@@ -102,7 +126,7 @@ $releaseZip = [System.IO.Compression.ZipFile]::OpenRead($archive)
 try {
     $entryNames = @($releaseZip.Entries | ForEach-Object { $_.FullName })
     $updaterEntryPresent = $entryNames -contains 'shroudforge/shroudforge-updater.exe'
-    if ($entryNames -notcontains 'winmm.dll' -or $entryNames -notcontains 'dbghelp.dll' -or $entryNames -notcontains 'dinput8.dll' -or $entryNames -notcontains 'shroudforge/shroudforge.exe' -or (-not $WithoutUpdater -and -not $updaterEntryPresent) -or ($WithoutUpdater -and $updaterEntryPresent) -or $entryNames -notcontains 'shroudforge/shroudforge-runtime.dll' -or $entryNames -notcontains 'shroudforge/kfc-runtime.dll' -or $entryNames -notcontains 'shroudforge/config/modloader-config.json' -or
+    if ($entryNames -notcontains 'winmm.dll' -or $entryNames -notcontains 'shroudforge/components/shroudforge-assets-bootstrap.dll' -or $entryNames -notcontains 'shroudforge/components/assets-bootstrap.json' -or $entryNames -notcontains 'dbghelp.dll' -or $entryNames -notcontains 'dinput8.dll' -or $entryNames -notcontains 'shroudforge/shroudforge.exe' -or (-not $WithoutUpdater -and -not $updaterEntryPresent) -or ($WithoutUpdater -and $updaterEntryPresent) -or $entryNames -notcontains 'shroudforge/shroudforge-runtime.dll' -or $entryNames -notcontains 'shroudforge/kfc-runtime.dll' -or $entryNames -notcontains 'shroudforge/config/modloader-config.json' -or
         $entryNames -notcontains 'shroudforge/version.json' -or $entryNames -notcontains 'shroudforge/runtime/profiles/enshrouded/client/1076226.json') {
         throw 'Release archive is missing the launcher, loader configuration, or version file.'
     }
