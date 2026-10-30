@@ -1,4 +1,5 @@
 #include "abi/runtime_api.h"
+#include "graphics/render_overlay.h"
 #include "ecs/entity_session.h"
 #include "loaded-resources/loaded_resource_access.h"
 #include "main-menu/native_main_menu.h"
@@ -33,13 +34,18 @@ KFC_RUNTIME_API bool __cdecl KfcRuntimeInitialize() {
     }
 }
 
+KFC_RUNTIME_API bool __cdecl KfcRuntimePrepareOverlay(unsigned demand) {
+    try { return demand <= 1 && OverlayRuntime::PrepareGraphicsBoot(demand == 1); } catch (...) { return false; }
+}
+
 KFC_RUNTIME_API void __cdecl KfcRuntimeTick() {
     NativeMainMenu::Tick();
-    try { EcsRuntime::Tick(); } catch (...) { EcsRuntime::Shutdown(); }
+    try { EcsRuntime::Tick(); OverlayRuntime::TickServices(); } catch (...) { EcsRuntime::Shutdown(); }
 }
 
 KFC_RUNTIME_API void __cdecl KfcRuntimeShutdown() {
     provider_initialized.store(false, std::memory_order_release);
+    OverlayRuntime::ShutdownServices();
     KfcRuntimeNetworkServiceShutdown();
     NativeMainMenu::Shutdown();
     ResourceRuntime::Shutdown();

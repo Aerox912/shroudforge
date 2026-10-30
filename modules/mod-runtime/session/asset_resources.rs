@@ -161,7 +161,18 @@ impl AppState {
         if !self.asset_transaction.get() {
             return Err(LuaError::generic("typed asset transaction is unavailable"));
         }
-        shroudforge_game_assets::transaction::commit(
+        if self.defer_current_commit {
+            // The caller now owns this validated output. Drop must not discard
+            // it before the outer pending receipt and transaction are committed.
+            self.asset_transaction.set(false);
+            return Ok(());
+        }
+        let commit = if self.generated_asset_transaction {
+            shroudforge_game_assets::transaction::commit_generated
+        } else {
+            shroudforge_game_assets::transaction::commit
+        };
+        commit(
             self.env.game_dir().as_std_path(),
             &self.asset_stem,
         )

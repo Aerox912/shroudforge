@@ -6,8 +6,8 @@ use serde_json::json;
 use std::{
     collections::HashMap,
     sync::{
-        atomic::{AtomicBool, Ordering},
         Arc, Mutex,
+        atomic::{AtomicBool, Ordering},
     },
 };
 
@@ -347,10 +347,9 @@ fn request_modloader_toggle() -> Result<(), String> {
         EVENT_MODIFY_STATE, GetCurrentProcessId, OpenEventW, SetEvent,
     };
 
-    let name = format!(
-        "Local\\ShroudForge.ModMenu.Open.{}",
-        unsafe { GetCurrentProcessId() }
-    );
+    let name = format!("Local\\ShroudForge.ModMenu.Open.{}", unsafe {
+        GetCurrentProcessId()
+    });
     let name: Vec<u16> = name.encode_utf16().chain(Some(0)).collect();
     let event = unsafe { OpenEventW(EVENT_MODIFY_STATE, 0, name.as_ptr()) };
     if event.is_null() {

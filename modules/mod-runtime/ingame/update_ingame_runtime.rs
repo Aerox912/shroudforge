@@ -8,11 +8,11 @@ impl IngameRuntime {
             self.active_mod_ids(),
         );
         self.diagnostics.tick_with_host(&mut diagnostic_host);
-        self.runner
-            .lua
-            .app_data_ref::<AppState>()
-            .unwrap()
-            .poll_native_dll_loads();
+        {
+            let native_state = self.runner.lua.app_data_ref::<AppState>().unwrap();
+            native_state.poll_native_dll_loads();
+            native_state.update_native_plugins(delta_seconds);
+        }
         self.process_runtime_reload_request();
         if std::time::Instant::now() >= self.next_status {
             let config = shroudforge_loader_config::config::read_loader(&self.root).ok();

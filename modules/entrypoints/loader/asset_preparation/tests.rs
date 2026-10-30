@@ -1,6 +1,26 @@
 use super::*;
 
 #[test]
+fn current_policy_failure_never_captures_or_restores_a_baseline() {
+    let root=std::path::PathBuf::from("E:/Build/hdmap-r9-main-startup-compatibility-20261028-r1")
+        .join(format!("outer-failure-{}",std::process::id()));
+    std::fs::create_dir_all(root.join("shroudforge/config")).unwrap();
+    for (name,bytes) in [("enshrouded.exe",b"synthetic executable".as_slice()),
+        ("enshrouded.kfc",b"current composed index"),("enshrouded.kfc_resources",b"current composed resources"),
+        ("enshrouded.kfc.bak",b"old baseline must never be restored")] {
+        std::fs::write(root.join(name),bytes).unwrap();
+    }
+    std::fs::write(root.join("shroudforge/config/current-assets.json"),b"{}").unwrap();
+    assert!(run_startup(&root).is_err());
+    assert!(!recover_failed_startup(&root,"synthetic current-policy refusal"));
+    assert_eq!(std::fs::read(root.join("enshrouded.kfc")).unwrap(),b"current composed index");
+    assert_eq!(std::fs::read(root.join("enshrouded.kfc_resources")).unwrap(),b"current composed resources");
+    assert!(!root.join("enshrouded.kfc_resources.bak").exists());
+    assert!(!root.join("shroudforge/backups").exists());
+    assert!(!shroudforge_game_assets::transaction::directory(&root,"enshrouded").exists());
+}
+
+#[test]
 fn runtime_exports_do_not_restore_prepared_assets_during_startup() {
     let root = std::env::temp_dir().join(format!(
         "sf-startup-export-{}-{}",
