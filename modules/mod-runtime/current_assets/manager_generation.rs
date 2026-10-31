@@ -3,7 +3,7 @@
 use super::*;
 use std::collections::BTreeSet;
 
-const GENERATOR_CLOSURE: &str = "4acf93eb4753c9663d557e14d6738fcfc853b0031f76c4391bffe6d989a97f98";
+const GENERATOR_CLOSURE: &str = "1f80b068c67c03e47bdde01360e7adc2886c2f69ef27fb40e3d6dfb916d199ba";
 const MAP_EXTENSION: &str = "mods/esm-real-map/extended.mod.json";
 thread_local! {static LOADERS:std::cell::RefCell<Option<(PathBuf,u32)>>=const{std::cell::RefCell::new(None)};}
 pub(super) fn clear_loader_demand(){LOADERS.with(|slot|*slot.borrow_mut()=None);}
@@ -183,4 +183,16 @@ mod tests {
         policy.preserved_loaders.clear();fs::remove_file(root.join("winmm.dll")).unwrap();fs::remove_file(root.join("dbgcore.dll")).unwrap();write(&root,&policy);
         assert!(super::super::prepare(&root).unwrap());assert_eq!(take_loader_demand(&root),0x80000000);assert_eq!(zoom_demand::take(&root),0);
     }
+    #[test] fn previous_generator_closure_is_rejected_without_repair() {
+        let (root,mut policy)=fixture();
+        policy.source_closure="4acf93eb4753c9663d557e14d6738fcfc853b0031f76c4391bffe6d989a97f98".into();
+        write(&root,&policy);let before=files(&root);
+        assert!(verify(&root).is_err());assert_eq!(files(&root),before);
+    }
+    #[test] #[ignore = "requires an explicitly selected installed Manager game root"]
+    fn verify_explicit_installed_manager_root() {
+        let root=PathBuf::from(std::env::var_os("SHROUDFORGE_MANAGER_TEST_ROOT").expect("explicit root required"));
+        verify(&root).expect("installed generation must pass startup admission");
+    }
+
 }
