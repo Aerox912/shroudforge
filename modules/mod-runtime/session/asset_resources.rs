@@ -161,6 +161,12 @@ impl AppState {
         if !self.asset_transaction.get() {
             return Err(LuaError::generic("typed asset transaction is unavailable"));
         }
+        if self.prepared_asset_output {
+            // Prepared output stays private in its separate stage and is never
+            // published by the ordinary session commit path.
+            self.asset_transaction.set(false);
+            return Ok(());
+        }
         if self.defer_current_commit {
             // The caller now owns this validated output. Drop must not discard
             // it before the outer pending receipt and transaction are committed.

@@ -10,8 +10,15 @@ impl AppState {
         expected: &[(ResourceId, Vec<u8>)],
     ) -> anyhow::Result<()> {
         if !self.generated_asset_transaction { return Ok(()); }
+        if self.prepared_asset_output {
+            shroudforge_game_assets::transaction::validate_generated_prepared(
+                &self.asset_input_root,
+                &self.asset_output_root,
+                &self.asset_stem,
+            )?;
+        }
         let stage = shroudforge_game_assets::transaction::directory(
-            self.env.game_dir().as_std_path(), &self.asset_stem);
+            &self.asset_output_root, &self.asset_stem);
         let generated = KFCFile::from_path(stage.join(format!("{}.kfc", self.asset_stem)), false)?;
         let original = self.ref_file.as_ref();
         ensure!(generated.game_version() == original.game_version(), "generated game version changed");
