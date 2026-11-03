@@ -23,6 +23,7 @@ pub(crate) struct DeferredNativePlugin {
 /// Pure intended-plan binding. This is not an applied/loaded plugin authority.
 #[derive(Clone)]
 pub(crate) struct IntendedNativePlan {
+    xhl:Option<crate::current_assets::full_runtime::xhl_selection::Selection>,
     root_key: String,
     is_server: bool,
     pub(crate) identity: serde_json::Value,
@@ -31,13 +32,14 @@ pub(crate) struct IntendedNativePlan {
 }
 impl IntendedNativePlan {
     pub(crate) fn matches(&self, other: &Self) -> bool {
-        self.root_key == other.root_key && self.is_server == other.is_server &&
+        self.xhl==other.xhl && self.root_key == other.root_key && self.is_server == other.is_server &&
             self.identity == other.identity && self.ordinary.len()==other.ordinary.len() &&
             self.ordinary.iter().zip(&other.ordinary).all(|(a,b)|same_entry(a,b)) &&
             same_deferred_plan(&self.entries, &other.entries)
     }
 }
 struct ClassifiedPlan {
+    xhl:Option<crate::current_assets::full_runtime::xhl_selection::Selection>,
     root_key: String,
     is_server: bool,
     identity: serde_json::Value,
@@ -51,12 +53,13 @@ impl ClassifiedPlan {
         if !self.issues.is_empty() || !self.rejected.is_empty() {
             return Err("Full runtime native lifecycle selection is unsupported or rejected".into());
         }
-        Ok(IntendedNativePlan {root_key:self.root_key.clone(),is_server:self.is_server,
+        Ok(IntendedNativePlan {xhl:self.xhl.clone(),root_key:self.root_key.clone(),is_server:self.is_server,
             identity:self.identity.clone(),ordinary:self.ordinary.clone(),entries:self.deferred.clone()})
     }
 }
 
 struct AppliedPlan {
+    xhl:Option<crate::current_assets::full_runtime::xhl_selection::Selection>,
     root_key: String,
     is_server: bool,
     identity: serde_json::Value,
@@ -205,11 +208,14 @@ pub(crate) fn queue(root: &Path, mut entry: DllLoadEntry) -> Result<(), String> 
     if !entry.path.is_file() {
         return Err("The selected native DLL is not a regular file".into());
     }
-    let declaration = selected_plugin_declaration(root, &entry)?;
     if let Some(plan) = APPLIED_PLAN.get() {
         if plan.root_key != root_key(root)? {
             return Err("DLL Manager startup plan belongs to a different game directory".into());
         }
+        if let Some(xhl)=plan.xhl.as_ref(){validate_xhl_queue(root,&entry,xhl)?;}
+    }
+    let declaration = selected_plugin_declaration(root, &entry)?;
+    if let Some(plan) = APPLIED_PLAN.get() {
         ensure_prepared_entry_unchanged(plan, &entry, declaration.as_ref())?;
     }
     if let Some(declaration) = declaration {
@@ -231,6 +237,10 @@ pub(crate) fn queue(root: &Path, mut entry: DllLoadEntry) -> Result<(), String> 
         }
     }
     queue_process_library(root, entry)
+}
+fn validate_xhl_queue(root:&Path,entry:&DllLoadEntry,xhl:&crate::current_assets::full_runtime::xhl_selection::Selection)->Result<(),String> {
+    if xhl.delegated(root,&entry.path).map_err(|e|e.to_string())?{return Err("This exact private DLL is owned by Core and cannot also be queued by ShroudForge".into());}
+    if crate::current_assets::full_runtime::xhl_selection::Selection::is_core(root,&entry.path)&&entry.mode!=DllLoadMode::Dinput8{return Err("Core must use its admitted registration route".into());}Ok(())
 }
 
 fn selected_plugin_declaration(
@@ -458,17 +468,37 @@ fn same_deferred_plan(current: &[DeferredNativePlugin], original: &[DeferredNati
         same_entry(&current.entry, &original.entry) && current.declaration == original.declaration)
 }
 fn classified_plan(root: &Path, is_server: bool) -> Result<ClassifiedPlan, String> {
+    classified_plan_for(root,is_server,APPLIED_PLAN.get().and_then(|p|p.xhl.as_ref()))
+}
+fn classified_plan_for(root:&Path,is_server:bool,xhl:Option<&crate::current_assets::full_runtime::xhl_selection::Selection>)->Result<ClassifiedPlan,String> {
     let plan = mod_loader::dll_manager::resolve_load_plan(root, is_server);
     let identity = mod_loader::dll_manager::load_plan_identity(&plan);
     let mut issues = plan.issues;
-    let (ordinary, deferred, rejected, classified_issues) = classify_plan_entries(root, plan.entries);
+    // Ownership is explicit and path-scoped. Preserve the whole raw plan identity
+    // while only Core executes these exact private DLLs on its first real call.
+    let mut entries=Vec::new();let mut cores=0;
+    for entry in plan.entries {
+        if let Some(xhl)=xhl {
+            if is_server{return Err("XHL selected graph is client-only".into());}
+            if xhl.delegated(root,&entry.path).map_err(|e|e.to_string())?{continue;}
+            if crate::current_assets::full_runtime::xhl_selection::Selection::is_core(root,&entry.path){
+                cores+=1;if entry.mode!=DllLoadMode::Dinput8{return Err("Core requires its typed DirectInput registration route".into());}
+            }
+        }
+        entries.push(entry);
+    }
+    if xhl.is_some()&&cores!=1{return Err("Exactly one selected Core registration is required".into());}
+    let (ordinary, deferred, rejected, classified_issues) = classify_plan_entries(root, entries);
     issues.extend(classified_issues);
-    Ok(ClassifiedPlan {root_key:root_key(root)?,is_server,identity,ordinary,deferred,rejected,issues})
+    Ok(ClassifiedPlan {xhl:xhl.cloned(),root_key:root_key(root)?,is_server,identity,ordinary,deferred,rejected,issues})
 }
 /// Inspect canonical intended selections/declarations before native application.
 /// No APPLIED_PLAN publication, executor creation, DLL loading or callbacks.
 pub(crate) fn intended_native_plan(root: &Path, is_server: bool) -> Result<IntendedNativePlan, String> {
     classified_plan(root,is_server)?.intended()
+}
+pub(crate) fn intended_native_plan_for(root:&Path,is_server:bool,xhl:Option<&crate::current_assets::full_runtime::xhl_selection::Selection>)->Result<IntendedNativePlan,String> {
+    classified_plan_for(root,is_server,xhl)?.intended()
 }
 
 pub(crate) fn deferred_native_plugins(
@@ -560,13 +590,14 @@ fn apply_plan_impl(root:&Path,is_server:bool,wait:bool,expected:Option<&Intended
         return Ok(());
     }
     let enabled = manager_enabled(root)?;
-    let plan = classified_plan(root,is_server)?;
+    let plan = classified_plan_for(root,is_server,expected.and_then(|p|p.xhl.as_ref()))?;
     if let Some(expected)=expected {
         if !enabled||!expected.matches(&plan.intended()?){return Err("Native plan/declarations changed before full startup application".into());}
     }
-    let ClassifiedPlan {root_key,is_server,identity,ordinary,deferred,rejected:rejected_entries,issues}=plan;
+    let ClassifiedPlan {xhl,root_key,is_server,identity,ordinary,deferred,rejected:rejected_entries,issues}=plan;
     if APPLIED_PLAN
         .set(AppliedPlan {
+            xhl,
             root_key,
             is_server,
             identity,
@@ -767,17 +798,20 @@ fn load_library(root: &Path, entry: &DllLoadEntry) -> (Option<isize>, Result<(),
         );
     }
     if let Some(setter) = provider_setter {
+        let selected_core=APPLIED_PLAN.get().and_then(|p|p.xhl.as_ref()).is_some_and(|_|crate::current_assets::full_runtime::xhl_selection::Selection::is_core(root,&entry.path));
         if unsafe { GetProcAddress(handle, c"DirectInput8Create".as_ptr().cast()) }.is_none() {
-            if entry.source != "chain" {
+            if selected_core||entry.source != "chain" {
                 return (Some(handle as isize), Err("The selected DLL does not export DirectInput8Create. Select ordinary DLL loading instead of the DirectInput start method".into()));
             }
             tracing::debug!(target: "shroudforge::dll_manager", dll = %entry.path.display(),
                 "Chain DLL loaded without a DirectInput provider export");
             return (Some(handle as isize), Ok(()));
         }
-        let accepted = unsafe { setter(handle) } != 0;
+        let status=unsafe { setter(handle) };
+        let accepted = if selected_core{matches!(status,1|2)}else{status!=0};
         tracing::debug!(target: "shroudforge::dll_manager", dll = %entry.path.display(), accepted,
             "DirectInput chain provider considered. The first provider keeps forwarded calls");
+        if !accepted{return (Some(handle as isize),Err("The DirectInput chain host rejected the selected provider; startup cannot claim registration".into()));}
     }
     (Some(handle as isize), Ok(()))
 }
@@ -866,6 +900,32 @@ mod managed_plugin_plan_tests {
         assert_eq!(intended.ordinary.len(),1);assert_eq!(intended.entries.len(),1);
         assert!(intended.entries[0].declaration.declares_service("shroudforge.map"));
         assert!(APPLIED_PLAN.get().is_none()&&EXECUTOR.get().is_none()&&statuses().is_empty());
+    }
+
+    #[test]
+    fn xhl_typed_core_owns_only_its_exact_subtree_before_ordinary_or_managed_classification() {
+        use crate::current_assets::full_runtime::xhl_selection::{Selection,DirectoryPin,PLUGINS};
+        let fixture=Fixture::new();
+        let mut files=vec!["xhl-core.dll".to_string()];files.extend(PLUGINS.iter().map(|(p,_)|format!("mods/{p}")));
+        let borrowed:Vec<_>=files.iter().map(String::as_str).collect();fixture.package("xhl-core","",&borrowed);
+        fixture.package("unrelated","",&["XHL-Remote-Altar-Close.dll"]);
+        let dir=fixture.0.join("shroudforge/config");std::fs::create_dir_all(&dir).unwrap();
+        let mut cfg=shroudforge_loader_config::config::read_loader_defaults().unwrap();
+        cfg["modules"]["dllManager"]["enabled"]=true.into();
+        cfg["modules"]["dllManager"]["profiles"]=serde_json::json!([
+            {"id":"xhl-core","packageDirectory":"xhl-core","name":"Core","enabled":true,"approved":true,"target":"client","files":files.iter().enumerate().map(|(i,p)|serde_json::json!({"path":p,"mode":if i==0{"dinput8"}else{"library"}})).collect::<Vec<_>>()},
+            {"id":"unrelated","packageDirectory":"unrelated","name":"Unrelated","enabled":true,"approved":true,"target":"client","files":[{"path":"XHL-Remote-Altar-Close.dll","mode":"library"}]}
+        ]);
+        std::fs::write(dir.join("modloader-config.json"),serde_json::to_vec(&cfg).unwrap()).unwrap();
+        let xhl=Selection{service:"xhl-core-registration-v1".into(),container:DirectoryPin{relative:String::new(),volume:1,id:[1;16]},directories:vec![],files:PLUGINS.iter().map(|(p,_)|p.to_string()).collect()};
+        let legacy=intended_native_plan_for(&fixture.0,false,None).unwrap();assert_eq!(legacy.ordinary.len(),5);
+        let selected=intended_native_plan_for(&fixture.0,false,Some(&xhl)).unwrap();assert_eq!(selected.ordinary.len(),2);assert!(selected.entries.is_empty());
+        assert_eq!(selected.identity,legacy.identity);assert!(selected.ordinary.iter().any(|e|e.package_directory=="unrelated"));
+        assert!(!selected.matches(&legacy));assert!(APPLIED_PLAN.get().is_none()&&EXECUTOR.get().is_none());
+        let mut bad=xhl.clone();bad.files.clear();assert!(intended_native_plan_for(&fixture.0,false,Some(&bad)).is_err());
+        assert!(intended_native_plan_for(&fixture.0,true,Some(&xhl)).is_err());
+        let nested=fixture.entry("xhl-core",&files[1],DllLoadMode::Library);assert!(validate_xhl_queue(&fixture.0,&nested,&xhl).is_err());
+        let unrelated=fixture.entry("unrelated","XHL-Remote-Altar-Close.dll",DllLoadMode::Library);validate_xhl_queue(&fixture.0,&unrelated,&xhl).unwrap();
     }
 
     #[test]
@@ -989,6 +1049,7 @@ mod managed_plugin_plan_tests {
         let (_, _, prepared_rejected, _) = classify_plan_entries(&fixture.0, vec![plugin.clone()]);
         assert_eq!(prepared_rejected.len(), 1);
         let prepared_plan = AppliedPlan {
+            xhl:None,
             root_key: root_key(&fixture.0).unwrap(),
             is_server: false,
             identity: serde_json::Value::Null,
@@ -1033,6 +1094,7 @@ mod managed_plugin_plan_tests {
             "mode": selected.mode
         }]);
         let plan = AppliedPlan {
+            xhl:None,
             root_key: root_key(&fixture.0).unwrap(),
             is_server: false,
             identity: identity.clone(),
