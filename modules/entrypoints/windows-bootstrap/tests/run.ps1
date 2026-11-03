@@ -8,19 +8,19 @@ $dev = Join-Path $vs 'Common7/Tools/Launch-VsDevShell.ps1'
 & $dev -Arch amd64 -HostArch amd64 -SkipAutomaticLocation | Out-Null
 Push-Location $output
 try {
-    & cl /nologo /std:c++20 /EHsc /MT (Join-Path $PSScriptRoot 'selected_bridge_tests.cpp') /link /OUT:selected_bridge_tests.exe
+    & cl /nologo /std:c++20 /EHsc /MT /DWIN32_LEAN_AND_MEAN /DNOMINMAX (Join-Path $PSScriptRoot 'selected_bridge_tests.cpp') /link /OUT:selected_bridge_tests.exe
     if ($LASTEXITCODE) { throw 'Selected bridge fixture build failed' }
     foreach ($scenario in 1..6) {
         & (Join-Path $output 'selected_bridge_tests.exe') $scenario
         if ($LASTEXITCODE) { throw "Selected bridge fixture failed: $scenario" }
     }
-    & cl /nologo /std:c++20 /EHsc /MT (Join-Path $PSScriptRoot 'static_start_tests.cpp') /link /OUT:static_start_tests.exe
+    & cl /nologo /std:c++20 /EHsc /MT /DWIN32_LEAN_AND_MEAN /DNOMINMAX (Join-Path $PSScriptRoot 'static_start_tests.cpp') /link /OUT:static_start_tests.exe
     if ($LASTEXITCODE) { throw 'Static start fixture build failed' }
     & (Join-Path $output 'static_start_tests.exe')
     if ($LASTEXITCODE) { throw 'Static start fixture failed' }
-    & cl /nologo /std:c++20 /EHsc /MT /LD (Join-Path $PSScriptRoot 'startup_gate_dll.cpp') /link /OUT:startup_gate_test.dll /IMPLIB:startup_gate_test.lib
+    & cl /nologo /std:c++20 /EHsc /MT /LD /DWIN32_LEAN_AND_MEAN /DNOMINMAX (Join-Path $PSScriptRoot 'startup_gate_dll.cpp') /link /OUT:startup_gate_test.dll /IMPLIB:startup_gate_test.lib
     if ($LASTEXITCODE) { throw 'Gate DLL build failed' }
-    & cl /nologo /std:c++20 /EHsc /MT (Join-Path $PSScriptRoot 'startup_gate_exe.cpp') startup_gate_test.lib /link /OUT:startup_gate_test.exe
+    & cl /nologo /std:c++20 /EHsc /MT /DWIN32_LEAN_AND_MEAN /DNOMINMAX (Join-Path $PSScriptRoot 'startup_gate_exe.cpp') startup_gate_test.lib /link /OUT:startup_gate_test.exe
     if ($LASTEXITCODE) { throw 'Gate executable build failed' }
     foreach ($fail in @($false, $true)) {
         $start = [Diagnostics.ProcessStartInfo]::new((Join-Path $output 'startup_gate_test.exe'))

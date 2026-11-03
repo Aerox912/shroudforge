@@ -134,18 +134,25 @@ jobs:
           path: |
             build/x64/kfc-runtime.dll
             build/x64/winmm.dll
+            build/x64/ShroudForgeWinmm.lib
           if-no-files-found: error
           retention-days: 1
 
   proxies:
     name: Build or restore verified proxy DLLs
     if: needs.release-check.outputs.build_release == 'true'
-    needs: release-check
+    needs: [release-check, native]
     runs-on: windows-latest
     env:
       CARGO_INCREMENTAL: "0"
     steps:
       - uses: actions/checkout@v7
+
+      - name: Download native bootstrap outputs
+        uses: actions/download-artifact@v7
+        with:
+          name: shroudforge-native-${{ github.run_id }}
+          path: build/x64
 
       - name: Initialize proxy source
         shell: pwsh
@@ -248,9 +255,26 @@ jobs:
       - name: Initialize Rust build dependencies
         shell: pwsh
         run: |
-          git submodule update --init --recursive -- kfc-parser modules/hotkeys/SDL
+          git submodule update --init --recursive -- kfc-parser modules/game-runtime/native/json modules/hotkeys/SDL
           if ($LASTEXITCODE -ne 0) { throw 'Rust dependency checkout failed.' }
-          .\dev\parser\prepare_parser.ps1
+
+      - name: Verify prepared source closure byte fixtures
+        shell: pwsh
+        run: .\dev\tests\test_prepared_source_closure.ps1 -FixtureOnly -EvidenceRoot 'build'
+
+      - name: Compute committed prepared source closure
+        shell: pwsh
+        run: |
+          $closure = & .\dev\build\compute_prepared_source_closure.ps1 -OutputPath 'build/prepared-source-closure.schema1.json' -GitHubEnvPath $env:GITHUB_ENV
+          if ($closure -cnotmatch '^[0-9a-f]{64}$') { throw 'Prepared generator source closure was not computed.' }
+
+      - name: Verify prepared source closure receipt
+        shell: pwsh
+        run: .\dev\tests\test_prepared_source_closure.ps1 -ManifestPath 'build/prepared-source-closure.schema1.json'
+
+      - name: Prepare parser source
+        shell: pwsh
+        run: .\dev\parser\prepare_parser.ps1
 
       - name: Set build version from branch
         shell: pwsh
@@ -301,6 +325,7 @@ jobs:
             build/x64/shroudforge-runtime.dll
             build/x64/shroudforge.exe
             build/x64/shroudforge-updater.exe
+            build/prepared-source-closure.schema1.json
             modules/hotkeys/SDL/LICENSE.txt
           if-no-files-found: error
           retention-days: 1
