@@ -14,6 +14,10 @@ struct PreparedRequest {
 struct PreparedReceipt {
     schema:u32,source_closure:String,request_sha256:String,target_root:PathBuf,
     output_stage:PathBuf,staged:BTreeMap<String,FileStamp>,prepared_marker:FileStamp,
+    #[serde(default,skip_serializing_if="Option::is_none")]
+    source_dat_membership:Option<BTreeMap<String,FileStamp>>,
+    #[serde(default,skip_serializing_if="Option::is_none")]
+    source_dat_membership_sha256:Option<String>,
 }
 #[derive(Clone,Serialize,Deserialize)]
 #[serde(rename_all="camelCase",deny_unknown_fields)]
@@ -35,6 +39,43 @@ fn path_key(path:&Path)->Result<String> {
 }
 fn overlaps(a:&str,b:&str)->bool {a==b||a.starts_with(&format!("{b}/"))||b.starts_with(&format!("{a}/"))}
 fn same(a:&FileStamp,b:&FileStamp)->bool {a.bytes==b.bytes&&a.sha256==b.sha256}
+fn is_dat_asset(name:&str)->bool {let lower=name.to_ascii_lowercase();lower.ends_with(".dat")&&asset(&lower)}
+
+fn validate_receipt_schema<'a>(request:&PreparedRequest,receipt:&'a PreparedReceipt,full:bool)->Result<Option<&'a BTreeMap<String,FileStamp>>> {
+    let expected_schema=if full {2}else{1};
+    ensure!(request.schema==1&&receipt.schema==expected_schema,"prepared request/receipt schema differs");
+    if !full {
+        ensure!(receipt.source_dat_membership.is_none()&&receipt.source_dat_membership_sha256.is_none(),"legacy prepared receipt contains schema2 DAT membership");
+        return Ok(None);
+    }
+    let membership=receipt.source_dat_membership.as_ref().context("schema2 prepared DAT membership missing")?;
+    let membership_sha256=receipt.source_dat_membership_sha256.as_deref().context("schema2 prepared DAT membership digest missing")?;
+    ensure!(membership.len()<=10000&&valid_digest(membership_sha256)&&digest(&serde_json::to_vec(membership)?)==membership_sha256,"schema2 prepared DAT membership digest differs");
+    let mut request_dat=BTreeMap::new();
+    for (name,value) in &request.inputs {
+        if is_dat_asset(name) {
+            ensure!(name==&name.to_ascii_lowercase(),"noncanonical source DAT input");
+            request_dat.insert(name.clone(),value);
+        }
+    }
+    ensure!(request_dat.len()==membership.len(),"schema2 source DAT membership/input count differs");
+    for (name,value) in membership {
+        ensure!(name==&name.to_ascii_lowercase()&&is_dat_asset(name)&&valid_digest(&value.sha256),"invalid schema2 source DAT identity");
+        ensure!(request_dat.get(name).is_some_and(|source|same(*source,value)),"schema2 source DAT identity differs from request");
+    }
+    Ok(Some(membership))
+}
+
+fn validate_schema2_dat_union(actual_assets:&BTreeSet<String>,source:&BTreeMap<String,FileStamp>,staged:&BTreeMap<String,FileStamp>)->Result<()> {
+    let mut expected:BTreeSet<_>=source.keys().cloned().collect();
+    for name in staged.keys().filter(|name|is_dat_asset(name)) {
+        ensure!(!source.contains_key(name),"schema2 generated DAT overlaps source membership");
+        expected.insert(name.clone());
+    }
+    let actual:BTreeSet<_>=actual_assets.iter().filter(|name|is_dat_asset(name)).cloned().collect();
+    ensure!(actual==expected,"schema2 installed DAT union differs");
+    Ok(())
+}
 
 pub(super) fn verify(root:&Path)->Result<()> {
     verify_mode(root,false)
@@ -61,7 +102,8 @@ fn verify_mode(root:&Path,full:bool)->Result<()> {
     ensure!(valid_digest(&policy.request_sha256)&&digest(policy.request_json.as_bytes())==policy.request_sha256&&valid_digest(&policy.receipt_sha256)&&digest(policy.receipt_json.as_bytes())==policy.receipt_sha256,"prepared evidence digest differs");
     let request:PreparedRequest=serde_json::from_str(&policy.request_json)?;
     let receipt:PreparedReceipt=serde_json::from_str(&policy.receipt_json)?;
-    ensure!(request.schema==1&&receipt.schema==1&&receipt.source_closure==producer&&receipt.request_sha256==digest(&serde_json::to_vec(&request)?),"prepared receipt producer/request differs");
+    ensure!(receipt.source_closure==producer&&receipt.request_sha256==digest(&serde_json::to_vec(&request)?),"prepared receipt producer/request differs");
+    let source_dat_membership=validate_receipt_schema(&request,&receipt,full)?;
     ensure!(fs::canonicalize(&request.target_root)?==root&&fs::canonicalize(&request.asset_input_root)?==root&&receipt.target_root==root,"prepared receipt retargeting rejected");
     let source=path_key(&root)?;let environment=path_key(&request.environment_root)?;let output=path_key(&request.output_root)?;
     ensure!(environment.starts_with("e:/")&&output.starts_with("e:/")&&!overlaps(&source,&environment)&&!overlaps(&source,&output)&&!overlaps(&environment,&output),"prepared root ownership differs");
@@ -84,14 +126,21 @@ fn verify_mode(root:&Path,full:bool)->Result<()> {
         ensure!(aliases.insert(name.to_ascii_lowercase())&&valid_digest(&value.sha256),"invalid prepared input");
         if !(asset(name)||name=="enshrouded.exe") {ensure!(name.starts_with("mods/")&&request.environment_files.get(name).is_some_and(|v|same(v,value)),"prepared package input differs");}
         let path=checked(&root,name)?;
-        if asset(name)&&name.ends_with(".dat") {ensure!(plain(&path)?.is_file()&&fs::metadata(path)?.len()==value.bytes,"baseline DAT membership/size differs");}
+        if asset(name)&&name.ends_with(".dat") {
+            // Deployment preflight verifies schema2 source DAT names and exact stamps before commit.
+            // Startup retains the legacy presence/size check for these large files.
+            ensure!(plain(&path)?.is_file()&&fs::metadata(path)?.len()==value.bytes,"baseline DAT membership/size differs");
+        }
         else if !receipt.staged.contains_key(name) {exact(&root,name,value)?;}
     }
     aliases.clear();
     for (name,value) in &receipt.staged {
         ensure!(aliases.insert(name.to_ascii_lowercase())&&valid_digest(&value.sha256)&&(asset(name)||name=="generated-inputs.json"),"invalid prepared output member");
         if asset(name) {
-            if name.ends_with(".dat") {ensure!(!request.inputs.contains_key(name),"prepared DAT overlaps baseline");}
+            if name.ends_with(".dat") {
+                ensure!(!request.inputs.contains_key(name),"prepared DAT overlaps baseline");
+                if let Some(source)=source_dat_membership {ensure!(!source.contains_key(name),"prepared DAT overlaps schema2 source membership");}
+            }
             exact(&root,name,value)?;
         }
     }
@@ -99,6 +148,7 @@ fn verify_mode(root:&Path,full:bool)->Result<()> {
     let mut actual=BTreeSet::new();
     for entry in fs::read_dir(&root)? {let name=entry?.file_name().into_string().map_err(|_|anyhow::anyhow!("nonUTF8 target asset"))?;if asset(&name.to_ascii_lowercase()){ensure!(name==name.to_ascii_lowercase(),"target asset alias");actual.insert(name);}}
     ensure!(actual==expected,"prepared asset membership differs");
+    if let Some(source)=source_dat_membership {validate_schema2_dat_union(&actual,source,&receipt.staged)?;}
     ensure!(policy.preserved_loaders.keys().all(|n|matches!(n.as_str(),"winmm.dll"|"dbgcore.dll")),"prepared loader contract differs");
     for (name,hash) in &policy.preserved_loaders {ensure!(valid_digest(hash)&&stamp(&checked(&root,name)?)?.1==*hash,"prepared loader drift");}
     if ids.contains("esm-real-map") {
@@ -138,7 +188,7 @@ mod tests {
             let request=PreparedRequest {schema:1,target_root:root.clone(),asset_input_root:root.clone(),environment_root,output_root:output_root.clone(),selected_ids:vec!["esm-real-map".into()],inputs,environment_files};
             let mut staged:BTreeMap<_,_>=["enshrouded.kfc","enshrouded.kfc_resources","enshrouded_001.dat"].into_iter().map(|n|(n.into(),value(n))).collect();
             staged.insert("generated-inputs.json".into(),FileStamp{bytes:123,sha256:digest(b"synthetic durable generation preimages")});
-            let receipt=PreparedReceipt {schema:1,source_closure:option_env!("HD_PREPARED_SOURCE_CLOSURE").unwrap().into(),request_sha256:digest(&serde_json::to_vec(&request).unwrap()),target_root:root.clone(),output_stage:output_root.join(".enshrouded.shroudforge-stage"),staged,prepared_marker:FileStamp{bytes:100,sha256:digest(b"synthetic prepared marker")}};
+            let receipt=PreparedReceipt {schema:1,source_closure:option_env!("HD_PREPARED_SOURCE_CLOSURE").unwrap().into(),request_sha256:digest(&serde_json::to_vec(&request).unwrap()),target_root:root.clone(),output_stage:output_root.join(".enshrouded.shroudforge-stage"),staged,prepared_marker:FileStamp{bytes:100,sha256:digest(b"synthetic prepared marker")},source_dat_membership:None,source_dat_membership_sha256:None};
             let request_json=serde_json::to_string(&request).unwrap();let receipt_json=serde_json::to_string(&receipt).unwrap();
             let policy=PreparedPolicy {schema_version:5,owner:"hdmap-prepared-generator".into(),root:root.clone(),source_closure:receipt.source_closure.clone(),request_sha256:digest(request_json.as_bytes()),receipt_sha256:digest(receipt_json.as_bytes()),request_json,receipt_json,extended_zoom:false,runtime:None,preserved_loaders:[("winmm.dll".into(),value("winmm.dll").sha256)].into_iter().collect()};
             Self {root,policy}
@@ -153,6 +203,19 @@ mod tests {
         fn edit_receipt(&mut self,edit:impl FnOnce(&mut PreparedReceipt)) {
             let mut receipt:PreparedReceipt=serde_json::from_str(&self.policy.receipt_json).unwrap();edit(&mut receipt);
             self.policy.receipt_json=serde_json::to_string(&receipt).unwrap();self.policy.receipt_sha256=digest(self.policy.receipt_json.as_bytes());
+        }
+        fn source_dat_membership(&self)->BTreeMap<String,FileStamp> {
+            let request:PreparedRequest=serde_json::from_str(&self.policy.request_json).unwrap();
+            request.inputs.into_iter().filter(|(name,_)|is_dat_asset(name)).collect()
+        }
+        fn set_schema2_receipt(&mut self) {
+            let membership=self.source_dat_membership();
+            let membership_sha256=digest(&serde_json::to_vec(&membership).unwrap());
+            self.edit_receipt(|receipt|{
+                receipt.schema=2;
+                receipt.source_dat_membership=Some(membership);
+                receipt.source_dat_membership_sha256=Some(membership_sha256);
+            });
         }
     }
     impl Drop for Fixture {fn drop(&mut self){if let (Ok(path),Ok(parent))=(fs::canonicalize(&self.root),fs::canonicalize("E:/Scratch/hdmap-prepared-admission-tests")){if path.parent()==Some(parent.as_path())&&plain(&path).is_ok(){let _=fs::remove_dir_all(path);}}}}
@@ -175,12 +238,60 @@ mod tests {
         assert!(super::super::super::prepare(&f.root).is_err());assert_eq!(before,f.asset_hashes());
     }
     #[test]
+    fn schema2_receipt_binds_exact_source_dat_input_subset() {
+        let mut f=Fixture::new();
+        let request:PreparedRequest=serde_json::from_str(&f.policy.request_json).unwrap();
+        let legacy:PreparedReceipt=serde_json::from_str(&f.policy.receipt_json).unwrap();
+        assert!(validate_receipt_schema(&request,&legacy,false).unwrap().is_none());
+        assert!(validate_receipt_schema(&request,&legacy,true).is_err());
+
+        f.set_schema2_receipt();
+        let valid:PreparedReceipt=serde_json::from_str(&f.policy.receipt_json).unwrap();
+        let membership=validate_receipt_schema(&request,&valid,true).unwrap().unwrap();
+        assert_eq!(membership.keys().cloned().collect::<BTreeSet<_>>(),BTreeSet::from(["enshrouded_000.dat".to_owned()]));
+
+        let mut missing=valid.clone();missing.source_dat_membership=None;
+        assert!(validate_receipt_schema(&request,&missing,true).is_err());
+        let mut wrong_digest=valid.clone();wrong_digest.source_dat_membership_sha256=Some("0".repeat(64));
+        assert!(validate_receipt_schema(&request,&wrong_digest,true).is_err());
+        let mut wrong_stamp=valid.clone();
+        let mut changed=wrong_stamp.source_dat_membership.clone().unwrap();changed.get_mut("enshrouded_000.dat").unwrap().bytes+=1;
+        wrong_stamp.source_dat_membership_sha256=Some(digest(&serde_json::to_vec(&changed).unwrap()));wrong_stamp.source_dat_membership=Some(changed);
+        assert!(validate_receipt_schema(&request,&wrong_stamp,true).is_err());
+        let mut alias=valid;let mut changed=alias.source_dat_membership.clone().unwrap();
+        let stamp=changed.remove("enshrouded_000.dat").unwrap();changed.insert("Enshrouded_000.dat".into(),stamp);
+        alias.source_dat_membership_sha256=Some(digest(&serde_json::to_vec(&changed).unwrap()));alias.source_dat_membership=Some(changed);
+        assert!(validate_receipt_schema(&request,&alias,true).is_err());
+    }
+    #[test]
+    fn schema2_installed_dat_set_is_source_union_generated_outputs() {
+        let stamp=FileStamp{bytes:1,sha256:"a".repeat(64)};
+        let source=[("enshrouded_000.dat".to_owned(),stamp.clone())].into_iter().collect();
+        let staged=[
+            ("enshrouded.kfc".to_owned(),stamp.clone()),
+            ("enshrouded.kfc_resources".to_owned(),stamp.clone()),
+            ("enshrouded_001.dat".to_owned(),stamp.clone()),
+        ].into_iter().collect();
+        let actual=BTreeSet::from([
+            "enshrouded.kfc".to_owned(),"enshrouded.kfc_resources".to_owned(),
+            "enshrouded_000.dat".to_owned(),"enshrouded_001.dat".to_owned(),
+        ]);
+        validate_schema2_dat_union(&actual,&source,&staged).unwrap();
+        let mut missing=actual.clone();missing.remove("enshrouded_000.dat");
+        assert!(validate_schema2_dat_union(&missing,&source,&staged).is_err());
+        let mut extra=actual.clone();extra.insert("enshrouded_002.dat".into());
+        assert!(validate_schema2_dat_union(&extra,&source,&staged).is_err());
+        let mut overlap=staged.clone();overlap.insert("enshrouded_000.dat".into(),stamp);
+        assert!(validate_schema2_dat_union(&actual,&source,&overlap).is_err());
+    }
+    #[test]
     #[ignore="requires explicitly synthetic SF_FULL_* test-build closures; not a production producer receipt"]
-    fn schema6_readonly_admission_and_one_shot_full_handoff() {
+    fn schema6_readonly_admission_uses_receipt2_and_selected_service_phases() {
         let mut f=Fixture::new();let root=f.root.clone();
         let producer=option_env!("SF_FULL_PREPARED_SOURCE_CLOSURE").unwrap();
         let runtime=option_env!("SF_FULL_RUNTIME_SOURCE_CLOSURE").unwrap();
         f.policy.schema_version=6;f.policy.owner="shroudforge-full-prepared".into();f.policy.source_closure=producer.into();f.policy.preserved_loaders.clear();
+        f.set_schema2_receipt();
         f.edit_receipt(|r|r.source_closure=producer.into());
         let package=root.join("mods/fixture-runtime");fs::create_dir_all(package.join("src")).unwrap();
         fs::write(package.join("mod.json"),br#"{"id":"fixture-runtime","name":"Fixture","version":"1.0.0","capabilities":["runtime"]}"#).unwrap();
@@ -188,6 +299,11 @@ mod tests {
         fs::write(package.join("src/mod.lua"),b"return {}\n").unwrap();
         let entries:Vec<_>=["mod.json","extended.mod.json","src/mod.lua"].into_iter().map(|name|{let(bytes,sha256)=stamp(&package.join(name)).unwrap();(format!("mods/fixture-runtime/{name}"),FileStamp{bytes,sha256})}).collect();
         f.edit_request(|r|for(name,value)in entries{r.inputs.insert(name.clone(),value.clone());r.environment_files.insert(name,value);});
+        fs::write(root.join("enshrouded.kfc"),b"committed KFC postimage").unwrap();
+        fs::write(root.join("enshrouded.kfc_resources"),b"committed resource postimage").unwrap();
+        f.edit_receipt(|r|for name in ["enshrouded.kfc","enshrouded.kfc_resources"] {
+            let(bytes,sha256)=stamp(&root.join(name)).unwrap();r.staged.insert(name.into(),FileStamp{bytes,sha256});
+        });
         fs::create_dir_all(root.join("shroudforge")).unwrap();
         fs::write(root.join("shroudforge/shroudforge-runtime.dll"),b"synthetic runtime; never loaded").unwrap();
         fs::write(root.join("shroudforge/kfc-runtime.dll"),b"synthetic provider; never loaded").unwrap();
@@ -197,14 +313,16 @@ mod tests {
         let plan=mod_loader::dll_manager::resolve_load_plan(&root,false);assert!(plan.issues.is_empty());assert!(plan.entries.is_empty());
         let(bytes,sha256)=stamp(&package.join("src/mod.lua")).unwrap();
         let scripts=[("fixture-runtime:src/mod.lua".into(),super::super::super::full_runtime::NativeFile{bytes,sha256})].into_iter().collect();
-        f.policy.runtime=Some(super::super::super::full_runtime::Contract{schema_version:1,host:"sf-winmm-startup-gate-v1".into(),runtime_source_closure:runtime.into(),prepared_request_sha256:f.policy.request_sha256.clone(),prepared_receipt_sha256:f.policy.receipt_sha256.clone(),boot_services:vec!["required-engine-hooks-v1".into()],overlay:false,first_person:false,runtime_mods:vec!["fixture-runtime".into()],scripts,dll_plan:mod_loader::dll_manager::load_plan_identity(&plan),files,greeneye_paths:vec![]});
+        f.policy.runtime=Some(super::super::super::full_runtime::Contract{schema_version:2,host:"sf-winmm-selected-services-v2".into(),runtime_source_closure:runtime.into(),prepared_request_sha256:f.policy.request_sha256.clone(),prepared_receipt_sha256:f.policy.receipt_sha256.clone(),boot_services:vec!["metadata-init-v1".into()],overlay:false,first_person:false,selection:Default::default(),runtime_mods:vec!["fixture-runtime".into()],scripts,dll_plan:mod_loader::dll_manager::load_plan_identity(&plan),files,greeneye_paths:vec![]});
         f.write();let before=f.asset_hashes();
         assert!(super::super::super::prepare(&root).unwrap());assert_eq!(f.asset_hashes(),before);
-        let full=&super::super::super::full_runtime::HANDSHAKE_V1;
         super::super::super::full_runtime::prepare_native(&root).unwrap();
         assert!(crate::native_dlls::prepare_full_startup(&root,f.policy.runtime.as_ref().unwrap()).is_err());
-        assert_eq!(super::super::super::full_runtime::take(&root),*full);
-        assert!(super::super::super::full_runtime::commit(&root,*full));
+        let selected=super::super::super::full_runtime::take_v2(&root).unwrap();
+        assert!(selected.valid());
+        assert_eq!(selected.services,super::super::super::full_runtime::selected_services::METADATA);
+        assert!(super::super::super::full_runtime::release_vein_lease(&root,&selected,selected.prepared_services()));
+        assert!(super::super::super::full_runtime::commit_v2(&root,&selected,selected.services));
         super::super::super::full_runtime::before_create(&root).unwrap();
         #[cfg(windows)]assert!(fs::write(root.join("mods/esm-real-map/mod.lua"),b"must stay immutable through create").is_err());
         super::super::super::full_runtime::after_create(&root).unwrap();
