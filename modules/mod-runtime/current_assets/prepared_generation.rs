@@ -21,6 +21,8 @@ struct PreparedPolicy {
     schema_version:u32,owner:String,root:PathBuf,source_closure:String,
     request_json:String,request_sha256:String,receipt_json:String,receipt_sha256:String,
     extended_zoom:bool,preserved_loaders:BTreeMap<String,String>,
+    #[serde(default,skip_serializing_if="Option::is_none")]
+    runtime:Option<super::super::full_runtime::Contract>,
 }
 
 fn path_key(path:&Path)->Result<String> {
@@ -35,16 +37,27 @@ fn overlaps(a:&str,b:&str)->bool {a==b||a.starts_with(&format!("{b}/"))||b.start
 fn same(a:&FileStamp,b:&FileStamp)->bool {a.bytes==b.bytes&&a.sha256==b.sha256}
 
 pub(super) fn verify(root:&Path)->Result<()> {
+    verify_mode(root,false)
+}
+pub(super) fn verify_full(root:&Path)->Result<()> {
+    verify_mode(root,true)
+}
+fn verify_mode(root:&Path,full:bool)->Result<()> {
     // Optional at compile time; absence leaves only this new mode closed.
-    let producer=option_env!("HD_PREPARED_SOURCE_CLOSURE").context("prepared producer not compiled into runtime")?;
+    let producer=if full {option_env!("SF_FULL_PREPARED_SOURCE_CLOSURE")}else{option_env!("HD_PREPARED_SOURCE_CLOSURE")}.context("prepared producer not compiled into runtime")?;
     ensure!(valid_digest(producer),"invalid compiled preparation identity");
     for parent in root.ancestors(){ensure!(plain(parent)?.is_dir(),"invalid prepared target root");}
     let root=fs::canonicalize(root)?;
     let _outer=manager_lease(&root)?;let _startup=lease(&root)?;
     ensure!(!transaction::directory(&root,STEM).exists(),"asset publication remains pending");
     for name in [STATE,PENDING] {ensure!(!joined(&root,name)?.exists(),"conflicting native asset owner");}
-    let policy:PreparedPolicy=read_json(&joined(&root,POLICY)?)?;
-    ensure!(policy.schema_version==5&&policy.owner=="hdmap-prepared-generator"&&policy.source_closure==producer&&fs::canonicalize(&policy.root)?==root,"prepared startup owner differs");
+    let policy_document:serde_json::Value=read_json(&joined(&root,POLICY)?)?;
+    ensure!(full||policy_document.get("runtime").is_none(),"historical prepared policy cannot contain a runtime field");
+    let policy:PreparedPolicy=serde_json::from_value(policy_document)?;
+    ensure!(policy.schema_version==if full {6}else{5},"prepared startup schema differs");
+    ensure!(policy.owner==if full {"shroudforge-full-prepared"}else{"hdmap-prepared-generator"},"prepared startup owner differs");
+    ensure!(policy.source_closure==producer&&fs::canonicalize(&policy.root)?==root,"prepared startup producer/root differs");
+    ensure!(full==policy.runtime.is_some(),"runtime contract is exclusive to schema6");
     ensure!(valid_digest(&policy.request_sha256)&&digest(policy.request_json.as_bytes())==policy.request_sha256&&valid_digest(&policy.receipt_sha256)&&digest(policy.receipt_json.as_bytes())==policy.receipt_sha256,"prepared evidence digest differs");
     let request:PreparedRequest=serde_json::from_str(&policy.request_json)?;
     let receipt:PreparedReceipt=serde_json::from_str(&policy.receipt_json)?;
@@ -89,11 +102,16 @@ pub(super) fn verify(root:&Path)->Result<()> {
     ensure!(policy.preserved_loaders.keys().all(|n|matches!(n.as_str(),"winmm.dll"|"dbgcore.dll")),"prepared loader contract differs");
     for (name,hash) in &policy.preserved_loaders {ensure!(valid_digest(hash)&&stamp(&checked(&root,name)?)?.1==*hash,"prepared loader drift");}
     if ids.contains("esm-real-map") {
-        ensure!(policy.preserved_loaders.contains_key("winmm.dll")&&request.inputs.contains_key(MAP_EXTENSION),"prepared HD dependency missing");
+        ensure!((full||policy.preserved_loaders.contains_key("winmm.dll"))&&request.inputs.contains_key(MAP_EXTENSION),"prepared HD dependency missing");
         let extension:serde_json::Value=read_json(&checked(&root,MAP_EXTENSION)?)?;
         let configured=extension.pointer("/settings/ExtendedZoom/value").and_then(serde_json::Value::as_bool).or_else(||extension.pointer("/settings/ExtendedZoom").and_then(serde_json::Value::as_bool)).context("missing prepared ExtendedZoom setting")?;
         ensure!(extension["enabled"].as_bool()==Some(true)&&configured==policy.extended_zoom,"prepared HD settings differ");
     } else {ensure!(!policy.extended_zoom,"prepared zoom requires HD selection");}
+    if let Some(contract)=policy.runtime {
+        ensure!(policy.preserved_loaders.is_empty(),"full runtime cannot activate implicit preserved loaders");
+        let environment=request.environment_files.iter().map(|(name,value)|(name.clone(),(value.bytes,value.sha256.clone()))).collect();
+        super::super::full_runtime::verify_and_stage(&root,contract,&policy.request_sha256,&policy.receipt_sha256,producer,&environment)?;
+    }
     zoom_demand::publish(&root,policy.extended_zoom,&request.inputs["enshrouded.exe"].sha256);
     let mask=u32::from(policy.preserved_loaders.contains_key("winmm.dll"))|(u32::from(policy.preserved_loaders.contains_key("dbgcore.dll"))<<1);
     LOADERS.with(|slot|*slot.borrow_mut()=Some((root,mask)));
@@ -122,7 +140,7 @@ mod tests {
             staged.insert("generated-inputs.json".into(),FileStamp{bytes:123,sha256:digest(b"synthetic durable generation preimages")});
             let receipt=PreparedReceipt {schema:1,source_closure:option_env!("HD_PREPARED_SOURCE_CLOSURE").unwrap().into(),request_sha256:digest(&serde_json::to_vec(&request).unwrap()),target_root:root.clone(),output_stage:output_root.join(".enshrouded.shroudforge-stage"),staged,prepared_marker:FileStamp{bytes:100,sha256:digest(b"synthetic prepared marker")}};
             let request_json=serde_json::to_string(&request).unwrap();let receipt_json=serde_json::to_string(&receipt).unwrap();
-            let policy=PreparedPolicy {schema_version:5,owner:"hdmap-prepared-generator".into(),root:root.clone(),source_closure:receipt.source_closure.clone(),request_sha256:digest(request_json.as_bytes()),receipt_sha256:digest(receipt_json.as_bytes()),request_json,receipt_json,extended_zoom:false,preserved_loaders:[("winmm.dll".into(),value("winmm.dll").sha256)].into_iter().collect()};
+            let policy=PreparedPolicy {schema_version:5,owner:"hdmap-prepared-generator".into(),root:root.clone(),source_closure:receipt.source_closure.clone(),request_sha256:digest(request_json.as_bytes()),receipt_sha256:digest(receipt_json.as_bytes()),request_json,receipt_json,extended_zoom:false,runtime:None,preserved_loaders:[("winmm.dll".into(),value("winmm.dll").sha256)].into_iter().collect()};
             Self {root,policy}
         }
         fn write(&self){fs::write(self.root.join(POLICY),serde_json::to_vec(&self.policy).unwrap()).unwrap();}
@@ -148,6 +166,57 @@ mod tests {
         assert_eq!(zoom_demand::take(&f.root),0);
         assert!(!transaction::directory(&f.root,STEM).exists());
         assert!(!f.root.join("enshrouded.kfc.bak").exists());
+    }
+    #[test]
+    fn schema5_runtime_field_even_null_does_not_reinterpret_legacy_receipt() {
+        let f=Fixture::new();let before=f.asset_hashes();
+        let mut document=serde_json::to_value(&f.policy).unwrap();document["runtime"]=serde_json::Value::Null;
+        fs::write(f.root.join(POLICY),serde_json::to_vec(&document).unwrap()).unwrap();
+        assert!(super::super::super::prepare(&f.root).is_err());assert_eq!(before,f.asset_hashes());
+    }
+    #[test]
+    #[ignore="requires explicitly synthetic SF_FULL_* test-build closures; not a production producer receipt"]
+    fn schema6_readonly_admission_and_one_shot_full_handoff() {
+        let mut f=Fixture::new();let root=f.root.clone();
+        let producer=option_env!("SF_FULL_PREPARED_SOURCE_CLOSURE").unwrap();
+        let runtime=option_env!("SF_FULL_RUNTIME_SOURCE_CLOSURE").unwrap();
+        f.policy.schema_version=6;f.policy.owner="shroudforge-full-prepared".into();f.policy.source_closure=producer.into();f.policy.preserved_loaders.clear();
+        f.edit_receipt(|r|r.source_closure=producer.into());
+        let package=root.join("mods/fixture-runtime");fs::create_dir_all(package.join("src")).unwrap();
+        fs::write(package.join("mod.json"),br#"{"id":"fixture-runtime","name":"Fixture","version":"1.0.0","capabilities":["runtime"]}"#).unwrap();
+        fs::write(package.join("extended.mod.json"),br#"{"schemaVersion":1,"enabled":true,"targets":["client"]}"#).unwrap();
+        fs::write(package.join("src/mod.lua"),b"return {}\n").unwrap();
+        let entries:Vec<_>=["mod.json","extended.mod.json","src/mod.lua"].into_iter().map(|name|{let(bytes,sha256)=stamp(&package.join(name)).unwrap();(format!("mods/fixture-runtime/{name}"),FileStamp{bytes,sha256})}).collect();
+        f.edit_request(|r|for(name,value)in entries{r.inputs.insert(name.clone(),value.clone());r.environment_files.insert(name,value);});
+        fs::create_dir_all(root.join("shroudforge")).unwrap();
+        fs::write(root.join("shroudforge/shroudforge-runtime.dll"),b"synthetic runtime; never loaded").unwrap();
+        fs::write(root.join("shroudforge/kfc-runtime.dll"),b"synthetic provider; never loaded").unwrap();
+        let config=shroudforge_loader_config::config::read_loader_defaults().unwrap();
+        fs::write(root.join("shroudforge/config/modloader-config.json"),serde_json::to_vec(&config).unwrap()).unwrap();
+        let files=["winmm.dll","shroudforge/shroudforge-runtime.dll","shroudforge/kfc-runtime.dll","shroudforge/config/modloader-config.json"].into_iter().map(|name|{let(bytes,sha256)=stamp(&root.join(name)).unwrap();(name.into(),super::super::super::full_runtime::NativeFile{bytes,sha256})}).collect();
+        let plan=mod_loader::dll_manager::resolve_load_plan(&root,false);assert!(plan.issues.is_empty());assert!(plan.entries.is_empty());
+        let(bytes,sha256)=stamp(&package.join("src/mod.lua")).unwrap();
+        let scripts=[("fixture-runtime:src/mod.lua".into(),super::super::super::full_runtime::NativeFile{bytes,sha256})].into_iter().collect();
+        f.policy.runtime=Some(super::super::super::full_runtime::Contract{schema_version:1,host:"sf-winmm-startup-gate-v1".into(),runtime_source_closure:runtime.into(),prepared_request_sha256:f.policy.request_sha256.clone(),prepared_receipt_sha256:f.policy.receipt_sha256.clone(),boot_services:vec!["required-engine-hooks-v1".into()],overlay:false,first_person:false,runtime_mods:vec!["fixture-runtime".into()],scripts,dll_plan:mod_loader::dll_manager::load_plan_identity(&plan),files,greeneye_paths:vec![]});
+        f.write();let before=f.asset_hashes();
+        assert!(super::super::super::prepare(&root).unwrap());assert_eq!(f.asset_hashes(),before);
+        let full=&super::super::super::full_runtime::HANDSHAKE_V1;
+        super::super::super::full_runtime::prepare_native(&root).unwrap();
+        assert!(crate::native_dlls::prepare_full_startup(&root,f.policy.runtime.as_ref().unwrap()).is_err());
+        assert_eq!(super::super::super::full_runtime::take(&root),*full);
+        assert!(super::super::super::full_runtime::commit(&root,*full));
+        super::super::super::full_runtime::before_create(&root).unwrap();
+        #[cfg(windows)]assert!(fs::write(root.join("mods/esm-real-map/mod.lua"),b"must stay immutable through create").is_err());
+        super::super::super::full_runtime::after_create(&root).unwrap();
+        assert!(super::super::super::full_runtime::reject_package_reload(&root).is_err());
+        fs::write(package.join("src/mod.lua"),b"changed after create").unwrap();
+        assert!(super::super::super::full_runtime::validate_script(&root,"fixture-runtime",&package,"src/mod.lua",b"changed after create").is_err());
+        super::super::super::full_runtime::validate_script(&root,"fixture-runtime",&package,"src/mod.lua",b"return {}\n").unwrap();
+        fs::write(root.join("mods/esm-real-map/mod.lua"),b"settings/source may change after create").unwrap();
+        #[cfg(windows)]assert!(fs::write(root.join("shroudforge/kfc-runtime.dll"),b"resident native image remains held").is_err());
+        assert!(super::super::super::full_runtime::before_create(&root).is_err());
+        assert_eq!(f.asset_hashes(),before);assert!(!root.join("enshrouded.kfc.bak").exists());
+        super::super::super::full_runtime::retire_fixture();
     }
     #[test]
     fn rehashed_wrong_producer_roots_selection_outputs_and_dependencies_still_refuse() {

@@ -1,6 +1,8 @@
 #pragma once
 #include <windows.h>
 #include <cstring>
+#include <atomic>
+#include "../../game-runtime/native/engine-hooks/held_entry_preparation.h"
 
 // Installed by the startup proxy before the executable entrypoint runs. The
 // wait happens at that entrypoint, outside DllMain and the Windows loader lock,
@@ -11,6 +13,9 @@ inline HANDLE completed{};
 inline unsigned char* entrypoint{};
 inline unsigned char original[14]{};
 inline volatile LONG succeeded{};
+inline std::atomic<DWORD> parked_thread_id{};
+// Set only from this module's actual process-attach callback, before the worker.
+inline bool direct_static_attachment{};
 
 inline void Complete(bool success) {
     InterlockedExchange(&succeeded, success ? 1 : 0);
@@ -18,6 +23,7 @@ inline void Complete(bool success) {
 }
 
 inline int __cdecl Run() {
+    parked_thread_id.store(GetCurrentThreadId(), std::memory_order_release);
     SetEvent(entered);
     if (WaitForSingleObject(completed, INFINITE) != WAIT_OBJECT_0 ||
         InterlockedCompareExchange(&succeeded, 0, 0) != 1) {
@@ -32,6 +38,27 @@ inline int __cdecl Run() {
         !FlushInstructionCache(GetCurrentProcess(), entrypoint, sizeof(original)))
         ExitProcess(ERROR_DLL_INIT_FAILED);
     return reinterpret_cast<int (__cdecl*)()>(entrypoint)();
+}
+
+// Only the preparation worker can capture this private assertion. The observed
+// thread is parked in Run, the completion event is unsignaled, and the actual
+// PE entrypoint still contains this gate's exact jump. This does not authenticate
+// arbitrary privileged native plugins or exclude external process injection.
+inline bool __cdecl IsHeld(std::uint32_t thread) noexcept {
+    if (!thread || thread == GetCurrentThreadId() ||
+        parked_thread_id.load(std::memory_order_acquire) != thread || !entered || !completed || !entrypoint ||
+        WaitForSingleObject(entered, 0) != WAIT_OBJECT_0 ||
+        WaitForSingleObject(completed, 0) != WAIT_TIMEOUT) return false;
+    unsigned char jump[14]{0xff, 0x25, 0, 0, 0, 0};
+    auto destination = &Run;
+    std::memcpy(jump + 6, &destination, sizeof(destination));
+    return std::memcmp(entrypoint, jump, sizeof(jump)) == 0;
+}
+inline EngineHooks::HeldEntryProof CaptureHeldEntryProof() noexcept {
+    EngineHooks::HeldEntryProof proof;
+    const auto thread = parked_thread_id.load(std::memory_order_acquire);
+    if (IsHeld(thread)) { proof.parked_thread_id = thread; proof.is_held = &IsHeld; }
+    return proof;
 }
 
 inline bool Install() {
@@ -62,7 +89,9 @@ inline bool Install() {
     std::memcpy(original, entrypoint, sizeof(original));
     std::memcpy(entrypoint, jump, sizeof(jump));
     DWORD ignored{};
-    return VirtualProtect(entrypoint, sizeof(jump), protection, &ignored) &&
-        FlushInstructionCache(GetCurrentProcess(), entrypoint, sizeof(jump));
+    if (!VirtualProtect(entrypoint, sizeof(jump), protection, &ignored) ||
+        !FlushInstructionCache(GetCurrentProcess(), entrypoint, sizeof(jump)))
+        ExitProcess(ERROR_DLL_INIT_FAILED); // Never unload a possibly published gate.
+    return true;
 }
 }

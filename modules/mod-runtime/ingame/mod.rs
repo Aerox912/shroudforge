@@ -18,8 +18,7 @@ mod unload_runtime_packages;
 mod update_ingame_runtime;
 mod update_mod_callbacks;
 
-#[cfg(test)]
-use refresh_runtime_configuration::settings_only_manifest_change;
+pub(crate) use refresh_runtime_configuration::settings_only_manifest_change;
 #[cfg(test)]
 mod lifecycle_tests;
 

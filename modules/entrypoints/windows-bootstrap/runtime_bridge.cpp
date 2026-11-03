@@ -1,4 +1,6 @@
 #include "runtime_bridge.h"
+#include "startup_admission.h"
+#include "../../game-runtime/native/engine-hooks/held_entry_preparation.h"
 #include "../../game-runtime/native/abi/runtime_api.h"
 #include <windows.h>
 #include <filesystem>
@@ -14,7 +16,8 @@ StatusFunction status{};
 std::string error{"provider-not-loaded"};
 }
 namespace EcsRuntime {
-bool Initialize(bool overlay_demand) {
+bool Initialize(bool overlay_demand, bool require_startup_ready,
+        const EngineHooks::HeldEntryProof* proof, bool first_person) {
     HMODULE self{};
     if (!GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
         reinterpret_cast<LPCWSTR>(&Initialize), &self)) return false;
@@ -38,9 +41,20 @@ bool Initialize(bool overlay_demand) {
         FreeLibrary(provider); provider = nullptr; return false;
     }
     const auto initialized = initialize();
+    using HeldPreparation=bool (__cdecl*)(const EngineHooks::HeldEntryProof*,unsigned);
+    const auto prepare_held=reinterpret_cast<HeldPreparation>(GetProcAddress(provider,"KfcRuntimePrepareHeldEntry"));
+    if(first_person&&(!initialized||!prepare_held||!prepare_held(proof,1u))) {
+        error="required-first-person-held-entry-preparation-unavailable";return false;
+    }
+    const auto startup_ready = reinterpret_cast<bool (__cdecl*)()>(GetProcAddress(provider,"KfcRuntimeStartupReady"));
     const auto prepare_overlay = reinterpret_cast<bool (__cdecl*)(unsigned)>(GetProcAddress(provider, "KfcRuntimePrepareOverlay"));
-    if (prepare_overlay) prepare_overlay(overlay_demand ? 1u : 0u);
+    bool graphics_ready=false;
+    if (prepare_overlay) graphics_ready=prepare_overlay(overlay_demand ? 1u : 0u);
     else if (overlay_demand) OutputDebugStringA("[ESM overlay] provider lacks early broker; restart with matching native provider\n");
+    if(require_startup_ready&&!StartupAdmission::RequiredReady(initialized,startup_ready!=nullptr,
+            startup_ready&&startup_ready(),overlay_demand,graphics_ready)) {
+        error="required-startup-hooks-or-graphics-unavailable";return false;
+    }
     return initialized;
 }
 void Tick() { if (tick) tick(); }

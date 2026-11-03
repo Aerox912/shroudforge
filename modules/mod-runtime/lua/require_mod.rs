@@ -111,11 +111,10 @@ impl RunnerState {
             let reader = fs
                 .read_file(&path)
                 .map_err(|e| LuaError::module_load(&path, e))?;
-            let chunk =
-                std::io::read_to_string(reader).map_err(|e| LuaError::module_load(&path, e))?;
+            let chunk = read_prepared_source(lua,mod_state.info().id.as_str(),&path,reader)?;
 
             drop(fs);
-
+            validate_prepared_source(lua,mod_state.info().id.as_str(),mod_state.fs().root().as_std_path(),&path,chunk.as_bytes())?;
             lua.load(chunk)
                 .set_name(qualified_id)
                 .set_environment(mod_state.env.clone())
@@ -160,9 +159,9 @@ impl RunnerState {
             let reader = fs
                 .read_file("src/mod.lua")
                 .map_err(|error| LuaError::module_load("src/mod.lua", error))?;
-            let source = std::io::read_to_string(reader)
-                .map_err(|error| LuaError::module_load("src/mod.lua", error))?;
+            let source = read_prepared_source(lua,mod_id,"src/mod.lua",reader)?;
             drop(fs);
+            validate_prepared_source(lua,mod_id,state.fs().root().as_std_path(),"src/mod.lua",source.as_bytes())?;
             lua.load(source)
                 .set_name(mod_id)
                 .set_environment(state.env.clone())
@@ -174,6 +173,24 @@ impl RunnerState {
         self.loaded.borrow_mut().insert(key.clone(), value.clone());
         Ok(value)
     }
+}
+
+fn validate_prepared_source(lua:&mlua::Lua,id:&str,package:&std::path::Path,path:&str,source:&[u8])->mlua::Result<()> {
+    if let Some(state)=lua.app_data_ref::<crate::env::AppState>() {
+        crate::current_assets::full_runtime::validate_script(state.env().game_dir().as_std_path(),id,package,path,source)
+            .map_err(mlua::Error::external)?;
+    }
+    Ok(())
+}
+fn read_prepared_source(lua:&mlua::Lua,id:&str,path:&str,reader:impl std::io::Read)->mlua::Result<String> {
+    use std::io::Read;
+    let bound=if let Some(state)=lua.app_data_ref::<crate::env::AppState>() {
+        crate::current_assets::full_runtime::script_size_bound(state.env().game_dir().as_std_path(),id,path).map_err(mlua::Error::external)?
+    }else{None};
+    match bound {
+        Some(size)=>std::io::read_to_string(reader.take(size+1)),
+        None=>std::io::read_to_string(reader),
+    }.map_err(|error|LuaError::module_load(path,error))
 }
 
 pub struct RunnerLocalState {

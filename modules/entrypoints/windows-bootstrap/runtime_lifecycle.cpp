@@ -1,5 +1,6 @@
 #include "bootstrap_state.h"
 #include "startup_zoom.h"
+#include "startup_admission.h"
 
 using namespace BootstrapImplementation;
 
@@ -38,11 +39,7 @@ DWORD WINAPI run(void*) {
         StartupGate::Complete(false);
         return 1;
     }
-    struct CompleteStartup {
-        bool released = false;
-        ~CompleteStartup() { if (!released) StartupGate::Complete(false); }
-        void release() { released = true; StartupGate::Complete(true); }
-    } startup;
+    StartupAdmission::Completion startup(&StartupGate::Complete);
     const auto root = module_directory();
     if (root.empty()) {
         log('E', "Bootstrap failed: loader directory is unavailable");
@@ -56,19 +53,19 @@ DWORD WINAPI run(void*) {
         ". Archived log files contain earlier sessions");
     log_shroudforge_banner(is_dedicated_server_process());
     const auto current_config = root / L"shroudforge" / L"config";
-    const bool assets_only = std::filesystem::exists(current_config / L"current-assets.json") ||
+    const bool prepared_installation = std::filesystem::exists(current_config / L"current-assets.json") ||
         std::filesystem::exists(current_config / L"current-assets-state.json") ||
         std::filesystem::exists(current_config / L"current-assets-pending.json");
-    if (assets_only && is_dedicated_server_process()) {
+    if (prepared_installation && is_dedicated_server_process()) {
         startup_failed(root, "current-assets", "Current-composition policy is client-only");
         return 1;
     }
     // Check the release manifest before starting any UI or loading runtime DLLs.
     startup_stage(root, "startup-update-check");
-    if (!assets_only && !run_startup_update_check(root)) return 1;
+    if (!prepared_installation && !run_startup_update_check(root)) return 1;
     // Start the independent log viewer before any ShroudForge DLL or mod code
     // can fail during process startup.
-    if (!assets_only) start_debug_console(root);
+    if (!prepared_installation) start_debug_console(root);
     const auto runtime_path = shroudforge_directory(root) / L"shroudforge-runtime.dll";
     startup_stage(root, "runtime-dll-load");
     const auto runtime = LoadLibraryW(runtime_path.c_str());
@@ -83,20 +80,45 @@ DWORD WINAPI run(void*) {
     const auto create = reinterpret_cast<CreateRuntime>(GetProcAddress(runtime, "shroudforge_create"));
     const auto update = reinterpret_cast<UpdateRuntime>(GetProcAddress(runtime, "shroudforge_update"));
     const auto destroy = reinterpret_cast<DestroyRuntime>(GetProcAddress(runtime, "shroudforge_destroy"));
+    using StartupMode=unsigned (__cdecl*)(const wchar_t*);
+    const auto startup_mode=reinterpret_cast<StartupMode>(GetProcAddress(runtime,"shroudforge_startup_mode"));
+    const auto mode=startup_mode?startup_mode(root.c_str()):(prepared_installation?~0u:0u);
+    if(mode>2u||prepared_installation!=(mode!=0u)) {
+        startup_failed(root,"startup-mode","Prepared installation lacks a supported explicit startup contract");
+        return 1;
+    }
+    const bool assets_only=mode==1u;
+    const bool full_runtime=mode==2u;
+    if(full_runtime) {
+        wchar_t module_path[32768]{};
+        const auto size=GetModuleFileNameW(self_module,module_path,32768);
+        std::error_code host_error;
+        if(!StartupGate::direct_static_attachment||!size||size>=32768||
+            !std::filesystem::equivalent(std::filesystem::path(module_path),root/L"winmm.dll",host_error)) {
+            startup_failed(root,"full-startup-host","Full runtime requires the directly static-loaded SF winmm host");return 1;
+        }
+    }
+    const auto prepare_full=reinterpret_cast<PrepareStartup>(GetProcAddress(runtime,"shroudforge_prepare_full_startup"));
+    using FullCommit=bool (__cdecl*)(const wchar_t*,unsigned);
+    const auto take_full=reinterpret_cast<StartupMode>(GetProcAddress(runtime,"shroudforge_take_full_startup"));
+    const auto commit_full=reinterpret_cast<FullCommit>(GetProcAddress(runtime,"shroudforge_commit_full_startup"));
+    if(full_runtime&&(!prepare_full||!take_full||!commit_full)) {
+        startup_failed(root,"full-startup-contract","Full runtime/bootstrap handshake exports are incomplete");return 1;
+    }
     if (!prepare_startup || (!assets_only && (!create || !update || !destroy))) {
         startup_failed(root, "runtime-exports", "runtime exports are incomplete");
         FreeLibrary(runtime);
         return 1;
     }
     startup_stage(root, "runtime-exports-resolved");
-    if (!assets_only) {
+    if (!prepared_installation) {
         start_modloader_ui(root);
         start_world_editor_ui(root);
     }
     startup_stage(root, "startup-assets");
-    if (!prepare_startup(root.c_str())) {
+    if (!(full_runtime?prepare_full:prepare_startup)(root.c_str())) {
         startup_failed(root, "startup-assets", "Asset preparation and baseline recovery failed. Game startup stopped before loading inconsistent assets");
-        FreeLibrary(runtime);
+        if(!full_runtime)FreeLibrary(runtime);
         return 1;
     }
     if (assets_only) {
@@ -149,15 +171,53 @@ DWORD WINAPI run(void*) {
         // Their shutdown code is not safe to invent or unload from this worker.
         return 0;
     }
+    StartupZoom::Cap full_zoom_cap;
+    unsigned full_handshake{};
+    if(full_runtime) {
+        full_handshake=take_full(root.c_str());
+        if(!StartupAdmission::FullHandshake(full_handshake)) {
+            startup_failed(root,"full-startup-contract","Missing, duplicate or unsupported full runtime preparation receipt");return 1;
+        }
+        const auto fp_demand=reinterpret_cast<StartupMode>(GetProcAddress(runtime,"shroudforge_startup_first_person_demand"));
+        const auto fp=fp_demand?fp_demand(root.c_str()):2u;
+        if(fp>1u||fp!=((full_handshake>>1)&1u)) {
+            startup_failed(root,"first-person-demand","Full-runtime First Person demand is unavailable or differs from verified composition");return 1;
+        }
+        using ZoomDemand=unsigned (__cdecl*)(const wchar_t*);
+        const auto zoom_demand=reinterpret_cast<ZoomDemand>(GetProcAddress(runtime,"shroudforge_take_startup_zoom_demand"));
+        const auto zoom=zoom_demand?zoom_demand(root.c_str()):2u;
+        const auto result=full_zoom_cap.Apply(zoom);
+        if(zoom>1u||(zoom==1u&&result!=StartupZoom::Result::Applied)||result==StartupZoom::Result::Unsafe) {
+            const bool restored=full_zoom_cap.Rollback();
+            startup_failed(root,"startup-zoom",restored?"Required full-runtime zoom unavailable; startup stopped":"Full-runtime zoom ownership uncertain; startup stopped");return 1;
+        }
+    }
     // Install native hooks while the executable entrypoint is still parked.
     // Releasing it first races hook writes against short-lived startup threads.
     startup_stage(root, "native-provider-init");
     using OverlayDemand = unsigned (__cdecl*)(const wchar_t*);
     const auto overlay_demand = reinterpret_cast<OverlayDemand>(GetProcAddress(runtime, "shroudforge_startup_overlay_demand"));
-    const auto demand = overlay_demand ? overlay_demand(root.c_str()) : 2u;
+    const auto demand = full_runtime ? (full_handshake&1u) : overlay_demand ? overlay_demand(root.c_str()) : 2u;
     if (demand == 2) log('W', "Native overlay boot demand unavailable. Repair package configuration and restart before rendering");
-    if (!EcsRuntime::Initialize(demand == 1)) {
+    const auto held_proof=full_runtime?StartupGate::CaptureHeldEntryProof():EngineHooks::HeldEntryProof{};
+    if(full_runtime&&(!held_proof.is_held||!held_proof.is_held(held_proof.parked_thread_id))) {
+        full_zoom_cap.Rollback();startup_failed(root,"held-entry","Original entrypoint proof is no longer held");return 1;
+    }
+    if (!EcsRuntime::Initialize(demand == 1,full_runtime,full_runtime?&held_proof:nullptr,
+            full_runtime&&(full_handshake&2u)!=0)) {
+        if(full_runtime) {
+            EcsRuntime::Shutdown();
+            const bool restored=full_zoom_cap.Rollback();
+            startup_failed(root,"native-provider-init",EcsRuntime::Status()+(restored?"; owned zoom restored":"; zoom ownership uncertain"));return 1;
+        }
         log('W', "KFC Runtime initialization failed: " + EcsRuntime::Status());
+    }
+    if(full_runtime) {
+        if(!commit_full(root.c_str(),full_handshake)) {
+            EcsRuntime::Shutdown();full_zoom_cap.Rollback();
+            startup_failed(root,"full-startup-contract","Full runtime commit refused");return 1;
+        }
+        full_zoom_cap.Commit();
     }
     log("Startup assets and native-provider setup complete. Releasing the game entrypoint");
     startup.release();
@@ -188,7 +248,7 @@ DWORD WINAPI run(void*) {
     if (!handle) {
         startup_failed(root, "runtime-create", "Runtime initialization returned no handle. See preceding runtime log entries");
         EcsRuntime::Shutdown();
-        FreeLibrary(runtime);
+        if(!full_runtime)FreeLibrary(runtime);
         return 1;
     }
     startup_stage(root, "runtime-ready");
@@ -244,9 +304,9 @@ DWORD WINAPI run(void*) {
     stop_modloader_ui();
     stop_debug_console();
     clear_runtime_heartbeat(root);
-    FreeLibrary(runtime);
+    if(!full_runtime)FreeLibrary(runtime);
     log("Runtime stopped");
-    start_pending_update(root);
+    if(!prepared_installation)start_pending_update(root);
     return 0;
 }
 }

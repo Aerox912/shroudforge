@@ -232,3 +232,5 @@ pub(crate) use native_plugins::native_overlay_startup_demand;
 mod record_runtime_state;
 pub use asset_resources::ResourceInfo;
 use asset_resources::ResourceSource;
+mod first_person_startup_demand;
+pub(crate) use first_person_startup_demand::first_person_startup_demand;

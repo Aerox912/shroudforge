@@ -1,7 +1,7 @@
 use super::IngameRuntime;
 use crate::env::AppState;
 
-pub(super) fn settings_only_manifest_change(
+pub(crate) fn settings_only_manifest_change(
     desired: &serde_json::Value,
     applied: &serde_json::Value,
 ) -> bool {
@@ -166,6 +166,11 @@ impl IngameRuntime {
                 {
                     self.errors.remove(id);
                 }
+                continue;
+            }
+            if let Err(error)=crate::current_assets::full_runtime::validate_runtime_manifest(&self.root,id,&desired) {
+                self.errors.insert(id.clone(),format!("restart-required: {error}").into());
+                tracing::warn!(target:"shroudforge::runtime",mod_id=%id,%error,"Prepared runtime composition change refused");
                 continue;
             }
             let metadata_unchanged = settings_only_manifest_change(&desired, applied);

@@ -86,7 +86,7 @@ pub(super) fn plan_runtime_mods<'a>(
                 .contains(&mod_loader::Capability::Patch)
     });
     if needs_assets {
-        let ready = mod_loader::prepared::fingerprint(env, is_server, API_VERSION)
+        let ready = crate::current_assets::full_runtime::has_verified_composition(root) || mod_loader::prepared::fingerprint(env, is_server, API_VERSION)
             .map(|fingerprint| mod_loader::prepared::matches(&root, &fingerprint))
             .unwrap_or(false);
         if !ready {
