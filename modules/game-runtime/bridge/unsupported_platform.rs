@@ -216,3 +216,9 @@ pub fn drain_map_overlay_services(_:&str,_:u64,_:u32)->i32 {0}
 #[derive(Debug,Clone,Copy,Default)]
 pub struct InputKeyState {pub virtual_key:u32,pub flags:u32,pub sequence:u64,pub sampled_at_ms:u64}
 pub fn read_input_keys(_:&[u32])->Result<Vec<InputKeyState>,i32> {Err(3)}
+
+pub fn flight_available() -> bool { false }
+pub fn flight_set_enabled(_token:u64,_enabled:bool) -> i32 { 0 }
+pub fn flight_reset(_token:u64) -> i32 { 0 }
+pub fn flight_retire(_token:u64) -> i32 { 0 }
+pub fn flight_status(_token:u64) -> Option<crate::FlightClientStatus> { None }

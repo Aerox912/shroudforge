@@ -60,6 +60,13 @@ impl super::AppState {
     }
     pub(crate) fn release_lua_map_owner(&self, id: &str) {
         if let Some(generation) = self.map_lua_owners.borrow_mut().remove(id) {
+            if id == "sf-unlimited-flight" {
+                let result = shroudforge_runtime_bridge::flight_retire(generation);
+                if result != 1 {
+                    tracing::warn!(mod_id=id, generation, result,
+                        "Flight owner retirement unconfirmed; native ownership remains fail-closed, restart may be required");
+                }
+            }
             let revoke = shroudforge_runtime_bridge::revoke_map_overlay_services(id, generation);
             let drain = shroudforge_runtime_bridge::drain_map_overlay_services(id, generation, 250);
             if revoke != 0 || drain != 0 {

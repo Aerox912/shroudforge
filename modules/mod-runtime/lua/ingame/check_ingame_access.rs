@@ -11,6 +11,12 @@ pub(super) fn has_capability(r#mod: &Mod, capability: Capability) -> bool {
 
 pub(crate) fn available(state: &AppState, r#mod: &Mod, feature: &str) -> bool {
     match feature {
+        "runtime.flight" => {
+            state.phase()==RuntimePhase::Ingame && state.is_client() && !state.is_server()
+                && r#mod.info().id=="sf-unlimited-flight"
+                && has_capability(r#mod,Capability::Runtime)
+                && shroudforge_runtime_bridge::flight_available()
+        }
         "game.assets.write" => {
             state.has_feature(AppFeatures::PATCH) && has_capability(r#mod, Capability::Patch)
         }

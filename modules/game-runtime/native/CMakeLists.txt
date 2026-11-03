@@ -432,3 +432,6 @@ target_compile_features(kfc-runtime-test-world-context PRIVATE cxx_std_20)
 target_compile_definitions(kfc-runtime-test-world-context PRIVATE KFC_RUNTIME_BUILD WIN32_LEAN_AND_MEAN NOMINMAX)
 target_link_libraries(kfc-runtime-test-world-context PRIVATE bcrypt Zydis)
 set_property(TARGET kfc-runtime-test-world-context PROPERTY MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+
+# Shared native Flight/Vein package; host demand/lifecycle remains RB11-owned.
+add_subdirectory(flight)

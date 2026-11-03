@@ -49,6 +49,10 @@ pub(in crate::windows) fn provider() -> Option<&'static Provider> {
                     ))
                 } else {
                     Ok(Provider {
+                        flight_set: optional_symbol!("KfcRuntimeFlightClientSetEnabledV1", unsafe extern "C" fn(u64,u32)->i32),
+                        flight_reset: optional_symbol!("KfcRuntimeFlightClientResetV1", unsafe extern "C" fn(u64)->i32),
+                        flight_retire: optional_symbol!("KfcRuntimeFlightClientRetireV1", unsafe extern "C" fn(u64)->i32),
+                        flight_status: optional_symbol!("KfcRuntimeFlightClientStatusV1", unsafe extern "C" fn(u64,*mut crate::FlightClientStatus)->i32),
                         read_input_keys: optional_symbol!("KfcRuntimeReadInputKeys", ReadInputKeys),
                         query_map_overlay_service: optional_symbol!(
                             "KfcRuntimeQueryMapOverlayService",

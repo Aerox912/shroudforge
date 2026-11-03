@@ -1,0 +1,90 @@
+{
+  "donor": "951f86b9 + reviewed layout-r2 changes",
+  "files": [
+    {
+      "source": "E:\\Worktrees\\Codex\\vein-newbuild-20261102\\enshrouded-vein-mining\\include\\vein\\ikea_client\\flight_intent_abi.h",
+      "target": "E:\\Worktrees\\Codex\\sf177-flight-vein-20261103\\shroudforge\\modules\\game-runtime\\native\\vein_flight\\shared\\include\\vein\\ikea_client\\flight_intent_abi.h",
+      "sha256": "340ae10265ff6f01e506744df07ad270563fc33c2970410d16743a5438e2453b"
+    },
+    {
+      "source": "E:\\Worktrees\\Codex\\vein-newbuild-20261102\\enshrouded-vein-mining\\include\\vein\\ikea_client\\flight_transport.hpp",
+      "target": "E:\\Worktrees\\Codex\\sf177-flight-vein-20261103\\shroudforge\\modules\\game-runtime\\native\\vein_flight\\shared\\include\\vein\\ikea_client\\flight_transport.hpp",
+      "sha256": "bcf2d978fcfeebbcedbf2c3a39a7928f5542efda768b5dfb040232a9af3a354f"
+    },
+    {
+      "source": "E:\\Worktrees\\Codex\\vein-newbuild-20261102\\enshrouded-vein-mining\\include\\vein\\ikea_client\\hook_transaction.hpp",
+      "target": "E:\\Worktrees\\Codex\\sf177-flight-vein-20261103\\shroudforge\\modules\\game-runtime\\native\\vein_flight\\shared\\include\\vein\\ikea_client\\hook_transaction.hpp",
+      "sha256": "1df313ace28dba9b744ad6039b5d2a0b45c84c10aa5dc01019bfbf5b7fc56a52"
+    },
+    {
+      "source": "E:\\Worktrees\\Codex\\vein-newbuild-20261102\\enshrouded-vein-mining\\include\\vein\\ikea_client\\native_input_profile.hpp",
+      "target": "E:\\Worktrees\\Codex\\sf177-flight-vein-20261103\\shroudforge\\modules\\game-runtime\\native\\vein_flight\\shared\\include\\vein\\ikea_client\\native_input_profile.hpp",
+      "sha256": "c17c8ce71e714ed418df8d68e1fa51c77fe67c5d6eb338663d4ca46dd9211a19"
+    },
+    {
+      "source": "E:\\Worktrees\\Codex\\vein-newbuild-20261102\\enshrouded-vein-mining\\include\\vein\\ikea_client\\native_input_session.hpp",
+      "target": "E:\\Worktrees\\Codex\\sf177-flight-vein-20261103\\shroudforge\\modules\\game-runtime\\native\\vein_flight\\shared\\include\\vein\\ikea_client\\native_input_session.hpp",
+      "sha256": "aba3b6edd49e20006fcd2bff1e7784d6612899917d7097a3f29a85667a99185a"
+    },
+    {
+      "source": "E:\\Worktrees\\Codex\\vein-newbuild-20261102\\enshrouded-vein-mining\\include\\vein\\ikea_client\\native_reset.hpp",
+      "target": "E:\\Worktrees\\Codex\\sf177-flight-vein-20261103\\shroudforge\\modules\\game-runtime\\native\\vein_flight\\shared\\include\\vein\\ikea_client\\native_reset.hpp",
+      "sha256": "fd2386e1b3123fa8de94717cdf6617ba8c04e1d3375744d86561c6479d4f3acb"
+    },
+    {
+      "source": "E:\\Worktrees\\Codex\\vein-newbuild-20261102\\enshrouded-vein-mining\\include\\vein\\ikea_client\\native_reset_profile.hpp",
+      "target": "E:\\Worktrees\\Codex\\sf177-flight-vein-20261103\\shroudforge\\modules\\game-runtime\\native\\vein_flight\\shared\\include\\vein\\ikea_client\\native_reset_profile.hpp",
+      "sha256": "e24b06bb948e820080c63f5653efb12724e8f333874f32fbe9767362755a9df3"
+    },
+    {
+      "source": "E:\\Worktrees\\Codex\\vein-newbuild-20261102\\enshrouded-vein-mining\\include\\vein\\ikea_client\\original_client_guard.hpp",
+      "target": "E:\\Worktrees\\Codex\\sf177-flight-vein-20261103\\shroudforge\\modules\\game-runtime\\native\\vein_flight\\shared\\include\\vein\\ikea_client\\original_client_guard.hpp",
+      "sha256": "42ec8e685c7c48bf4fec840e318dfc12a8d85318e1bfb3b49b966f8eaf58c152"
+    },
+    {
+      "source": "E:\\Worktrees\\Codex\\vein-newbuild-20261102\\enshrouded-vein-mining\\include\\vein\\ikea_client\\profile.hpp",
+      "target": "E:\\Worktrees\\Codex\\sf177-flight-vein-20261103\\shroudforge\\modules\\game-runtime\\native\\vein_flight\\shared\\include\\vein\\ikea_client\\profile.hpp",
+      "sha256": "d9b9353bc68473f8451ed5b3d49c908915ece687de039fcae72aeb93e86dad73"
+    },
+    {
+      "source": "E:\\Worktrees\\Codex\\vein-newbuild-20261102\\enshrouded-vein-mining\\src\\ikea_client\\flight_transport.cpp",
+      "target": "E:\\Worktrees\\Codex\\sf177-flight-vein-20261103\\shroudforge\\modules\\game-runtime\\native\\vein_flight\\shared\\src\\flight_transport.cpp",
+      "sha256": "37937650496ab6a7c397877ac997a6c408d3b15bbefdef6e901983d6dae8f48e"
+    },
+    {
+      "source": "E:\\Worktrees\\Codex\\vein-newbuild-20261102\\enshrouded-vein-mining\\src\\ikea_client\\native_reset.cpp",
+      "target": "E:\\Worktrees\\Codex\\sf177-flight-vein-20261103\\shroudforge\\modules\\game-runtime\\native\\vein_flight\\shared\\src\\native_reset.cpp",
+      "sha256": "686ffd37e47e7f392813ee1f89915eb1516956e8711c0802b02e191c1502a50e"
+    },
+    {
+      "source": "E:\\Worktrees\\Codex\\vein-newbuild-20261102\\enshrouded-vein-mining\\src\\ikea_client\\native_input_session.cpp",
+      "target": "E:\\Worktrees\\Codex\\sf177-flight-vein-20261103\\shroudforge\\modules\\game-runtime\\native\\vein_flight\\shared\\src\\native_input_session.cpp",
+      "sha256": "32b269b7f1e36eee148d301e97b80a22339384e6d70dd03271c5b590b3438879"
+    },
+    {
+      "source": "E:\\Worktrees\\Codex\\vein-newbuild-20261102\\enshrouded-vein-mining\\src\\ikea_client\\profile.cpp",
+      "target": "E:\\Worktrees\\Codex\\sf177-flight-vein-20261103\\shroudforge\\modules\\game-runtime\\native\\vein_flight\\shared\\src\\profile.cpp",
+      "sha256": "0b7fde96cfd505ec62bc6a021012cbdc4e503a4f2bcd4ffae26abb0afe7cc8fe"
+    },
+    {
+      "source": "E:\\Worktrees\\Codex\\vein-newbuild-20261102\\enshrouded-vein-mining\\src\\ikea_client\\original_client_guard.cpp",
+      "target": "E:\\Worktrees\\Codex\\sf177-flight-vein-20261103\\shroudforge\\modules\\game-runtime\\native\\vein_flight\\shared\\src\\original_client_guard.cpp",
+      "sha256": "7c5a9cd0f409d3c021c3c6f4279574e2c71236db3095564aeec5c5e1ea3b12b5"
+    },
+    {
+      "source": "E:\\Worktrees\\Codex\\vein-newbuild-20261102\\enshrouded-vein-mining\\src\\ikea_client\\native_input.inc",
+      "target": "E:\\Worktrees\\Codex\\sf177-flight-vein-20261103\\shroudforge\\modules\\game-runtime\\native\\vein_flight\\shared\\src\\native_input.inc",
+      "sha256": "c5cc2c4205ffe7f608086e2f17b4d3b320038531faa4625379831e0dd2f0c43b"
+    },
+    {
+      "source": "E:\\Worktrees\\Codex\\vein-newbuild-20261102\\enshrouded-vein-mining\\src\\ikea_client\\native_lifecycle.inc",
+      "target": "E:\\Worktrees\\Codex\\sf177-flight-vein-20261103\\shroudforge\\modules\\game-runtime\\native\\vein_flight\\shared\\src\\native_lifecycle.inc",
+      "sha256": "d22cf98d824ba302ba88a512aa24a946f706c6d57d4d7e5d51d08d808d93d34b"
+    },
+    {
+      "source": "E:\\Worktrees\\Codex\\vein-newbuild-20261102\\enshrouded-vein-mining\\src\\ikea_client\\native_adapter.cpp",
+      "sha256": "f2f17ee0b92ec3adc62c11adf2d42847382d2a7e5108991a9d74f6431f0f479e",
+      "role": "adapted-host-seam"
+    }
+  ]
+}
