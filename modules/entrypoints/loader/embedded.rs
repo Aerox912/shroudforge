@@ -307,6 +307,32 @@ pub unsafe extern "C" fn shroudforge_take_full_startup(game:*const u16)->u32 {
 pub unsafe extern "C" fn shroudforge_commit_full_startup(game:*const u16,handshake:u32)->bool {
     std::panic::catch_unwind(||startup_path(game).is_some_and(|p|shroudforge_api::current_assets::full_runtime::commit(&p,handshake))).unwrap_or(false)
 }
+/// Private schema6 version2 handshake. Buffers are owned by the trusted native
+/// bootstrap for this synchronous call; no Lua/native permission API is exposed.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn shroudforge_take_full_startup_v2(game:*const u16,
+    output:*mut shroudforge_api::current_assets::full_runtime::SelectedBootPlanV2,capacity:u32)->bool {
+    if output.is_null()||capacity!=24{return false;}
+    std::panic::catch_unwind(|| {
+        let Some(root)=startup_path(game)else{return false;};
+        let Ok(plan)=shroudforge_api::current_assets::full_runtime::take_v2(&root)else{return false;};
+        unsafe{output.write(plan);}true
+    }).unwrap_or(false)
+}
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn shroudforge_release_vein_ini_v2(game:*const u16,
+    plan:*const shroudforge_api::current_assets::full_runtime::SelectedBootPlanV2,prepared:u32)->bool {
+    if plan.is_null(){return false;}
+    std::panic::catch_unwind(||startup_path(game).is_some_and(|root|
+        shroudforge_api::current_assets::full_runtime::release_vein_lease(&root,unsafe{&*plan},prepared))).unwrap_or(false)
+}
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn shroudforge_commit_full_startup_v2(game:*const u16,
+    plan:*const shroudforge_api::current_assets::full_runtime::SelectedBootPlanV2,completed:u32)->bool {
+    if plan.is_null(){return false;}
+    std::panic::catch_unwind(||startup_path(game).is_some_and(|root|
+        shroudforge_api::current_assets::full_runtime::commit_v2(&root,unsafe{&*plan},completed))).unwrap_or(false)
+}
 /// Explicit no-copy entry. Policy removal, verification error or panic cannot
 /// reach the ordinary pregame runner, updater, migrations or baseline recovery.
 #[unsafe(no_mangle)]

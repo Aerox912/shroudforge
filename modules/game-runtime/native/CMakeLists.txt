@@ -238,6 +238,7 @@ add_library(kfc-runtime SHARED
     main-menu/manage_native_main_menu.cpp
     first-person/first_person_control.cpp
     host/manage_runtime_lifecycle.cpp
+    host/prepare_selected_startup.cpp
     code-inventory/export_function_inspection.cpp
     code-inventory/resolve_original_call_graph.cpp
     host/describe_runtime.cpp
@@ -454,3 +455,19 @@ set_property(TARGET kfc-runtime-test-world-context PROPERTY MSVC_RUNTIME_LIBRARY
 
 # Shared native Flight/Vein package; host demand/lifecycle remains RB11-owned.
 add_subdirectory(flight)
+
+add_executable(kfc-runtime-test-selected-startup EXCLUDE_FROM_ALL ../tests/selected_startup_test.cpp)
+add_executable(kfc-runtime-test-selected-write-policy EXCLUDE_FROM_ALL ../tests/selected_write_policy_test.cpp)
+target_compile_features(kfc-runtime-test-selected-write-policy PRIVATE cxx_std_20)
+target_compile_options(kfc-runtime-test-selected-write-policy PRIVATE /UNDEBUG)
+set_property(TARGET kfc-runtime-test-selected-write-policy PROPERTY MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+target_compile_features(kfc-runtime-test-selected-startup PRIVATE cxx_std_20)
+target_compile_options(kfc-runtime-test-selected-startup PRIVATE /UNDEBUG)
+set_property(TARGET kfc-runtime-test-selected-startup PROPERTY MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+add_executable(kfc-runtime-test-selected-host-stop EXCLUDE_FROM_ALL ../tests/selected_host_stop_test.cpp)
+target_include_directories(kfc-runtime-test-selected-host-stop PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}/json/single_include"
+    "${CMAKE_CURRENT_SOURCE_DIR}/vein_flight/shared/include" "${CMAKE_CURRENT_SOURCE_DIR}/vein_flight/consumer_support/include")
+target_compile_features(kfc-runtime-test-selected-host-stop PRIVATE cxx_std_20)
+target_compile_definitions(kfc-runtime-test-selected-host-stop PRIVATE KFC_RUNTIME_BUILD WIN32_LEAN_AND_MEAN NOMINMAX)
+target_compile_options(kfc-runtime-test-selected-host-stop PRIVATE /UNDEBUG)
+set_property(TARGET kfc-runtime-test-selected-host-stop PROPERTY MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")

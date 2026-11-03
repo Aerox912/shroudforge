@@ -99,10 +99,12 @@ DWORD WINAPI run(void*) {
         }
     }
     const auto prepare_full=reinterpret_cast<PrepareStartup>(GetProcAddress(runtime,"shroudforge_prepare_full_startup"));
-    using FullCommit=bool (__cdecl*)(const wchar_t*,unsigned);
-    const auto take_full=reinterpret_cast<StartupMode>(GetProcAddress(runtime,"shroudforge_take_full_startup"));
-    const auto commit_full=reinterpret_cast<FullCommit>(GetProcAddress(runtime,"shroudforge_commit_full_startup"));
-    if(full_runtime&&(!prepare_full||!take_full||!commit_full)) {
+    using FullTake=bool (__cdecl*)(const wchar_t*,SelectedStartup::PlanV2*,unsigned);
+    using FullCommit=bool (__cdecl*)(const wchar_t*,const SelectedStartup::PlanV2*,unsigned);
+    const auto take_full=reinterpret_cast<FullTake>(GetProcAddress(runtime,"shroudforge_take_full_startup_v2"));
+    const auto release_ini=reinterpret_cast<FullCommit>(GetProcAddress(runtime,"shroudforge_release_vein_ini_v2"));
+    const auto commit_full=reinterpret_cast<FullCommit>(GetProcAddress(runtime,"shroudforge_commit_full_startup_v2"));
+    if(full_runtime&&(!prepare_full||!take_full||!release_ini||!commit_full)) {
         startup_failed(root,"full-startup-contract","Full runtime/bootstrap handshake exports are incomplete");return 1;
     }
     if (!prepare_startup || (!assets_only && (!create || !update || !destroy))) {
@@ -172,15 +174,15 @@ DWORD WINAPI run(void*) {
         return 0;
     }
     StartupZoom::Cap full_zoom_cap;
-    unsigned full_handshake{};
+    SelectedStartup::PlanV2 full_plan;
     if(full_runtime) {
-        full_handshake=take_full(root.c_str());
-        if(!StartupAdmission::FullHandshake(full_handshake)) {
+        if(!take_full(root.c_str(),&full_plan,sizeof(full_plan))||!SelectedStartup::Valid(full_plan)||
+                full_plan.process_role!=(is_dedicated_server_process()?SelectedStartup::DedicatedServer:SelectedStartup::Client)) {
             startup_failed(root,"full-startup-contract","Missing, duplicate or unsupported full runtime preparation receipt");return 1;
         }
         const auto fp_demand=reinterpret_cast<StartupMode>(GetProcAddress(runtime,"shroudforge_startup_first_person_demand"));
         const auto fp=fp_demand?fp_demand(root.c_str()):2u;
-        if(fp>1u||fp!=((full_handshake>>1)&1u)) {
+        if(fp>1u||fp!=unsigned((full_plan.services&SelectedStartup::FirstPerson)!=0)) {
             startup_failed(root,"first-person-demand","Full-runtime First Person demand is unavailable or differs from verified composition");return 1;
         }
         using ZoomDemand=unsigned (__cdecl*)(const wchar_t*);
@@ -197,14 +199,20 @@ DWORD WINAPI run(void*) {
     startup_stage(root, "native-provider-init");
     using OverlayDemand = unsigned (__cdecl*)(const wchar_t*);
     const auto overlay_demand = reinterpret_cast<OverlayDemand>(GetProcAddress(runtime, "shroudforge_startup_overlay_demand"));
-    const auto demand = full_runtime ? (full_handshake&1u) : overlay_demand ? overlay_demand(root.c_str()) : 2u;
+    const auto demand = full_runtime ? unsigned((full_plan.services&SelectedStartup::Graphics)!=0) : overlay_demand ? overlay_demand(root.c_str()) : 2u;
     if (demand == 2) log('W', "Native overlay boot demand unavailable. Repair package configuration and restart before rendering");
     const auto held_proof=full_runtime?StartupGate::CaptureHeldEntryProof():EngineHooks::HeldEntryProof{};
     if(full_runtime&&(!held_proof.is_held||!held_proof.is_held(held_proof.parked_thread_id))) {
         full_zoom_cap.Rollback();startup_failed(root,"held-entry","Original entrypoint proof is no longer held");return 1;
     }
-    if (!EcsRuntime::Initialize(demand == 1,full_runtime,full_runtime?&held_proof:nullptr,
-            full_runtime&&(full_handshake&2u)!=0)) {
+    unsigned native_completed{};
+    std::wstring vein_ini;
+    if(full_runtime&&(full_plan.services&SelectedStartup::Vein))
+        vein_ini=(root/L"mods"/L"shroudweave-vein-mining-test.ini").wstring();
+    const bool native_prepared=full_runtime ?
+        EcsRuntime::PrepareSelected(full_plan,held_proof,vein_ini.empty()?nullptr:vein_ini.c_str(),
+            static_cast<unsigned>(vein_ini.size()),native_completed) : EcsRuntime::Initialize(demand==1);
+    if (!native_prepared) {
         if(full_runtime) {
             EcsRuntime::Shutdown();
             const bool restored=full_zoom_cap.Rollback();
@@ -213,7 +221,11 @@ DWORD WINAPI run(void*) {
         log('W', "KFC Runtime initialization failed: " + EcsRuntime::Status());
     }
     if(full_runtime) {
-        if(!commit_full(root.c_str(),full_handshake)) {
+        // Native preparation has actually consumed the still-leased INI, with
+        // Vein disabled. Only this one-shot release permits persistence next.
+        if(!release_ini(root.c_str(),&full_plan,native_completed)||
+                !EcsRuntime::ActivateSelected(full_plan,native_completed)||
+                !commit_full(root.c_str(),&full_plan,native_completed)) {
             EcsRuntime::Shutdown();full_zoom_cap.Rollback();
             startup_failed(root,"full-startup-contract","Full runtime commit refused");return 1;
         }

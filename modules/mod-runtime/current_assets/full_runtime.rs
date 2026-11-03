@@ -3,7 +3,9 @@ use super::*;
 use serde_json::Value;
 use std::sync::{Mutex,OnceLock};
 
-pub const HANDSHAKE_V1:u32=0x5346_0100;
+#[path="selected_services.rs"]
+pub mod selected_services;
+pub use selected_services::{SelectedBootPlanV2,SelectedDemand};
 #[derive(Clone,Serialize,Deserialize)]
 #[serde(rename_all="camelCase",deny_unknown_fields)]
 pub struct NativeFile {pub bytes:u64,pub sha256:String}
@@ -18,6 +20,7 @@ pub struct Contract {
     pub boot_services:Vec<String>,
     pub overlay:bool,
     pub first_person:bool,
+    pub selection:SelectedDemand,
     pub runtime_mods:Vec<String>,
     /// Hashes of effective canonical package Lua, including profile overrides.
     /// Keys are exact `manifest-id:src/path.lua`, not native permissions.
@@ -29,10 +32,11 @@ pub struct Contract {
     pub greeneye_paths:Vec<String>,
 }
 #[derive(Clone,Copy,Debug,PartialEq,Eq)]
-enum Phase {Verified,Preparing,Prepared,Taken,Committed,Running,Failed}
+enum Phase {Verified,Preparing,Prepared,Taken,NativePrepared,Committed,Running,Failed}
 #[derive(Clone)]
 struct PackageBinding {directory:PathBuf,metadata:Value}
-struct Admission {root:PathBuf,contract:Contract,phase:Phase,packages:BTreeMap<String,PackageBinding>,_files:Vec<(String,fs::File)>}
+struct Admission {root:PathBuf,contract:Contract,phase:Phase,packages:BTreeMap<String,PackageBinding>,
+    intended_native:Option<crate::native_dlls::IntendedNativePlan>,_files:Vec<(String,fs::File)>}
 static ADMISSION:OnceLock<Mutex<Option<Admission>>>=OnceLock::new();
 fn state()->&'static Mutex<Option<Admission>> {ADMISSION.get_or_init(||Mutex::new(None))}
 fn lock()->std::sync::MutexGuard<'static,Option<Admission>> {state().lock().unwrap_or_else(|e|e.into_inner())}
@@ -54,11 +58,9 @@ fn validate_contract(c:&Contract,producer:&str,request:&str,receipt:&str)->Resul
 fn validate_contract_pair(c:&Contract,producer:&str,request:&str,receipt:&str,compiled:&str,legacy:Option<&str>)->Result<()> {
     ensure!(valid_hash(compiled)&&valid_hash(producer)&&c.runtime_source_closure==compiled,"full runtime source pair differs");
     ensure!(Some(producer)!=legacy,"historical prepared producer cannot authorize full runtime");
-    ensure!(c.schema_version==1&&c.host=="sf-winmm-startup-gate-v1","unsupported full runtime host contract");
+    ensure!(c.schema_version==2&&c.host=="sf-winmm-selected-services-v2","unsupported full runtime host contract");
     ensure!(c.prepared_request_sha256==request&&c.prepared_receipt_sha256==receipt,"full runtime composition binding differs");
-    let mut expected=vec!["required-engine-hooks-v1"];
-    if c.overlay{expected.push("graphics-boot-v1");}if c.first_person{expected.push("first-person-preparation-v1");}
-    ensure!(c.boot_services.iter().map(String::as_str).collect::<Vec<_>>()==expected,"unsupported full runtime boot requirements (World services are late-bound)");
+    selected_services::plan(c)?;
     ensure!(c.files.len()>=4&&c.files.len()<=132&&c.greeneye_paths.len()<=8,"invalid full runtime file set");
     let ids:HashSet<_>=c.runtime_mods.iter().collect();
     ensure!(ids.len()==c.runtime_mods.len()&&ids.len()<=256&&c.scripts.len()<=4096,"invalid full runtime package/source set");
@@ -109,12 +111,14 @@ pub(crate) fn select_runtime_plan<'a>(env:&'a mod_loader::ModEnvironment,plan:&m
         let bound=bindings.get(&package.info().id).context("runtime package not admitted")?;
         ensure!(fs::canonicalize(package.fs().root().as_std_path())?==bound.directory,"runtime package moved");
         ensure!(crate::ingame::settings_only_manifest_change(&serde_json::to_value(package.info())?,&bound.metadata),"runtime package metadata changed; prepare and restart");
+        selected_services::validate_live_settings(&c,&package.info().id,&serde_json::to_value(package.info())?)?;
     }
     Ok(())
 }
 pub(crate) fn validate_runtime_manifest(root:&Path,id:&str,metadata:&Value)->Result<()> {
-    let Some((_,bindings))=snapshot(root)?else{return Ok(());};
-    check_runtime_manifest(&bindings,id,metadata)
+    let Some((c,bindings))=snapshot(root)?else{return Ok(());};
+    check_runtime_manifest(&bindings,id,metadata)?;
+    selected_services::validate_live_settings(&c,id,metadata)
 }
 fn check_runtime_manifest(bindings:&BTreeMap<String,PackageBinding>,id:&str,metadata:&Value)->Result<()> {
     let bound=bindings.get(id).context("runtime package is not admitted; prepare and restart")?;
@@ -156,6 +160,12 @@ fn verify_files(root:&Path,c:&Contract)->Result<Vec<(String,fs::File)>> {
     }
     for name in ["winmm.dll","shroudforge/shroudforge-runtime.dll","shroudforge/kfc-runtime.dll","shroudforge/config/modloader-config.json"] {
         ensure!(c.files.contains_key(name),"missing full runtime owned file: {name}");
+    }
+    if c.selection.vein_selected {
+        ensure!(c.files.contains_key(selected_services::VEIN_INI),"selected Vein INI identity is missing");
+    }
+    if selected_services::plan(c)?.services&selected_services::FLIGHT_SCALAR!=0 {
+        ensure!(c.files.contains_key("shroudforge/shroudweave-native-scalar-sdk.dll"),"selected Flight scalar SDK dependency is not bound");
     }
     Ok(files)
 }
@@ -200,8 +210,14 @@ pub(super) fn verify_and_stage(root:&Path,c:Contract,request:&str,receipt:&str,p
     }
     validate_plan(root,&c)?;
     let packages=bind_runtime_packages(root,&c,environment)?;
+    let env=mod_loader::ModEnvironment::load(root.to_str().context("nonUTF8 selected root")?).map_err(|e|anyhow::anyhow!("{e:?}"))?;
+    let intended_native=selected_services::validate_environment(&env,&c)?;
+    if c.selection.vein_selected {
+        ensure!(files.iter().filter(|(name,_)|name.eq_ignore_ascii_case(selected_services::VEIN_INI)).all(|(name,_)|name==selected_services::VEIN_INI),"Vein INI alias refused");
+        selected_services::validate_ini_handles(&files)?;
+    }
     let mut slot=lock();ensure!(slot.is_none(),"full runtime startup already attempted");
-    *slot=Some(Admission{root:root.into(),contract:c,phase:Phase::Verified,packages,_files:files});Ok(())
+    *slot=Some(Admission{root:root.into(),contract:c,phase:Phase::Verified,packages,intended_native:Some(intended_native),_files:files});Ok(())
 }
 fn transition(root:&Path,from:Phase,to:Phase)->Result<Contract> {
     let root=fs::canonicalize(root)?;let mut slot=lock();let a=slot.as_mut().context("full runtime admission missing")?;
@@ -213,16 +229,49 @@ fn move_to(a:&mut Admission,root:&Path,from:Phase,to:Phase)->Result<Contract> {
 }
 pub fn prepare_native(root:&Path)->Result<()> {
     let c=transition(root,Phase::Verified,Phase::Preparing)?;
-    let result=crate::native_dlls::prepare_full_startup(root,&c).map_err(anyhow::Error::msg);
+    let result=(|| {
+        let expected=verified_intended_native_plan(root)?;
+        let env=mod_loader::ModEnvironment::load(root.to_str().context("nonUTF8 selected root")?).map_err(|e|anyhow::anyhow!("{e:?}"))?;
+        let current=selected_services::validate_environment(&env,&c)?;
+        ensure!(expected.matches(&current),"native demand/declaration changed after full admission");
+        crate::native_dlls::prepare_full_startup(root,&c).map_err(anyhow::Error::msg)
+    })();
     if let Err(e)=result {abort(root);return Err(e);}
     transition(root,Phase::Preparing,Phase::Prepared)?;Ok(())
 }
-pub fn take(root:&Path)->u32 {
-    transition(root,Phase::Prepared,Phase::Taken).map(|c|HANDSHAKE_V1|u32::from(c.overlay)|(u32::from(c.first_person)<<1)).unwrap_or(u32::MAX)
+pub(crate) fn verified_intended_native_plan(root:&Path)->Result<crate::native_dlls::IntendedNativePlan> {
+    let slot=lock();let a=slot.as_ref().context("verified native plan missing")?;
+    ensure!(a.root==fs::canonicalize(root)?&&a.phase==Phase::Preparing,"verified native plan belongs to another operation");
+    a.intended_native.clone().context("verified native plan binding missing")
 }
-pub fn commit(root:&Path,handshake:u32)->bool {
+pub fn take_v2(root:&Path)->Result<SelectedBootPlanV2> {
+    let c=transition(root,Phase::Prepared,Phase::Taken)?;
+    selected_services::plan(&c)
+}
+// Old schema6 handshake cannot silently authorize the version2 contract.
+pub fn take(_: &Path)->u32 {u32::MAX}
+pub fn commit(_: &Path,_:u32)->bool {false}
+pub fn release_vein_lease(root:&Path,plan:&SelectedBootPlanV2,prepared:u32)->bool {
     let mut slot=lock();let Some(a)=slot.as_mut()else{return false;};
-    if fs::canonicalize(root).ok().as_ref()!=Some(&a.root)||a.phase!=Phase::Taken||handshake!=(HANDSHAKE_V1|u32::from(a.contract.overlay)|(u32::from(a.contract.first_person)<<1)){a.phase=Phase::Failed;return false;}
+    let Ok(root)=fs::canonicalize(root)else{a.phase=Phase::Failed;return false;};
+    release_ini(a,&root,plan,prepared)
+}
+fn release_ini(a:&mut Admission,root:&Path,plan:&SelectedBootPlanV2,prepared:u32)->bool {
+    if root!=a.root.as_path()||a.phase!=Phase::Taken||
+        selected_services::plan(&a.contract).ok().as_ref()!=Some(plan)||prepared!=plan.prepared_services(){a.phase=Phase::Failed;return false;}
+    // The native prepare result covers the actual INI read/parse while these
+    // handles were held. Drop only this admitted input before native activation.
+    if plan.services&selected_services::VEIN!=0 {a._files.retain(|(name,_)|name!=selected_services::VEIN_INI);}
+    a.phase=Phase::NativePrepared;true
+}
+pub fn commit_v2(root:&Path,plan:&SelectedBootPlanV2,completed:u32)->bool {
+    let mut slot=lock();let Some(a)=slot.as_mut()else{return false;};
+    let Ok(root)=fs::canonicalize(root)else{a.phase=Phase::Failed;return false;};
+    complete_selected(a,&root,plan,completed)
+}
+fn complete_selected(a:&mut Admission,root:&Path,plan:&SelectedBootPlanV2,completed:u32)->bool {
+    if root!=a.root.as_path()||a.phase!=Phase::NativePrepared||
+        selected_services::plan(&a.contract).ok().as_ref()!=Some(plan)||completed!=plan.services {a.phase=Phase::Failed;return false;}
     a.phase=Phase::Committed;true
 }
 pub fn before_create(root:&Path)->Result<()> {
@@ -252,7 +301,7 @@ pub(super) fn retire_fixture(){*lock()=None;}
 mod tests {
     use super::*;
     fn contract()->Contract {
-        Contract{schema_version:1,host:"sf-winmm-startup-gate-v1".into(),runtime_source_closure:"a".repeat(64),prepared_request_sha256:"b".repeat(64),prepared_receipt_sha256:"c".repeat(64),boot_services:vec!["required-engine-hooks-v1".into()],overlay:false,first_person:false,runtime_mods:vec![],scripts:BTreeMap::new(),dll_plan:Value::Array(vec![]),files:["winmm.dll","shroudforge/shroudforge-runtime.dll","shroudforge/kfc-runtime.dll","shroudforge/config/modloader-config.json"].into_iter().map(|n|(n.into(),NativeFile{bytes:1,sha256:"d".repeat(64)})).collect(),greeneye_paths:vec![]}
+        Contract{schema_version:2,host:"sf-winmm-selected-services-v2".into(),runtime_source_closure:"a".repeat(64),prepared_request_sha256:"b".repeat(64),prepared_receipt_sha256:"c".repeat(64),boot_services:vec!["metadata-init-v1".into()],overlay:false,first_person:false,selection:SelectedDemand::default(),runtime_mods:vec![],scripts:BTreeMap::new(),dll_plan:Value::Array(vec![]),files:["winmm.dll","shroudforge/shroudforge-runtime.dll","shroudforge/kfc-runtime.dll","shroudforge/config/modloader-config.json"].into_iter().map(|n|(n.into(),NativeFile{bytes:1,sha256:"d".repeat(64)})).collect(),greeneye_paths:vec![]}
     }
     #[test] fn compiled_full_pair_must_exist_and_match() {
         let mut c=contract();c.runtime_source_closure="0".repeat(64);
@@ -262,15 +311,65 @@ mod tests {
         let c=contract();let producer="e".repeat(64);
         let verify=|c:&Contract|validate_contract_pair(c,&producer,&"b".repeat(64),&"c".repeat(64),&"a".repeat(64),Some(&"f".repeat(64)));
         verify(&c).unwrap();
-        for edit in 0..5 {let mut c=c.clone();match edit {0=>c.host="external-winmm".into(),1=>c.runtime_source_closure="f".repeat(64),2=>c.prepared_request_sha256="f".repeat(64),3=>c.boot_services.push("World-ready".into()),_=>c.schema_version=2};assert!(verify(&c).is_err());}
+        for edit in 0..5 {let mut c=c.clone();match edit {0=>c.host="external-winmm".into(),1=>c.runtime_source_closure="f".repeat(64),2=>c.prepared_request_sha256="f".repeat(64),3=>c.boot_services.push("World-ready".into()),_=>c.schema_version=1};assert!(verify(&c).is_err());}
         assert!(validate_contract_pair(&c,&producer,&"b".repeat(64),&"c".repeat(64),&"a".repeat(64),Some(&producer)).is_err());
     }
     #[test] fn full_sequence_is_one_shot_and_wrong_root_cannot_refresh_it() {
         let root=PathBuf::from("E:/owned/synthetic-root");
-        let mut a=Admission{root:root.clone(),contract:contract(),phase:Phase::Verified,packages:BTreeMap::new(),_files:vec![]};
-        for (from,to) in [(Phase::Verified,Phase::Preparing),(Phase::Preparing,Phase::Prepared),(Phase::Prepared,Phase::Taken),(Phase::Taken,Phase::Committed),(Phase::Committed,Phase::Running)] {move_to(&mut a,&root,from,to).unwrap();}
+        let mut a=Admission{root:root.clone(),contract:contract(),phase:Phase::Verified,packages:BTreeMap::new(),intended_native:None,_files:vec![]};
+        for (from,to) in [(Phase::Verified,Phase::Preparing),(Phase::Preparing,Phase::Prepared),(Phase::Prepared,Phase::Taken),(Phase::Taken,Phase::NativePrepared),(Phase::NativePrepared,Phase::Committed),(Phase::Committed,Phase::Running)] {move_to(&mut a,&root,from,to).unwrap();}
         assert!(move_to(&mut a,&root,Phase::Committed,Phase::Running).is_err());assert_eq!(a.phase,Phase::Failed);
         a.phase=Phase::Prepared;assert!(move_to(&mut a,&root.join("other"),Phase::Prepared,Phase::Taken).is_err());assert_eq!(a.phase,Phase::Failed);
+    }
+    #[test] fn selected_live_controls_refuse_unprepared_services_without_resetting_values() {
+        let mut c=contract();
+        let mut metadata=serde_json::json!({"settingValues":{"turnSpeed":100,"moveSpeed":100,"liftSpeed":100,"descendSpeed":100,"unlimitedFlying":false}});
+        selected_services::validate_live_settings(&c,"sf-unlimited-flight",&metadata).unwrap();
+        metadata["settingValues"]["moveSpeed"]=150.into();let original=metadata.clone();
+        assert!(selected_services::validate_live_settings(&c,"sf-unlimited-flight",&metadata).unwrap_err().to_string().contains("unsupported"));
+        assert_eq!(metadata,original); // The saved choice is not rewritten to100.
+        c.boot_services.push("required-engine-hooks-v1".into());
+        selected_services::validate_live_settings(&c,"sf-unlimited-flight",&metadata).unwrap();
+        metadata["settingValues"]["unlimitedFlying"]=true.into();
+        assert!(selected_services::validate_live_settings(&c,"sf-unlimited-flight",&metadata).is_err());
+        for invalid in [Value::Null,Value::String("100".into())] {
+            metadata["settingValues"]["moveSpeed"]=invalid;
+            assert!(selected_services::validate_live_settings(&c,"sf-unlimited-flight",&metadata).is_err());
+        }
+    }
+    #[test] fn selected_ini_release_is_exact_once_after_native_prepare_and_keeps_other_leases() {
+        let mut f=Fixture::new(&[]);
+        let ini=f.root.join(selected_services::VEIN_INI);fs::write(&ini,b"synthetic admitted existing INI").unwrap();
+        let alias=f.root.join("mods/aliased-input.ini");fs::hard_link(&ini,&alias).unwrap();
+        f.c.boot_services.extend(["vein-flight-provider-v1".into(),"vein-activation-v1".into()]);
+        f.c.selection.vein_selected=true;f.c.selection.dedicated_guest_qualified=true;f.c.selection.allow_unverified_cursor_gate=true;
+        f.c.selection.vein_settings_path=Some(selected_services::VEIN_INI.into());
+        let plan=selected_services::plan(&f.c).unwrap();
+        let other="shroudforge/config/modloader-config.json";
+        let mut a=Admission{root:f.root.clone(),contract:f.c.clone(),phase:Phase::Taken,packages:BTreeMap::new(),intended_native:None,
+            _files:vec![(selected_services::VEIN_INI.into(),keep_readonly(&ini).unwrap()),
+                (selected_services::VEIN_INI.into(),keep_readonly(&ini).unwrap()),(other.into(),keep_readonly(&f.root.join(other)).unwrap())]};
+        selected_services::validate_ini_handles(&a._files).unwrap();
+        a._files.push(("mods/aliased-input.ini".into(),keep_readonly(&alias).unwrap()));
+        assert!(selected_services::validate_ini_handles(&a._files).is_err());a._files.pop();
+        #[cfg(windows)] assert!(fs::OpenOptions::new().write(true).open(&ini).is_err());
+        assert!(!complete_selected(&mut a,&f.root,&plan,plan.services));
+        a.phase=Phase::Taken;
+        assert!(!release_ini(&mut a,&f.root,&plan,plan.services)); // Vein was not activated under the lease.
+        assert_eq!(a._files.len(),3);a.phase=Phase::Taken;
+        assert!(release_ini(&mut a,&f.root,&plan,plan.prepared_services()));
+        assert_eq!(a._files.len(),1);assert_eq!(a._files[0].0,other);
+        assert!(fs::OpenOptions::new().write(true).open(&ini).is_ok());
+        #[cfg(windows)] assert!(fs::OpenOptions::new().write(true).open(f.root.join(other)).is_err());
+        assert!(!complete_selected(&mut a,&f.root,&plan,plan.services|256));
+        a.phase=Phase::NativePrepared;assert!(complete_selected(&mut a,&f.root,&plan,plan.services));
+        assert!(!release_ini(&mut a,&f.root,&plan,plan.prepared_services()));
+        assert_eq!(a.phase,Phase::Failed);
+        let c=contract();let p=selected_services::plan(&c).unwrap();
+        let mut unselected=Admission{root:f.root.clone(),contract:c,phase:Phase::Taken,packages:BTreeMap::new(),intended_native:None,
+            _files:vec![(selected_services::VEIN_INI.into(),keep_readonly(&ini).unwrap())]};
+        assert!(release_ini(&mut unselected,&f.root,&p,p.prepared_services()));
+        assert_eq!(unselected._files.len(),1); // No selected Vein input, no lease drop.
     }
     struct Fixture{root:PathBuf,c:Contract}
     impl Fixture {
