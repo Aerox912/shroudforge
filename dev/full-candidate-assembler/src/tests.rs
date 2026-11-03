@@ -2033,3 +2033,87 @@ fn accepted_derived_cache_binding_adds_only_the_two_fixed_outputs() {
             .is_err()
     );
 }
+
+#[cfg(windows)]
+#[test]
+fn canonical_minimap_runtime_plan_yields_package_relative_scripts() {
+    let fixture = Fixture::new(false);
+    let root = fixture.base.join("minimap-runtime-environment");
+    let package_root = root.join("mods/minimap_mod");
+    fs::create_dir_all(package_root.join("src")).unwrap();
+    let manifest = json!({
+        "id": "minimap_mod",
+        "name": "Minimap runtime path fixture",
+        "version": "1.0.0",
+        "enabled": true,
+        "capabilities": ["runtime"]
+    });
+    fs::write(
+        package_root.join("mod.json"),
+        serde_json::to_vec(&manifest).unwrap(),
+    )
+    .unwrap();
+    fs::write(
+        package_root.join("extended.mod.json"),
+        br#"{"schemaVersion":1,"enabled":true,"targets":["client"]}"#,
+    )
+    .unwrap();
+    let script = b"return { name = 'minimap fixture' }\n";
+    fs::write(package_root.join("src/mod.lua"), script).unwrap();
+
+    let mut loader = shroudforge_loader_config::config::read_loader_defaults().unwrap();
+    loader["paths"]["mods"] = json!("mods");
+    loader["paths"]["cache"] = json!("shroudforge/cache");
+    loader["paths"]["runtime"] = json!("shroudforge/runtime");
+    let loader_path = root.join("shroudforge/config/modloader-config.json");
+    fs::create_dir_all(loader_path.parent().unwrap()).unwrap();
+    fs::write(loader_path, serde_json::to_vec(&loader).unwrap()).unwrap();
+
+    let environment = ModEnvironment::load(root.to_str().unwrap()).unwrap();
+    let (runtime, issues) = environment.runtime_plan_report_detailed(false, API_VERSION);
+    assert!(issues.is_empty(), "{issues:?}");
+    let runtime_ids: Vec<_> = runtime
+        .iter()
+        .map(|package| package.info().id.clone())
+        .collect();
+    assert_eq!(runtime_ids, vec!["minimap_mod"]);
+
+    let package = environment.mod_registry().get("minimap_mod").unwrap();
+    let mut package_fs = package.fs();
+    let canonical_package_root = PathBuf::from(package_fs.root().as_str());
+    assert!(canonical_package_root.is_absolute());
+    let script_entry = package_fs
+        .files()
+        .into_iter()
+        .filter_map(std::result::Result::ok)
+        .find(|path| path.file_name() == Some("mod.lua"))
+        .unwrap();
+    assert!(script_entry.is_absolute());
+    assert_eq!(
+        package_relative_path(Path::new(script_entry.as_str()), &canonical_package_root).unwrap(),
+        Some("src/mod.lua".into())
+    );
+    assert_eq!(
+        package_relative_path(&canonical_package_root, &canonical_package_root).unwrap(),
+        None
+    );
+
+    let outside = fixture.base.join("outside-minimap-package/src/mod.lua");
+    let error = format!(
+        "{:#}",
+        package_relative_path(&outside, &canonical_package_root).unwrap_err()
+    );
+    assert!(
+        error.contains("path escapes its native drive root"),
+        "{error}"
+    );
+
+    // `Mod::fs` returns a mutex guard. Release it before effective_scripts
+    // obtains the same package filesystem for the canonical traversal.
+    drop(package_fs);
+    let scripts = effective_scripts(&environment, &runtime_ids).unwrap();
+    assert_eq!(scripts.len(), 1);
+    let script_identity = scripts.get("minimap_mod:src/mod.lua").unwrap();
+    assert_eq!(script_identity.bytes, script.len() as u64);
+    assert_eq!(script_identity.sha256, digest(script));
+}

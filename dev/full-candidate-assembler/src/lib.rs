@@ -2348,6 +2348,27 @@ fn relative_native_path(path: &Path, root: &Path) -> Result<String> {
     safe_relative(&relative)?;
     Ok(relative)
 }
+fn package_relative_path(path: &Path, package_root: &Path) -> Result<Option<String>> {
+    let relative = if path.is_absolute() {
+        let path_key = normalize_absolute(path)?;
+        let root_key = normalize_absolute(package_root)?;
+        if path_key == root_key {
+            return Ok(None);
+        }
+        relative_native_path(path, package_root)?
+    } else {
+        let relative = path
+            .to_str()
+            .context("non-UTF8 package member path")?
+            .replace('\\', "/");
+        if relative.is_empty() {
+            return Ok(None);
+        }
+        relative
+    };
+    safe_relative(&relative)?;
+    Ok(Some(relative))
+}
 fn is_reserved_xhl_output(name: &str) -> bool {
     name.eq_ignore_ascii_case("XHL-Native-Plugin-Host.log")
         || name.to_ascii_lowercase().starts_with("xhl/config/")
@@ -2942,11 +2963,16 @@ fn effective_scripts(
             .get(id)
             .with_context(|| format!("runtime package missing from candidate: {id}"))?;
         let mut fs = package.fs();
+        let package_root = PathBuf::from(fs.root().as_str());
         let mut paths = Vec::new();
         for entry in fs.files() {
             let path = entry?;
-            let text = path.as_str().replace('\\', "/");
-            safe_relative(&text)?;
+            let Some(text) = package_relative_path(Path::new(path.as_str()), &package_root)? else {
+                continue;
+            };
+            if !fs.is_file(&text) {
+                continue;
+            }
             if text.starts_with("src/") && text.to_ascii_lowercase().ends_with(".lua") {
                 paths.push(text);
             }
