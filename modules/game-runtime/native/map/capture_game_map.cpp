@@ -3,9 +3,14 @@
 #include "map/capture_game_map.h"
 #include "map/hud_visibility.h"
 #include "profiles/game_profile.h"
+#include "map/current_client_map_contract.h"
+#include "map/native_iterator_snapshot.h"
+#include "map/client_0403981f_marker_pins.h"
+#include "map/client_0403981f_optional_pins.h"
 #include "engine-hooks/allocate_near_code.h"
 #include "engine-hooks/encode_relative_jump.h"
 #include "engine-hooks/write_executable_bytes.h"
+#include "engine-hooks/held_entry_preparation.h"
 #include <windows.h>
 #include <algorithm>
 #include <atomic>
@@ -39,6 +44,35 @@ namespace MapRuntime {
 MapImageAdmission InspectMapImage(std::span<const std::uint8_t> bytes, std::string_view sha, bool permitted) {
     MapImageAdmission result;
     if (!permitted) { result.status=SF_MAP_CAPABILITY_DENIED; return result; }
+    if (Current0403981f::Selected(sha)) {
+        if(bytes.size()!=Current0403981f::ImageSize)return result;
+        IMAGE_DOS_HEADER dos{};IMAGE_NT_HEADERS64 nt{};
+        const auto base=reinterpret_cast<std::uintptr_t>(bytes.data());
+        if(!ReadMemory(base,&dos,sizeof(dos)) || dos.e_magic!=IMAGE_DOS_SIGNATURE || dos.e_lfanew<0 ||
+           std::size_t(dos.e_lfanew)>bytes.size()-sizeof(nt) || !ReadMemory(base+dos.e_lfanew,&nt,sizeof(nt)) ||
+           nt.Signature!=IMAGE_NT_SIGNATURE || nt.FileHeader.Machine!=IMAGE_FILE_MACHINE_AMD64 ||
+           nt.OptionalHeader.Magic!=IMAGE_NT_OPTIONAL_HDR64_MAGIC || nt.FileHeader.TimeDateStamp!=Current0403981f::Timestamp ||
+           nt.OptionalHeader.SizeOfImage!=bytes.size())return result;
+        const ImageReader image{bytes};
+        for(const auto& row:Current0403981f::Systems)if(!image.Named(row.descriptor,row.name,row.callback))return result;
+        // Exact full dependency spans; fixed chunks avoid truncating long pins.
+        const auto match=[&](std::size_t rva,const std::uint8_t* expected,std::size_t length){
+            if(rva>bytes.size() || length>bytes.size()-rva)return false;
+            for(std::size_t offset=0;offset<length;){
+                const auto count=(std::min)(std::size_t(256),length-offset);
+                if(!image.Match(rva+offset,expected+offset,count))return false;offset+=count;
+            }return true;
+        };
+        using namespace MinimapClient0403981f;
+        result.player=MatchPins(CameraPins,match);result.renderer=MatchPins(RendererPins,match);
+        result.markers=MatchMarkers(base,match);result.clock=MatchOptionalClock(base,match);
+        result.weather=MatchOptionalWeather(base,match);result.fog=MatchOptionalFog(base,match);
+        result.world=MatchOptionalWorld(base,match);result.deaths=MatchOptionalDeath(base,match);
+        result.discovery=MatchOptionalVisibility(base,match);
+        if(result.player && result.renderer && result.markers && result.clock && result.weather && result.fog &&
+           result.world && result.deaths && result.discovery)result.status=SF_MAP_READY;
+        return result;
+    }
     if (sha != CurrentClientSha256 || bytes.size() != 44163072) return result;
     IMAGE_DOS_HEADER dos{}; IMAGE_NT_HEADERS64 nt{};
     const auto base=reinterpret_cast<std::uintptr_t>(bytes.data());
@@ -164,17 +198,52 @@ std::uint64_t source_session{}, next_generation{};
 std::vector<SFMapMarkerV1> pings;
 struct DiscoveryEntry {DiscoveryIdentity identity;SFMapMarkerV1 value;};
 std::vector<DiscoveryEntry> discoveries;
-struct InstalledCapture { std::uintptr_t target{}; std::vector<std::uint8_t> original, replacement, relay;std::uintptr_t allocation{}; bool installed{}; };
+struct InstalledCapture {
+    std::uintptr_t target{};std::vector<std::uint8_t> original,replacement,relay;
+    std::uintptr_t allocation{};bool installed{};
+    // Only the qualified held publisher may establish these fields.
+    bool publicationQualified{};HMODULE residentOwner{};
+};
 std::vector<InstalledCapture> hooks;
+enum class Preparation { Unprepared,Preparing,Ready,Failed };
+Preparation preparation{Preparation::Unprepared};
+bool preparingCapture{};
 
 template<class T> bool read(std::uintptr_t address, T& out) { return ReadMemory(address,&out,sizeof(out)); }
-bool initialize(void* context, void* record, std::uint32_t size) {
+bool call_initialize(void* context, void* record, std::uint32_t size) {
     __try { iter_init(context,record,size); return true; }
     __except(EXCEPTION_EXECUTE_HANDLER) { return false; }
 }
-bool advance(void* context, void* record, std::uint32_t size) {
+bool call_advance(void* context, void* record, std::uint32_t size) {
     __try { return iter_next(context,record,size); }
     __except(EXCEPTION_EXECUTE_HANDLER) { return false; }
+}
+bool current_client_capture() noexcept {
+    return Current0403981f::Selected(KfcRuntimeCompatibility::EnshroudedClient::image_sha256);
+}
+bool initialize(std::uintptr_t (&context)[2],void* record,std::uint32_t capacity,
+    NativeIteratorExtent::IteratorExtentPlan* output=nullptr) {
+    if(output)*output={};
+    if(!iter_init)return false;
+    if(current_client_capture()){
+        auto plan=NativeIteratorSnapshot::ReadPlan(context,record,capacity,ReadMemory);
+        if(!plan.valid)return false;
+        if(output)*output=plan;
+    }
+    return call_initialize(context,record,capacity);
+}
+bool advance(std::uintptr_t (&context)[2],void* record,std::uint32_t capacity,
+    const NativeIteratorExtent::IteratorExtentPlan& plan,std::uint32_t cursorLimit) {
+    if(!iter_next)return false;
+    if(!current_client_capture())return call_advance(context,record,capacity);
+    if(!plan.valid || plan.private_context_storage!=reinterpret_cast<std::uintptr_t>(context) ||
+       plan.query!=context[0] || plan.destination!=reinterpret_cast<std::uintptr_t>(record) ||
+       plan.destination_capacity!=capacity || capacity>NativeIteratorSnapshot::QualifiedMaximumCapacity)return false;
+    const auto next=NativeIteratorExtent::PlanNext(plan,static_cast<std::uint32_t>(context[1]),cursorLimit);
+    if(next.disposition!=NativeIteratorExtent::NextDisposition::Call)return false;
+    const bool result=call_advance(context,record,capacity);
+    return context[0]==plan.query && NativeIteratorExtent::ValidateNextAdvance(
+        plan,next,result,static_cast<std::uint32_t>(context[1]));
 }
 bool component(std::uintptr_t context, std::uintptr_t lookup_context, std::uint32_t id, std::uintptr_t& result) {
     __try {
@@ -191,10 +260,11 @@ void __fastcall camera_callback(void* ctx, void*, void*, void*) noexcept {
     try {
         const auto generation=capture_generation.load();
         std::uintptr_t context[2]{}; NativeCameraRecord record{};
-        if (!read(reinterpret_cast<std::uintptr_t>(ctx),context) || !initialize(context,&record,sizeof(record))) return;
-        for (unsigned attempts=0;attempts<256 && advance(context,&record,sizeof(record));++attempts) {
+        NativeIteratorExtent::IteratorExtentPlan plan{};
+        if (!read(reinterpret_cast<std::uintptr_t>(ctx),context) || !initialize(context,&record,sizeof(record),&plan)) return;
+        for (unsigned attempts=0;attempts<256 && advance(context,&record,sizeof(record),plan,256);++attempts) {
             const auto index=std::uint32_t(context[1]); std::uintptr_t entities{}; std::uint32_t entity{};
-            if (!index || index > 256 || !read(context[0]+0x828,entities) ||
+            if (!index || index > 256 || !read(context[0]+(current_client_capture()?Current0403981f::EntityArray:0x828),entities) ||
                 !read(entities+std::uintptr_t(index-1)*0x10,entity)) return;
             SFMapPoseV1 player{},camera{};
             if (ReadLocalCamera(record,entity,player,camera)) {
@@ -300,11 +370,16 @@ void __fastcall world_callback(void* ctx,void*,void*,void*) noexcept {
     try {
         std::uintptr_t context[2]{},record[2]{};
         if (!read(reinterpret_cast<std::uintptr_t>(ctx),context) || !initialize(context,record,sizeof(record))) return;
-        std::vector<SFMapMarkerV1> world,custom,deaths;
-        if (world_array(record[1],0x396a28,true,custom) && world_array(record[1],0x36ea00,false,world)) {
+        std::vector<SFMapMarkerV1> world,secondary,custom,deaths;
+        if (world_array(record[1],current_client_capture()?Current0403981f::CustomList:0x396a28,true,custom) &&
+            world_array(record[1],current_client_capture()?Current0403981f::WorldList:0x36ea00,false,world) &&
+            (!current_client_capture() || world_array(record[1],Current0403981f::SecondaryWorldList,false,secondary))) {
+            // Each existing decoder remains capped at2048 records. Normal and
+            // custom categories/identities remain intact for consumer dedupe.
+            world.insert(world.end(),secondary.begin(),secondary.end());
             world.insert(world.end(),custom.begin(),custom.end()); store.PublishMarkers(Collection::World,generation,std::move(world),now);
         }
-        if (deaths_enabled.load() && world_array(record[1],0x3bea50,false,deaths,64))
+        if (deaths_enabled.load() && world_array(record[1],current_client_capture()?Current0403981f::DeathList:0x3bea50,false,deaths,64))
             store.PublishMarkers(Collection::Deaths,generation,std::move(deaths),now);
     } catch (...) {}
 }
@@ -341,7 +416,7 @@ bool publish_hook(std::uintptr_t target,std::span<const std::uint8_t> original,
     }
     std::memcpy(allocation,payload.data(),payload.size()); DWORD previous{};
     if (!VirtualProtect(allocation,payload.size(),PAGE_EXECUTE_READ,&previous)) { VirtualFree(allocation,0,MEM_RELEASE); return false; }
-    FlushInstructionCache(GetCurrentProcess(),allocation,payload.size());
+    if(!FlushInstructionCache(GetCurrentProcess(),allocation,payload.size())) {VirtualFree(allocation,0,MEM_RELEASE);return false;}
     InstalledCapture hook; hook.allocation=reinterpret_cast<std::uintptr_t>(allocation);hook.relay=payload;hook.target=target; hook.original.assign(original.begin(),original.end());
     hook.replacement.assign(original.size(),0x90); hook.replacement[0]=call ? 0xe8 : 0xe9;
     std::int32_t displacement{};
@@ -383,7 +458,7 @@ bool discovery_hook() {
     code.insert(code.end(),{0x48,0x8d,0x4d,0xe7,0x4c,0x89,0xf2,0xff,0xd0,0x48,0x8b,0x4c,0x24,0x20,
         0x48,0x8b,0x54,0x24,0x28,0x4c,0x8b,0x44,0x24,0x30,0x4c,0x8b,0x4c,0x24,0x38,0x48,0x83,0xc4,0x50});
     code.insert(code.end(),std::begin(original),std::end(original));code.insert(code.end(),{0xe9,0,0,0,0});
-    return publish_hook(image_base+0x4153a2,original,std::move(code),false);
+    return publish_hook(image_base+(current_client_capture()?Current0403981f::Discovery:0x4153a2),original,std::move(code),false);
 }
 void restore_hooks() {
     for (auto it=hooks.rbegin();it!=hooks.rend();++it) if (it->installed &&
@@ -391,12 +466,64 @@ void restore_hooks() {
 }
 }
 SnapshotStore& CapturedFrames() { return store; }
+bool ReadOwnedCameraEntryReplacement(std::span<const std::uint8_t> original,
+    std::span<std::uint8_t> replacement) noexcept {
+    try {
+        std::lock_guard lock(control_mutex);
+        if(original.size()!=18 || replacement.size()!=18 || !original.data() || !replacement.data() ||
+           !current_client_capture() || !image_base || image_base>UINTPTR_MAX-Current0403981f::CameraResume)return false;
+        const auto target=image_base+Current0403981f::Camera;
+        const MinimapClient0403981f::Pin* selected=nullptr;
+        for(const auto& pin:MinimapClient0403981f::CameraPins)if(pin.rva==Current0403981f::Camera)selected=&pin;
+        if(!selected || selected->size<18 || std::memcmp(original.data(),selected->bytes,18))return false;
+        for(const auto& hook:hooks)if(hook.target==target){
+            if(!hook.installed || !hook.publicationQualified || !hook.residentOwner || !hook.allocation ||
+               hook.original.size()!=18 || hook.replacement.size()!=18 || hook.relay.size()<57 || hook.relay.size()>128 ||
+               std::memcmp(original.data(),hook.original.data(),18) || hook.replacement[0]!=0xe9 ||
+               !std::all_of(hook.replacement.begin()+5,hook.replacement.end(),[](auto b){return b==0x90;}))return false;
+            HMODULE actualOwner{};
+            if(!GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS|GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                reinterpret_cast<LPCWSTR>(&ReadOwnedCameraEntryReplacement),&actualOwner) || actualOwner!=hook.residentOwner)return false;
+            MEMORY_BASIC_INFORMATION info{};
+            if(VirtualQuery(reinterpret_cast<void*>(hook.allocation),&info,sizeof(info))!=sizeof(info) ||
+               info.State!=MEM_COMMIT || info.AllocationBase!=reinterpret_cast<void*>(hook.allocation) ||
+               (info.Protect&(PAGE_GUARD|PAGE_NOACCESS)) || info.RegionSize<hook.relay.size())return false;
+            const auto protection=info.Protect&0xff;
+            if(protection!=PAGE_EXECUTE_READ)return false;
+            std::array<std::uint8_t,18> live{};std::array<std::uint8_t,128> bridge{};
+            if(!ReadMemory(target,live.data(),live.size()) || std::memcmp(live.data(),hook.replacement.data(),18) ||
+               !ReadMemory(hook.allocation,bridge.data(),hook.relay.size()) || std::memcmp(bridge.data(),hook.relay.data(),hook.relay.size()))return false;
+            std::int32_t entryDelta{},returnDelta{};std::uintptr_t handler{};
+            std::memcpy(&entryDelta,live.data()+1,4);std::memcpy(&handler,bridge.data()+26,8);
+            const auto returnOffset=hook.relay.size()-5;
+            if(bridge[returnOffset]!=0xe9 || std::memcmp(bridge.data()+returnOffset-18,original.data(),18))return false;
+            std::memcpy(&returnDelta,bridge.data()+returnOffset+1,4);
+            if(std::int64_t(target)+5+entryDelta!=std::int64_t(hook.allocation) || handler!=reinterpret_cast<std::uintptr_t>(&camera_callback) ||
+               std::int64_t(hook.allocation)+hook.relay.size()+returnDelta!=std::int64_t(image_base+Current0403981f::CameraResume))return false;
+            std::memcpy(replacement.data(),live.data(),18);return true;
+        }
+    }catch(...){return false;}
+    return false;
+}
+void StopCapture() noexcept {
+    try {
+        std::lock_guard control(control_mutex);
+        accepting.store(false,std::memory_order_release);capture_generation.store(0);
+        DisableHudVisibility();store.Disable();owners.clear();
+        std::lock_guard transient(transient_mutex);pings.clear();discoveries.clear();source_session=0;
+        // No restoration, relay freeing, module release, or ownership retirement.
+    }catch(...){accepting.store(false,std::memory_order_release);capture_generation.store(0);}
+}
 bool RendererAdmitted() {std::lock_guard lock(control_mutex);return accepting.load() && admission.renderer;}
+bool PreparedRendererAdmitted() noexcept {
+    try {std::lock_guard lock(control_mutex);return preparation==Preparation::Ready && current_client_capture() && admission.renderer;}
+    catch(...){return false;}
+}
 bool InstallSharedEntry(std::size_t rva,std::span<const std::uint8_t> expected,void* callback) {
     std::lock_guard lock(control_mutex);return accepting.load() && callback && entry_hook(rva,expected,callback);
 }
 bool InstallSharedCall(std::size_t rva,std::size_t target,void* callback) {
-    std::lock_guard lock(control_mutex);return accepting.load() && callback && call_hook(rva,target,callback);
+    std::lock_guard lock(control_mutex);return (accepting.load() || preparingCapture) && callback && call_hook(rva,target,callback);
 }
 bool SharedCallOwned(std::size_t rva,std::size_t target,void* callback) {
     std::lock_guard lock(control_mutex);
@@ -408,13 +535,65 @@ bool SharedCallOwned(std::size_t rva,std::size_t target,void* callback) {
             ReadMemory(hook.allocation,bytes,14) && !std::memcmp(bytes,hook.relay.data(),14);
     }return false;
 }
+std::int32_t PrepareCapture(const EngineHooks::HeldEntryToken& token) noexcept {
+    if(!token.ValidForCurrentThread())return SF_MAP_FAILED;
+    try {
+        std::lock_guard control(control_mutex);
+        if(!token.ValidForCurrentThread())return SF_MAP_FAILED;
+        if(preparation==Preparation::Ready){
+            std::array<std::uint8_t,18> original{},replacement{};
+            for(const auto& pin:MinimapClient0403981f::CameraPins)if(pin.rva==Current0403981f::Camera)std::memcpy(original.data(),pin.bytes,18);
+            return ReadOwnedCameraEntryReplacement(original,replacement)?SF_MAP_READY:SF_MAP_FAILED;
+        }
+        if(preparation!=Preparation::Unprepared || accepting || !hooks.empty())return SF_MAP_FAILED;
+        namespace Profile=KfcRuntimeCompatibility::EnshroudedClient;
+        if(!current_client_capture() || Profile::image_size!=Current0403981f::ImageSize)return SF_MAP_UNSUPPORTED_BUILD;
+        preparation=Preparation::Preparing;
+        image_base=reinterpret_cast<std::uintptr_t>(GetModuleHandleW(nullptr));
+        admission=InspectMapImage({reinterpret_cast<const std::uint8_t*>(image_base),Profile::image_size},Profile::image_sha256,true);
+        if(admission.status!=SF_MAP_READY){preparation=Preparation::Failed;return admission.status;}
+        HMODULE resident{};
+        if(!token.ValidForCurrentThread() || !GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS|GET_MODULE_HANDLE_EX_FLAG_PIN,
+            reinterpret_cast<LPCWSTR>(&PrepareCapture),&resident)){preparation=Preparation::Failed;return SF_MAP_FAILED;}
+        iter_init=reinterpret_cast<IterInit>(image_base+Current0403981f::IterInit);iter_next=reinterpret_cast<IterNext>(image_base+Current0403981f::IterNext);
+        get_world=reinterpret_cast<GetWorld>(image_base+Current0403981f::GetWorld);lookup=reinterpret_cast<Lookup>(image_base+Current0403981f::Lookup);
+        weather_sample=reinterpret_cast<WeatherSample>(image_base+Current0403981f::WeatherSample);fog_update=reinterpret_cast<FogUpdate>(image_base+Current0403981f::FogUpdate);
+        struct Scope{Scope(){preparingCapture=true;}~Scope(){preparingCapture=false;}} scope;
+        constexpr std::uint8_t camera[]{0x40,0x55,0x57,0x48,0x8d,0xac,0x24,0xb8,0xfe,0xff,0xff,0x48,0x81,0xec,0x48,0x02,0,0};
+        constexpr std::uint8_t waypoint[]{0x48,0x89,0x5c,0x24,0x18,0x48,0x89,0x6c,0x24,0x20},remote[]{0x48,0x89,0x4c,0x24,0x08};
+        constexpr std::uint8_t clock[]{0x41,0x56,0x48,0x83,0xec,0x60,0x41,0xb8,0x28,0,0,0,0x48,0x8d,0x54,0x24,0x30};
+        constexpr std::uint8_t world[]{0x48,0x83,0xec,0x38,0x41,0xb8,0x10,0,0,0,0x48,0x8d,0x54,0x24,0x20};
+        const auto entry=[&](std::size_t rva,auto& bytes,auto callback){return token.ValidForCurrentThread() && entry_hook(rva,bytes,reinterpret_cast<void*>(callback));};
+        const bool complete=entry(Current0403981f::Camera,camera,&camera_callback) &&
+            entry(Current0403981f::Waypoints,waypoint,&waypoints_callback) && entry(Current0403981f::Remote,remote,&remote_callback) &&
+            entry(Current0403981f::Clock,clock,&clock_callback) && token.ValidForCurrentThread() &&
+            call_hook(Current0403981f::WeatherCall,Current0403981f::WeatherSample,reinterpret_cast<void*>(&weather_callback)) &&
+            token.ValidForCurrentThread() && call_hook(Current0403981f::FogCall,Current0403981f::FogUpdate,reinterpret_cast<void*>(&fog_callback)) &&
+            entry(Current0403981f::World,world,&world_callback) && token.ValidForCurrentThread() && discovery_hook() &&
+            token.ValidForCurrentThread() && PrepareHudVisibility(image_base,Profile::image_size) && token.ValidForCurrentThread();
+        if(!complete){preparation=Preparation::Failed;accepting=false;capture_generation=0;return SF_MAP_FAILED;}
+        // The pinned shared writer guarantees false=no publication/verified rollback;
+        // its indeterminate branch fails fast. Never use the old79f writer here.
+        for(auto& hook:hooks){hook.residentOwner=resident;hook.publicationQualified=true;}
+        preparation=Preparation::Ready;capture_generation=0;source_session=0;deaths_enabled=admission.deaths;
+        return SF_MAP_READY;
+    }catch(...){preparingCapture=false;preparation=Preparation::Failed;accepting=false;capture_generation=0;return SF_MAP_FAILED;}
+}
 std::int32_t EnableCapture(std::uint64_t owner,bool capability) {
     if (!owner || !capability) return SF_MAP_CAPABILITY_DENIED;
     std::lock_guard control(control_mutex);
     if (owners.contains(owner)) return SF_MAP_INVALID_ARGUMENT;
     if (!owners.empty()) { owners.insert(owner); return SF_MAP_READY; }
-    if (std::any_of(hooks.begin(),hooks.end(),[](const auto& hook){return hook.installed;})) return SF_MAP_FAILED;
+    if (!current_client_capture() && std::any_of(hooks.begin(),hooks.end(),[](const auto& hook){return hook.installed;})) return SF_MAP_FAILED;
     namespace Profile=KfcRuntimeCompatibility::EnshroudedClient;
+    if(Current0403981f::Selected(Profile::image_sha256)){
+        if(preparation!=Preparation::Ready)return SF_MAP_FAILED;
+        std::array<std::uint8_t,18> original{},replacement{};
+        for(const auto& pin:MinimapClient0403981f::CameraPins)if(pin.rva==Current0403981f::Camera)std::memcpy(original.data(),pin.bytes,18);
+        if(!ReadOwnedCameraEntryReplacement(original,replacement) || !EnableHudVisibility(image_base,Profile::image_size))return SF_MAP_FAILED;
+        capture_generation=0;source_session=0;store.SetAdmission(admission.Features()|SF_MAP_FEATURE_HUD);
+        owners.insert(owner);accepting.store(true,std::memory_order_release);return SF_MAP_READY;
+    }
     image_base=reinterpret_cast<std::uintptr_t>(GetModuleHandleW(nullptr));
     admission=InspectMapImage({reinterpret_cast<const std::uint8_t*>(image_base),Profile::image_size},Profile::image_sha256,capability);
     if (admission.status != SF_MAP_READY) return admission.status;
@@ -459,7 +638,8 @@ void DisableCapture(std::uint64_t owner) {
     std::lock_guard control(control_mutex);
     if (!owners.erase(owner) || !owners.empty()) return;
     DisableHudVisibility();accepting.store(false,std::memory_order_release); capture_generation.store(0); store.Disable();
-    restore_hooks(); std::lock_guard transient(transient_mutex); pings.clear(); discoveries.clear(); source_session=0;
+    if(!current_client_capture())restore_hooks();
+    std::lock_guard transient(transient_mutex); pings.clear(); discoveries.clear(); source_session=0;
 }
 void UpdateCaptureSession(std::uint64_t session,bool gameplay,bool menu,bool focused) {
     std::lock_guard control(control_mutex);
