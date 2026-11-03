@@ -5,6 +5,13 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
+#[test]
+fn greeneye_profile_pin_matches_reviewed_definition() {
+    let definition = include_bytes!("../../../docs/runtime/GREENEYE-ENTRY-CONTINUATION.md");
+    assert!(valid_digest(GREENEYE_PROFILE_SHA256));
+    assert_eq!(digest(definition), GREENEYE_PROFILE_SHA256);
+}
+
 struct Fixture {
     base: PathBuf,
     manifest: InputManifest,
