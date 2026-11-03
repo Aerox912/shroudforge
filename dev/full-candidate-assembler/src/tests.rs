@@ -70,6 +70,103 @@ fn cli_input_reader_checks_owned_ancestry_and_size_before_reading() {
     let error = read_input_file(&traversed, 1024).unwrap_err().to_string();
     assert!(error.contains("noncanonical path"), "{error}");
 }
+
+#[cfg(windows)]
+fn ordinary_drive_path(path: &Path) -> PathBuf {
+    let text = path.to_string_lossy();
+    let plain = text.strip_prefix("\\\\?\\").unwrap_or(text.as_ref());
+    PathBuf::from(plain)
+}
+
+#[cfg(windows)]
+fn verbatim_drive_path(path: &Path) -> PathBuf {
+    let plain = ordinary_drive_path(path);
+    PathBuf::from(format!("\\\\?\\{}", plain.display()))
+}
+
+#[cfg(windows)]
+#[test]
+fn validate_e_path_walks_drive_roots_and_reports_missing_components() {
+    // RB114 carried this exact immutable output_stage spelling. The test uses
+    // an isolated fixture below and only classifies the retained example.
+    let rb114_carrier = Path::new(
+        r"\\?\E:\Build\sf177-deployment-request-20261103-r1\output\.enshrouded.shroudforge-stage",
+    );
+    assert!(is_e_path(rb114_carrier));
+
+    let fixture = Fixture::new(false);
+    let ordinary = ordinary_drive_path(&fixture.base);
+    let verbatim = verbatim_drive_path(&ordinary);
+    assert!(validate_e_path(&ordinary, true, true).is_ok());
+    assert!(validate_e_path(&verbatim, true, true).is_ok());
+
+    let missing_name = format!(
+        "rb115-missing-{}",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    );
+    let missing_ordinary = ordinary.join(&missing_name);
+    let missing_verbatim = verbatim_drive_path(&missing_ordinary);
+    for missing in [&missing_ordinary, &missing_verbatim] {
+        assert!(validate_e_path(missing, false, true).is_ok());
+        let error = validate_e_path(missing, true, true)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("required E: path is missing"), "{error}");
+        assert!(error.contains(&missing_name), "{error}");
+    }
+}
+
+#[cfg(windows)]
+#[test]
+fn validate_e_path_rejects_junction_ancestors_for_ordinary_and_verbatim_paths() {
+    let fixture = Fixture::new(false);
+    let target = fixture.base.join("rb115-junction-target");
+    let junction = fixture.base.join("rb115-junction-ancestor");
+    fs::create_dir_all(&target).unwrap();
+    fs::write(target.join("leaf.bin"), b"inert junction fixture").unwrap();
+
+    let output = std::process::Command::new("cmd.exe")
+        .args(["/D", "/C", "mklink", "/J"])
+        .arg(&junction)
+        .arg(&target)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "junction setup failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let ordinary = junction.join("leaf.bin");
+    let verbatim = verbatim_drive_path(&ordinary);
+    for path in [&ordinary, &verbatim] {
+        let error = format!("{:#}", validate_e_path(path, true, false).unwrap_err());
+        assert!(
+            error.contains("reparse source is forbidden")
+                || error.contains("reparse/link source is forbidden"),
+            "{error}"
+        );
+        assert!(error.contains("rb115-junction-ancestor"), "{error}");
+    }
+
+    // A dangling junction has exists()==false even though the reparse entry
+    // remains. Missing outputs may be allowed, but that ancestor must still
+    // be inspected without following it.
+    fs::remove_dir_all(&target).unwrap();
+    for path in [&ordinary, &verbatim] {
+        let error = format!("{:#}", validate_e_path(path, false, false).unwrap_err());
+        assert!(
+            error.contains("reparse source is forbidden")
+                || error.contains("reparse/link source is forbidden"),
+            "{error}"
+        );
+        assert!(error.contains("rb115-junction-ancestor"), "{error}");
+    }
+}
+
 impl Fixture {
     fn new(with_dinput: bool) -> Self {
         let root = PathBuf::from(
