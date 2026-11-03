@@ -20,6 +20,42 @@ pub(crate) struct DeferredNativePlugin {
     pub(crate) declaration: PluginIniDeclaration,
 }
 
+/// Pure intended-plan binding. This is not an applied/loaded plugin authority.
+#[derive(Clone)]
+pub(crate) struct IntendedNativePlan {
+    root_key: String,
+    is_server: bool,
+    pub(crate) identity: serde_json::Value,
+    ordinary: Vec<DllLoadEntry>,
+    pub(crate) entries: Vec<DeferredNativePlugin>,
+}
+impl IntendedNativePlan {
+    pub(crate) fn matches(&self, other: &Self) -> bool {
+        self.root_key == other.root_key && self.is_server == other.is_server &&
+            self.identity == other.identity && self.ordinary.len()==other.ordinary.len() &&
+            self.ordinary.iter().zip(&other.ordinary).all(|(a,b)|same_entry(a,b)) &&
+            same_deferred_plan(&self.entries, &other.entries)
+    }
+}
+struct ClassifiedPlan {
+    root_key: String,
+    is_server: bool,
+    identity: serde_json::Value,
+    ordinary: Vec<DllLoadEntry>,
+    deferred: Vec<DeferredNativePlugin>,
+    rejected: Vec<RejectedNativePlugin>,
+    issues: Vec<mod_loader::dll_manager::DllPlanIssue>,
+}
+impl ClassifiedPlan {
+    fn intended(&self) -> Result<IntendedNativePlan, String> {
+        if !self.issues.is_empty() || !self.rejected.is_empty() {
+            return Err("Full runtime native lifecycle selection is unsupported or rejected".into());
+        }
+        Ok(IntendedNativePlan {root_key:self.root_key.clone(),is_server:self.is_server,
+            identity:self.identity.clone(),ordinary:self.ordinary.clone(),entries:self.deferred.clone()})
+    }
+}
+
 struct AppliedPlan {
     root_key: String,
     is_server: bool,
@@ -417,6 +453,24 @@ fn classify_plan_entries(
     (ordinary, deferred, rejected, issues)
 }
 
+fn same_deferred_plan(current: &[DeferredNativePlugin], original: &[DeferredNativePlugin]) -> bool {
+    current.len() == original.len() && current.iter().zip(original).all(|(current, original)|
+        same_entry(&current.entry, &original.entry) && current.declaration == original.declaration)
+}
+fn classified_plan(root: &Path, is_server: bool) -> Result<ClassifiedPlan, String> {
+    let plan = mod_loader::dll_manager::resolve_load_plan(root, is_server);
+    let identity = mod_loader::dll_manager::load_plan_identity(&plan);
+    let mut issues = plan.issues;
+    let (ordinary, deferred, rejected, classified_issues) = classify_plan_entries(root, plan.entries);
+    issues.extend(classified_issues);
+    Ok(ClassifiedPlan {root_key:root_key(root)?,is_server,identity,ordinary,deferred,rejected,issues})
+}
+/// Inspect canonical intended selections/declarations before native application.
+/// No APPLIED_PLAN publication, executor creation, DLL loading or callbacks.
+pub(crate) fn intended_native_plan(root: &Path, is_server: bool) -> Result<IntendedNativePlan, String> {
+    classified_plan(root,is_server)?.intended()
+}
+
 pub(crate) fn deferred_native_plugins(
     root: &Path,
     is_server: bool,
@@ -430,23 +484,14 @@ pub(crate) fn deferred_native_plugins(
         );
     }
 
-    let current = mod_loader::dll_manager::resolve_load_plan(root, is_server);
-    if mod_loader::dll_manager::load_plan_identity(&current) != plan.identity {
+    let current = classified_plan(root, is_server)?;
+    if current.identity != plan.identity {
         return Err("DLL Manager selection changed after startup preparation; restart the game before loading native plugins".into());
     }
-    let (_, current_deferred, current_rejected, _) = classify_plan_entries(root, current.entries);
-    if current_deferred.len() != plan.entries.len()
-        || current_deferred
-            .iter()
-            .zip(&plan.entries)
-            .any(|(current, original)| {
-                !same_entry(&current.entry, &original.entry)
-                    || current.declaration != original.declaration
-            })
-    {
+    if !same_deferred_plan(&current.deferred, &plan.entries) {
         return Err("A lifecycle plugin declaration changed after startup preparation; restart the game before loading native plugins".into());
     }
-    if !rejected_plan_matches(&current_rejected, &plan.rejected_entries) {
+    if !rejected_plan_matches(&current.rejected, &plan.rejected_entries) {
         return Err("A rejected native plugin declaration changed after startup preparation; restart the game before loading native plugins".into());
     }
     Ok(plan.entries.clone())
@@ -492,11 +537,10 @@ pub fn prepare_startup(root: &Path, is_server: bool) -> Result<(), String> {
 /// plugins remain deferred to their existing post-entry lifecycle. No World wait.
 pub(crate) fn prepare_full_startup(root:&Path, contract:&crate::current_assets::full_runtime::Contract)->Result<(),String> {
     if APPLIED_PLAN.get().is_some(){return Err("Native startup plan was already applied; full startup cannot adopt it".into());}
+    let expected=crate::current_assets::full_runtime::verified_intended_native_plan(root).map_err(|e|e.to_string())?;
     crate::current_assets::full_runtime::validate_plan(root,contract).map_err(|e|e.to_string())?;
-    let plan=mod_loader::dll_manager::resolve_load_plan(root,false);
-    let (_,_,rejected,issues)=classify_plan_entries(root,plan.entries);
-    if !rejected.is_empty()||!issues.is_empty(){return Err("Full runtime native lifecycle selection is unsupported or rejected".into());}
-    apply_plan_impl(root,false,true,true)?;
+    if expected.identity!=contract.dll_plan{return Err("Verified native plan binding differs from full contract".into());}
+    apply_plan_impl(root,false,true,Some(&expected))?;
     for status in statuses(){
         if !matches!(status.state,"loaded"|"deferred"){return Err(format!("Required native DLL {} is {}: {}",status.id,status.state,status.detail));}
     }
@@ -507,21 +551,20 @@ pub(crate) fn prepare_full_startup(root:&Path, contract:&crate::current_assets::
 }
 
 pub(crate) fn apply_plan(root: &Path, is_server: bool, wait: bool) -> Result<(), String> {
-    apply_plan_impl(root,is_server,wait,false)
+    apply_plan_impl(root,is_server,wait,None)
 }
-fn apply_plan_impl(root:&Path,is_server:bool,wait:bool,strict_new:bool)->Result<(),String> {
+fn apply_plan_impl(root:&Path,is_server:bool,wait:bool,expected:Option<&IntendedNativePlan>)->Result<(),String> {
+    let strict_new=expected.is_some();
     if APPLIED_PLAN.get().is_some() {
         if strict_new{return Err("Full runtime cannot adopt an already applied native plan".into());}
         return Ok(());
     }
     let enabled = manager_enabled(root)?;
-    let plan = mod_loader::dll_manager::resolve_load_plan(root, is_server);
-    let root_key = root_key(root)?;
-    let identity = mod_loader::dll_manager::load_plan_identity(&plan);
-    let mut issues = plan.issues;
-    let (ordinary, deferred, rejected_entries, classified_issues) =
-        classify_plan_entries(root, plan.entries);
-    issues.extend(classified_issues);
+    let plan = classified_plan(root,is_server)?;
+    if let Some(expected)=expected {
+        if !enabled||!expected.matches(&plan.intended()?){return Err("Native plan/declarations changed before full startup application".into());}
+    }
+    let ClassifiedPlan {root_key,is_server,identity,ordinary,deferred,rejected:rejected_entries,issues}=plan;
     if APPLIED_PLAN
         .set(AppliedPlan {
             root_key,
@@ -795,12 +838,52 @@ mod managed_plugin_plan_tests {
                 source: "profile".into(),
             }
         }
+        fn select_managed_and_ordinary(&self) {
+            let path=self.0.join("shroudforge/config");std::fs::create_dir_all(&path).unwrap();
+            let mut config=shroudforge_loader_config::config::read_loader_defaults().unwrap();
+            config["modules"]["dllManager"]["enabled"]=true.into();
+            config["modules"]["dllManager"]["profiles"]=serde_json::json!([
+                {"id":"managed","packageDirectory":"managed","name":"Managed fixture","target":"client","enabled":true,"approved":true,"files":[{"path":"plugin.dll","mode":"library"}]},
+                {"id":"ordinary","packageDirectory":"ordinary","name":"Ordinary fixture","target":"client","enabled":true,"approved":true,"files":[{"path":"ordinary.dll","mode":"library"}]}
+            ]);
+            std::fs::write(path.join("modloader-config.json"),serde_json::to_vec(&config).unwrap()).unwrap();
+        }
     }
 
     impl Drop for Fixture {
         fn drop(&mut self) {
             let _ = std::fs::remove_dir_all(&self.0);
         }
+    }
+
+    #[test]
+    fn intended_projection_is_pure_before_applied_plan_or_dll_loading() {
+        assert!(APPLIED_PLAN.get().is_none()&&EXECUTOR.get().is_none());
+        let fixture=Fixture::new();
+        fixture.package("managed","[Plugin]\nEnabled=true\nDll=plugin.dll\nLifecycle=shroudforge-v1\nServices=shroudforge.map\n",&["plugin.dll"]);
+        fixture.package("ordinary","",&["ordinary.dll"]);fixture.select_managed_and_ordinary();
+        let intended=intended_native_plan(&fixture.0,false).unwrap();
+        assert_eq!(intended.ordinary.len(),1);assert_eq!(intended.entries.len(),1);
+        assert!(intended.entries[0].declaration.declares_service("shroudforge.map"));
+        assert!(APPLIED_PLAN.get().is_none()&&EXECUTOR.get().is_none()&&statuses().is_empty());
+    }
+
+    #[test]
+    fn declaration_mutation_refuses_before_publication_or_ordinary_dll_queue() {
+        assert!(APPLIED_PLAN.get().is_none()&&EXECUTOR.get().is_none());
+        let fixture=Fixture::new();
+        let package=fixture.package("managed","[Plugin]\nEnabled=true\nDll=plugin.dll\nLifecycle=shroudforge-v1\nServices=shroudforge.map\n",&["plugin.dll"]);
+        fixture.package("ordinary","",&["ordinary.dll"]);fixture.select_managed_and_ordinary();
+        let intended=intended_native_plan(&fixture.0,false).unwrap();
+        std::fs::write(package.join("native-plugin.ini"),"[Plugin]\nEnabled=true\nDll=plugin.dll\nLifecycle=shroudforge-v1\nServices=shroudforge.overlay\n").unwrap();
+        let changed=intended_native_plan(&fixture.0,false).unwrap();
+        assert_eq!(intended.identity,changed.identity); // Path/mode identity alone misses this change.
+        assert!(!intended.matches(&changed));
+        assert!(apply_plan_impl(&fixture.0,false,true,Some(&intended)).unwrap_err().contains("changed"));
+        assert!(APPLIED_PLAN.get().is_none()&&EXECUTOR.get().is_none()&&statuses().is_empty());
+        std::fs::write(package.join("native-plugin.ini"),"[Plugin]\nEnabled=true\nDll=plugin.dll\nLifecycle=unsupported\n").unwrap();
+        assert!(intended_native_plan(&fixture.0,false).is_err());
+        assert!(APPLIED_PLAN.get().is_none()&&EXECUTOR.get().is_none());
     }
 
     #[test]

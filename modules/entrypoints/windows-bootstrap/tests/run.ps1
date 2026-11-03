@@ -8,6 +8,12 @@ $dev = Join-Path $vs 'Common7/Tools/Launch-VsDevShell.ps1'
 & $dev -Arch amd64 -HostArch amd64 -SkipAutomaticLocation | Out-Null
 Push-Location $output
 try {
+    & cl /nologo /std:c++20 /EHsc /MT (Join-Path $PSScriptRoot 'selected_bridge_tests.cpp') /link /OUT:selected_bridge_tests.exe
+    if ($LASTEXITCODE) { throw 'Selected bridge fixture build failed' }
+    foreach ($scenario in 1..6) {
+        & (Join-Path $output 'selected_bridge_tests.exe') $scenario
+        if ($LASTEXITCODE) { throw "Selected bridge fixture failed: $scenario" }
+    }
     & cl /nologo /std:c++20 /EHsc /MT (Join-Path $PSScriptRoot 'static_start_tests.cpp') /link /OUT:static_start_tests.exe
     if ($LASTEXITCODE) { throw 'Static start fixture build failed' }
     & (Join-Path $output 'static_start_tests.exe')
