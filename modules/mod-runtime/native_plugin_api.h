@@ -31,10 +31,40 @@ extern "C" {
 #define SF_NATIVE_DRAIN_TIMEOUT_MS 250u
 #define SF_NATIVE_SERVICE_MAP_V1 "shroudforge.map"
 #define SF_NATIVE_SERVICE_OVERLAY_V1 "shroudforge.overlay"
+#define SF_NATIVE_SERVICE_KEYBINDS_V1 "shroudforge.keybinds"
+#define SF_KEYBIND_DOWN 1u
+#define SF_KEYBIND_PRESSED 2u
 
 typedef int32_t SFNativeStatusV1;
 typedef uint32_t SFNativeTargetV1;
 typedef uint32_t SFNativeLogLevelV1;
+
+/* Named settings use the existing SDL capture/Hotkey Manager. No VK codes.
+ * Only declared control:keybind settings of this package are accessible.
+ * read_keybind runs on the owner thread, is revoked with the host, and consumes
+ * press edges once per setting. First read after load/rebind establishes a
+ * baseline. Empty/disabled settings report zero flags. Focus loss and capture
+ * suppress both flags while consuming revisions. Tables expire with the host.
+ * Callers that gate actions on their own session state should keep polling
+ * while gated so press revisions continue to be consumed.
+ * out_size must fit SFKeybindStateV1; no output is written on errors.
+ */
+typedef struct SFKeybindStateV1 {
+    uint32_t size;
+    uint32_t flags;
+} SFKeybindStateV1;
+
+typedef struct SFKeybindServiceV1 {
+    uint32_t size;
+    uint32_t version;
+    void *context;
+    SFNativeStatusV1(SF_NATIVE_CALL *read_keybind)(
+        void *context,
+        const uint8_t *setting_key_utf8,
+        uint32_t setting_key_length,
+        uint32_t out_size,
+        SFKeybindStateV1 *out_state);
+} SFKeybindServiceV1;
 
 #define SF_NATIVE_STATUS_OK ((SFNativeStatusV1)0)
 #define SF_NATIVE_STATUS_INVALID_ARGUMENT ((SFNativeStatusV1)1)
