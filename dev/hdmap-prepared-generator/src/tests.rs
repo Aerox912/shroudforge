@@ -4,6 +4,9 @@ use kfc::{container::{KFCFile,KFCReader,KFCWriter},guid::{ContentHash,Guid,Resou
 struct Fixture { root:PathBuf, request:Request, resource:ResourceId, original_content:ContentHash, registry:TypeRegistry }
 impl Fixture {
     fn new(lua:&str)->Self {
+        Self::new_with_id(lua,"writer")
+    }
+    fn new_with_id(lua:&str,id:&str)->Self {
         let parent=PathBuf::from("E:/Scratch/hdmap-prepared-origin-tests");
         fs::create_dir_all(&parent).unwrap();
         let root=parent.join(format!("case-{}-{}",std::process::id(),std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
@@ -21,8 +24,8 @@ impl Fixture {
         let mut writer=KFCWriter::<KFCFile,_>::new(&source,STEM,&registry,&registry.version).unwrap();
         writer.write_resource(&resource,&7u32.to_le_bytes()).unwrap();
         writer.write_content(&original_content,b"retained source content").unwrap();writer.finalize().unwrap();
-        let package=environment.join("mods/writer");fs::create_dir_all(package.join("src")).unwrap();
-        fs::write(package.join("mod.json"),br#"{"id":"writer","name":"writer","version":"1.0.0","dependencies":[],"capabilities":["patch"]}"#).unwrap();
+        let package=environment.join(format!("mods/{id}"));fs::create_dir_all(package.join("src")).unwrap();
+        fs::write(package.join("mod.json"),serde_json::to_vec(&serde_json::json!({"id":id,"name":id,"version":"1.0.0","dependencies":[],"capabilities":["patch"]})).unwrap()).unwrap();
         fs::write(package.join("extended.mod.json"),br#"{"schemaVersion":1,"enabled":true,"targets":["client"]}"#).unwrap();
         fs::write(package.join("src/mod.lua"),lua).unwrap();
         let cache=environment.join("shroudforge/cache");fs::create_dir_all(&cache).unwrap();
@@ -32,7 +35,7 @@ impl Fixture {
         let environment_files=inventory(&environment).unwrap();
         let mut inputs=inventory(&source).unwrap();inputs.remove("personal-settings.keep");
         inputs.extend(environment_files.iter().filter(|(n,_)|n.starts_with("mods/")).map(|(n,s)|(n.clone(),s.clone())));
-        Self {root,request:Request{schema:1,target_root:source.clone(),asset_input_root:source,environment_root:environment,output_root:output,selected_ids:vec!["writer".into()],inputs,environment_files},resource,original_content,registry}
+        Self {root,request:Request{schema:1,target_root:source.clone(),asset_input_root:source,environment_root:environment,output_root:output,selected_ids:vec![id.into()],inputs,environment_files},resource,original_content,registry}
     }
 }
 impl Drop for Fixture {
@@ -58,8 +61,8 @@ fn assemble_overlay(source:&Path,stage:&Path,overlay:&Path)->Result<()> {
 }
 
 #[test]
-fn actual_lua_preparation_respects_generated_dat_reservation(){
-    let mut f=Fixture::new(EDIT);
+fn selected_dotted_id_preparation_respects_generated_dat_reservation(){
+    let mut f=Fixture::new_with_id(EDIT,"esm.stack-size");
     fs::write(f.request.asset_input_root.join("enshrouded_001.dat"),b"retained old owned bytes").unwrap();
     f.request.inputs.insert("enshrouded_001.dat".into(),stamp(&f.request.asset_input_root.join("enshrouded_001.dat")).unwrap());
     let before=inventory(&f.request.asset_input_root).unwrap();let receipt=prepare(&f.request).unwrap();
@@ -78,6 +81,29 @@ fn actual_lua_preparation_respects_generated_dat_reservation(){
     assert_eq!(composite.read_resource(&f.resource).unwrap().unwrap(),29u32.to_le_bytes());
     let mut reader=KFCReader::new(&receipt.output_stage,STEM).unwrap().into_cursor().unwrap();assert_eq!(reader.read_resource(&f.resource).unwrap().unwrap(),29u32.to_le_bytes());
     assert!(shroudforge_game_assets::transaction::commit_generated(&f.request.output_root,STEM).is_err());
+}
+
+#[test]
+fn selected_ids_follow_manifest_rules_and_keep_autoloot_excluded() {
+    let invalid=vec![
+        vec![],
+        vec!["".into()],
+        vec![".".into()],
+        vec!["..".into()],
+        vec!["esm/stack-size".into()],
+        vec![r"esm\stack-size".into()],
+        vec!["a".repeat(81)],
+        vec!["AUTO_LOOT".into()],
+        vec!["esm.auto.loot".into()],
+        vec!["esm.stack-size".into(),"esm.stack-size".into()],
+    ];
+    for (case,selected_ids) in invalid.into_iter().enumerate() {
+        let mut f=Fixture::new(EDIT);f.request.selected_ids=selected_ids;
+        let before=inventory(&f.request.asset_input_root).unwrap();
+        assert!(prepare(&f.request).is_err(),"case{case}");
+        assert_eq!(inventory(&f.request.asset_input_root).unwrap(),before);
+        assert_eq!(fs::read_dir(&f.request.output_root).unwrap().count(),0);
+    }
 }
 
 #[test]

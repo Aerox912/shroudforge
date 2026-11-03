@@ -40,6 +40,10 @@ fn path_key(path:&Path)->Result<String> {
 fn overlaps(a:&str,b:&str)->bool {a==b||a.starts_with(&format!("{b}/"))||b.starts_with(&format!("{a}/"))}
 fn same(a:&FileStamp,b:&FileStamp)->bool {a.bytes==b.bytes&&a.sha256==b.sha256}
 fn is_dat_asset(name:&str)->bool {let lower=name.to_ascii_lowercase();lower.ends_with(".dat")&&asset(&lower)}
+fn valid_selected_mod_id(id:&str)->bool {
+    mod_loader::config::valid_id(id)
+        && !id.to_ascii_lowercase().replace(['-', '_', '.'], "").contains("autoloot")
+}
 
 fn validate_receipt_schema<'a>(request:&PreparedRequest,receipt:&'a PreparedReceipt,full:bool)->Result<Option<&'a BTreeMap<String,FileStamp>>> {
     let expected_schema=if full {2}else{1};
@@ -112,7 +116,7 @@ fn verify_mode(root:&Path,full:bool)->Result<()> {
     ensure!(!request.inputs.is_empty()&&request.inputs.len()<=10000&&request.environment_files.len()<=10000&&receipt.staged.len()<=512,"oversized prepared composition");
     let ids:BTreeSet<_>=request.selected_ids.iter().cloned().collect();
     ensure!(!ids.is_empty()&&ids.len()==request.selected_ids.len(),"invalid prepared selection");
-    for id in &ids {ensure!(!id.is_empty()&&id.len()<=128&&id.bytes().all(|c|c.is_ascii_alphanumeric()||b"_-".contains(&c))&&!id.to_ascii_lowercase().replace(['-','_'],"").contains("autoloot"),"unqualified prepared selection");}
+    for id in &ids {ensure!(valid_selected_mod_id(id),"unqualified prepared selection");}
     for name in ["enshrouded.exe","enshrouded.kfc","enshrouded.kfc_resources"] {ensure!(request.inputs.contains_key(name),"incomplete prepared baseline");}
     for name in ["enshrouded.kfc","enshrouded.kfc_resources","generated-inputs.json"] {ensure!(receipt.staged.contains_key(name),"incomplete prepared output");}
     let mut aliases=BTreeSet::new();
@@ -173,19 +177,30 @@ mod tests {
     use super::*;
     struct Fixture {root:PathBuf,policy:PreparedPolicy}
     impl Fixture {
-        fn new()->Self {
+        fn new()->Self {Self::new_with_id("esm-real-map")}
+        fn new_with_id(mod_id:&str)->Self {
             let parent=PathBuf::from("E:/Scratch/hdmap-prepared-admission-tests");fs::create_dir_all(&parent).unwrap();
             let root=parent.join(format!("case-{}-{}",std::process::id(),std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
-            for name in [".EnshroudedClientMods","shroudforge/config","mods/esm-real-map"] {fs::create_dir_all(root.join(name)).unwrap();}
+            for name in [".EnshroudedClientMods","shroudforge/config"] {fs::create_dir_all(root.join(name)).unwrap();}
+            let mod_directory=format!("mods/{mod_id}");fs::create_dir_all(root.join(&mod_directory)).unwrap();
             let root=fs::canonicalize(root).unwrap();
-            for name in ["enshrouded.exe","enshrouded.kfc","enshrouded.kfc_resources","enshrouded_000.dat","enshrouded_001.dat","winmm.dll",".EnshroudedClientMods/operation.lock","mods/esm-real-map/mod.lua"] {fs::write(root.join(name),format!("synthetic-{name}")).unwrap();}
+            let mod_lua=format!("{mod_directory}/mod.lua");
+            let map_lua="mods/esm-real-map/mod.lua";
+            for name in ["enshrouded.exe","enshrouded.kfc","enshrouded.kfc_resources","enshrouded_000.dat","enshrouded_001.dat","winmm.dll",".EnshroudedClientMods/operation.lock"] {fs::write(root.join(name),format!("synthetic-{name}")).unwrap();}
+            fs::write(root.join(&mod_lua),format!("synthetic-{mod_lua}")).unwrap();
+            fs::create_dir_all(root.join(MAP_EXTENSION).parent().unwrap()).unwrap();
+            if mod_lua!=map_lua {fs::write(root.join(map_lua),b"synthetic-HD-map-script").unwrap();}
             fs::write(root.join(MAP_EXTENSION),br#"{"schemaVersion":1,"enabled":true,"settings":{"ExtendedZoom":{"value":false}}}"#).unwrap();
             let value=|name:&str|{let (bytes,sha256)=stamp(&root.join(name)).unwrap();FileStamp{bytes,sha256}};
-            let inputs=["enshrouded.exe","enshrouded.kfc","enshrouded.kfc_resources","enshrouded_000.dat",MAP_EXTENSION,"mods/esm-real-map/mod.lua"].into_iter().map(|n|(n.into(),value(n))).collect();
-            let environment_files=[MAP_EXTENSION,"mods/esm-real-map/mod.lua"].into_iter().map(|n|(n.into(),value(n))).collect();
+            let mut inputs:BTreeMap<_,_>=["enshrouded.exe","enshrouded.kfc","enshrouded.kfc_resources","enshrouded_000.dat",MAP_EXTENSION].into_iter().map(|n|(n.into(),value(n))).collect();
+            inputs.insert(mod_lua.clone(),value(&mod_lua));
+            if mod_lua!=map_lua {inputs.insert(map_lua.into(),value(map_lua));}
+            let mut environment_files=[MAP_EXTENSION].into_iter().map(|n|(n.into(),value(n))).collect::<BTreeMap<_,_>>();
+            environment_files.insert(mod_lua.clone(),value(&mod_lua));
+            if mod_lua!=map_lua {environment_files.insert(map_lua.into(),value(map_lua));}
             let environment_root=root.with_file_name(format!("{}-environment",root.file_name().unwrap().to_string_lossy()));
             let output_root=root.with_file_name(format!("{}-output",root.file_name().unwrap().to_string_lossy()));
-            let request=PreparedRequest {schema:1,target_root:root.clone(),asset_input_root:root.clone(),environment_root,output_root:output_root.clone(),selected_ids:vec!["esm-real-map".into()],inputs,environment_files};
+            let request=PreparedRequest {schema:1,target_root:root.clone(),asset_input_root:root.clone(),environment_root,output_root:output_root.clone(),selected_ids:vec![mod_id.into()],inputs,environment_files};
             let mut staged:BTreeMap<_,_>=["enshrouded.kfc","enshrouded.kfc_resources","enshrouded_001.dat"].into_iter().map(|n|(n.into(),value(n))).collect();
             staged.insert("generated-inputs.json".into(),FileStamp{bytes:123,sha256:digest(b"synthetic durable generation preimages")});
             let receipt=PreparedReceipt {schema:1,source_closure:option_env!("HD_PREPARED_SOURCE_CLOSURE").unwrap().into(),request_sha256:digest(&serde_json::to_vec(&request).unwrap()),target_root:root.clone(),output_stage:output_root.join(".enshrouded.shroudforge-stage"),staged,prepared_marker:FileStamp{bytes:100,sha256:digest(b"synthetic prepared marker")},source_dat_membership:None,source_dat_membership_sha256:None};
@@ -223,6 +238,16 @@ mod tests {
     #[test]
     fn synthetic_prepared_receipt_admits_committed_bytes_without_asset_writes() {
         let f=Fixture::new();f.write();let before=f.asset_hashes();
+        assert!(super::super::super::prepare(&f.root).unwrap());
+        assert_eq!(f.asset_hashes(),before);
+        assert_eq!(take_loader_demand(&f.root),0x80000001);
+        assert_eq!(zoom_demand::take(&f.root),0);
+        assert!(!transaction::directory(&f.root,STEM).exists());
+        assert!(!f.root.join("enshrouded.kfc.bak").exists());
+    }
+    #[test]
+    fn selected_ids_admit_canonical_dotted_mod_without_asset_writes() {
+        let f=Fixture::new_with_id("esm.stack-size");f.write();let before=f.asset_hashes();
         assert!(super::super::super::prepare(&f.root).unwrap());
         assert_eq!(f.asset_hashes(),before);
         assert_eq!(take_loader_demand(&f.root),0x80000001);
@@ -287,7 +312,7 @@ mod tests {
     #[test]
     #[ignore="requires explicitly synthetic SF_FULL_* test-build closures; not a production producer receipt"]
     fn schema6_readonly_admission_uses_receipt2_and_selected_service_phases() {
-        let mut f=Fixture::new();let root=f.root.clone();
+        let mut f=Fixture::new_with_id("esm.stack-size");let root=f.root.clone();
         let producer=option_env!("SF_FULL_PREPARED_SOURCE_CLOSURE").unwrap();
         let runtime=option_env!("SF_FULL_RUNTIME_SOURCE_CLOSURE").unwrap();
         f.policy.schema_version=6;f.policy.owner="shroudforge-full-prepared".into();f.policy.source_closure=producer.into();f.policy.preserved_loaders.clear();
@@ -356,6 +381,30 @@ mod tests {
             f.write();let before=f.asset_hashes();
             assert!(super::super::super::prepare(&f.root).is_err(),"case{case}");
             assert_eq!(f.asset_hashes(),before);assert_eq!(take_loader_demand(&f.root),0);
+        }
+    }
+    #[test]
+    fn selected_ids_refuse_malformed_and_autoloot_without_asset_writes() {
+        let invalid:Vec<Vec<String>>=vec![
+            vec![],
+            vec!["".into()],
+            vec![".".into()],
+            vec!["..".into()],
+            vec!["esm/stack-size".into()],
+            vec![r"esm\stack-size".into()],
+            vec!["a".repeat(81)],
+            vec!["AUTO_LOOT".into()],
+            vec!["esm.auto.loot".into()],
+            vec!["esm.stack-size".into(),"esm.stack-size".into()],
+        ];
+        for (case,selected_ids) in invalid.into_iter().enumerate() {
+            let mut f=Fixture::new();f.edit_request(|request|request.selected_ids=selected_ids);f.write();
+            let before=f.asset_hashes();
+            assert!(super::super::super::prepare(&f.root).is_err(),"case{case}");
+            assert_eq!(f.asset_hashes(),before);
+            assert_eq!(take_loader_demand(&f.root),0,"case{case}");
+            // A rejected preparation leaves no zoom handoff; an absent handoff reads as unavailable.
+            assert_eq!(zoom_demand::take(&f.root),2,"case{case}");
         }
     }
 }

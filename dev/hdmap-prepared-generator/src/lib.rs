@@ -82,6 +82,10 @@ fn stamp_file(file: &mut File) -> Result<Stamp> {
 }
 
 fn valid_digest(s: &str) -> bool { s.len()==64 && s.bytes().all(|c| c.is_ascii_digit() || (b'a'..=b'f').contains(&c)) }
+fn valid_selected_mod_id(id: &str) -> bool {
+    shroudforge_package::config::valid_id(id)
+        && !id.to_ascii_lowercase().replace(['-', '_', '.'], "").contains("autoloot")
+}
 fn source_closure() -> Result<&'static str> {
     let closure = SOURCE_CLOSURE.context("Delivery must compute HD_PREPARED_SOURCE_CLOSURE from the committed source closure")?;
     ensure!(valid_digest(closure), "invalid Delivery-computed source closure");
@@ -139,8 +143,7 @@ fn qualify(request: &Request) -> Result<(PathBuf, PathBuf, PathBuf, Vec<File>, B
     ensure!(!request.inputs.is_empty() && request.inputs.len()<=10000 && request.environment_files.len()<=10000,"invalid input size");
     let mut ids=BTreeSet::new();
     for id in &request.selected_ids {
-        ensure!(!id.is_empty() && id.len()<=128 && id.bytes().all(|c|c.is_ascii_alphanumeric() || b"_-".contains(&c)),"invalid selected id");
-        ensure!(!id.to_ascii_lowercase().replace(['-','_'],"").contains("autoloot"),"AutoLoot excluded");
+        ensure!(valid_selected_mod_id(id),"invalid or excluded selected id");
         ensure!(ids.insert(id),"duplicate selected id");
     }
     ensure!(!ids.is_empty(),"empty selection");
