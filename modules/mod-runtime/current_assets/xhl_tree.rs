@@ -8,6 +8,20 @@ pub const DISABLED_CHAIN:&[u8]=b"[Options]\r\nEnabled=0\r\n";
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DirectoryIdentity { pub relative: String, pub volume: u64, pub id: [u8;16] }
 pub struct TreeLease { _directories: Vec<File>, _files: Vec<File> }
+#[cfg(windows)]
+pub struct PinnedDirectory {file:File,identity:DirectoryIdentity}
+#[cfg(windows)]
+impl PinnedDirectory {
+    pub fn identity(&self)->DirectoryIdentity {self.identity.clone()}
+    pub fn validate(&self)->io::Result<()> {if win::identity(&self.file,String::new())?!=self.identity{return Err(io::Error::other("pinned directory identity drift"));}Ok(())}
+}
+#[cfg(windows)]
+pub fn pin_directory_chain(path:&Path)->io::Result<Vec<PinnedDirectory>> {
+    if !path.is_absolute()||path.components().any(|c|matches!(c,Component::CurDir|Component::ParentDir)){return Err(io::Error::other("plain absolute directory required"));}
+    path.ancestors().map(|p|{let file=win::open_dir(p,false)?;let identity=win::identity(&file,String::new())?;Ok(PinnedDirectory{file,identity})}).collect()
+}
+#[cfg(windows)]
+pub fn held_file_identity(file:&File)->io::Result<(u64,[u8;16])> {let id=win::identity(file,String::new())?;Ok((id.volume,id.id))}
 
 fn relative(s: &str) -> io::Result<PathBuf> {
     if s.is_empty() || s.contains('\\') || s.contains(':') || s.contains('\0') ||
@@ -146,19 +160,60 @@ impl TreeLease {
 /// Installer-side builder, usable only for an exclusively new root. Existing
 /// directories are rejected, never adopted or ACL-modified. Populate before seal.
 #[cfg(windows)]
-pub struct FreshTree {root:PathBuf,dirs:Vec<(String,File)>}
+pub struct FreshTree {root:PathBuf,dirs:Vec<(String,File)>,created_ids:Vec<Option<DirectoryIdentity>>,_ancestors:Vec<File>}
+#[cfg(windows)]
+#[derive(Clone,Debug)]
+pub struct CreationReceipt {pub root:PathBuf,pub known:Vec<DirectoryIdentity>,pub unresolved_created_paths:Vec<PathBuf>}
+#[cfg(windows)]
+struct CreationOwnership {tree:FreshTree,unresolved:Vec<PathBuf>}
+#[cfg(windows)]
+pub struct CreationFailure {pub source:io::Error,ownership:Option<Box<CreationOwnership>>}
+#[cfg(windows)]
+impl CreationFailure {
+    fn new(source:io::Error,tree:FreshTree,unresolved:Vec<PathBuf>)->Self {Self{source,ownership:Some(Box::new(CreationOwnership{tree,unresolved}))}}
+    pub fn receipt(&self)->CreationReceipt {let o=self.ownership.as_ref().unwrap();CreationReceipt{root:o.tree.root.clone(),known:o.tree.created_ids.iter().filter_map(Clone::clone).collect(),unresolved_created_paths:o.unresolved.clone()}}
+    /// Creation never changed a directory ACL. Validate only original acquired
+    /// handles; unresolved just-created paths are reported, never reopened/adopted.
+    pub fn release_unmodified(mut self)->Result<CreationReceipt,Self> {
+        if let Err(e)=self.ownership.as_ref().unwrap().tree.validate_created(){self.source=e;return Err(self);}
+        let receipt=self.receipt();self.ownership.take();Ok(receipt)
+    }
+}
+#[cfg(windows)]
+impl std::fmt::Debug for CreationFailure {fn fmt(&self,f:&mut std::fmt::Formatter<'_>)->std::fmt::Result{f.debug_struct("CreationFailure").field("source",&self.source).field("created",&self.receipt()).finish()}}
+#[cfg(windows)]
+impl std::fmt::Display for CreationFailure {fn fmt(&self,f:&mut std::fmt::Formatter<'_>)->std::fmt::Result{write!(f,"{}; partial creation ownership retained",self.source)}}
+#[cfg(windows)]
+impl std::error::Error for CreationFailure {}
+#[cfg(windows)]
+impl Drop for CreationFailure {fn drop(&mut self){if let Some(o)=self.ownership.take(){if !o.tree.dirs.is_empty()||!o.unresolved.is_empty(){let _=Box::leak(o);}}}}
 #[cfg(windows)]
 impl FreshTree {
-    pub fn create(root:&Path,children:&[String])->io::Result<Self> {
-        if !root.is_absolute(){return Err(io::Error::other("fresh candidate root must be absolute"));}
-        // Pin the immediate parent before creation and reject reparse ancestors.
-        let mut ancestors=Vec::new();for p in root.ancestors().skip(1){ancestors.push(win::open_dir(p,false)?);}
-        fs::create_dir(root)?;let mut dirs=vec![(String::new(),win::open_dir(root,true)?)];
-        let mut sorted=children.to_vec();sorted.sort_by_key(|p|p.matches('/').count());let mut seen=BTreeSet::new();
-        for name in sorted {if !seen.insert(name.to_ascii_lowercase()){return Err(io::Error::other("directory alias"));}let p=root.join(relative(&name)?);fs::create_dir(&p)?;dirs.push((name,win::open_dir(&p,true)?));}
-        Ok(Self{root:root.into(),dirs})
+    pub fn create(root:&Path,children:&[String])->Result<Self,CreationFailure> {
+        let mut tree=Self{root:root.into(),dirs:Vec::new(),created_ids:Vec::new(),_ancestors:Vec::new()};
+        let validated=(||{if !root.is_absolute()||root.components().any(|c|matches!(c,Component::ParentDir|Component::CurDir))||children.len()>255{return Err(io::Error::other("invalid fresh candidate bounds/path"));}
+            let mut seen=BTreeSet::new();for name in children{relative(name)?;if !seen.insert(name.to_ascii_lowercase()){return Err(io::Error::other("directory alias"));}}Ok(())})();
+        if let Err(e)=validated{return Err(CreationFailure::new(e,tree,vec![]));}
+        for p in root.ancestors().skip(1){match win::open_dir(p,false){Ok(f)=>tree._ancestors.push(f),Err(e)=>return Err(CreationFailure::new(e,tree,vec![]))}}
+        let mut names=children.to_vec();names.sort_by_key(|p|p.matches('/').count());names.insert(0,String::new());
+        for name in names {
+            let path=if name.is_empty(){root.into()}else{root.join(&name)};
+            #[cfg(test)] if let Err(e)=test_faults::before_create(){return Err(CreationFailure::new(e,tree,vec![]));}
+            if let Err(e)=fs::create_dir(&path){return Err(CreationFailure::new(e,tree,vec![]));}
+            #[cfg(test)] if let Err(e)=test_faults::after_create(){return Err(CreationFailure::new(e,tree,vec![path]));}
+            let file=match win::open_dir(&path,true){Ok(file)=>file,Err(e)=>return Err(CreationFailure::new(e,tree,vec![path]))};
+            tree.dirs.push((name.clone(),file));tree.created_ids.push(None);
+            match win::identity(&tree.dirs.last().unwrap().1,name){Ok(id)=>*tree.created_ids.last_mut().unwrap()=Some(id),Err(e)=>return Err(CreationFailure::new(e,tree,vec![path]))}
+        }Ok(tree)
     }
+    pub fn validate_created(&self)->io::Result<()> {
+        for(i,(name,file))in self.dirs.iter().enumerate(){let actual=win::identity(file,name.clone())?;
+            if self.created_ids[i].as_ref().is_some_and(|expected|*expected!=actual){return Err(io::Error::other("created directory identity drift"));}}
+        Ok(())
+    }
+    pub fn created_receipt(&self)->io::Result<CreationReceipt> {self.validate_created()?;Ok(CreationReceipt{root:self.root.clone(),known:self.created_ids.iter().filter_map(Clone::clone).collect(),unresolved_created_paths:vec![]})}
     pub fn write_new(&self,name:&str,bytes:&[u8])->io::Result<()> {
+        self.validate_created()?;
         use std::{io::Write,os::windows::fs::OpenOptionsExt};
         let mut f=OpenOptions::new().write(true).access_mode(0x40000000|0x20000|0x40000).create_new(true).open(self.root.join(relative(name)?))?;
         f.write_all(bytes)?;
@@ -187,7 +242,7 @@ impl FreshTree {
 pub enum DirectoryProgress {Original,SealPending,Sealed,RestorePending,Restored}
 #[cfg(windows)]
 #[derive(Clone,Copy,Debug,PartialEq,Eq)]
-enum RecoveryPhase {Capturing,Sealing,Sealed,Restoring,Complete}
+enum RecoveryPhase {Capturing,Sealing,Sealed,Restoring,Complete,Installed}
 #[cfg(windows)]
 struct RecoveryEntry {identity:Option<DirectoryIdentity>,original:Option<win::Acl>,progress:DirectoryProgress}
 #[cfg(windows)]
@@ -281,7 +336,7 @@ impl Recovery {
 #[cfg(windows)]
 impl Drop for Recovery {
     fn drop(&mut self){if let Some(record)=self.state.take(){
-        if record.phase!=RecoveryPhase::Complete {
+        if !matches!(record.phase,RecoveryPhase::Complete|RecoveryPhase::Installed) {
             // Deliberately retain one complete structured record on abandonment,
             // including descriptors and leases. No implicit cleanup or success.
             // The caller must keep its returned failure object to resume it.
@@ -296,6 +351,7 @@ impl RecoveryFailure {
     pub fn resume_restore(&mut self)->io::Result<()> {self.recovery.restore()}
     pub fn restoration_complete(&self)->bool {self.recovery.state().phase==RecoveryPhase::Complete}
     pub fn progress(&self)->Vec<DirectoryProgress> {self.recovery.state().entries.iter().map(|e|e.progress).collect()}
+    pub fn captured_identities(&self)->Vec<DirectoryIdentity> {self.recovery.state().entries.iter().filter_map(|e|e.identity.clone()).collect()}
     #[cfg(test)] pub fn test_drift_acl(&self,i:usize,restore:bool)->io::Result<()> {self.recovery.drift_acl(i,restore)}
 }
 #[cfg(windows)]
@@ -309,7 +365,23 @@ impl std::error::Error for RecoveryFailure {fn source(&self)->Option<&(dyn std::
 #[cfg(windows)]
 pub struct SealedCandidate {recovery:Recovery,pub identities:Vec<DirectoryIdentity>}
 #[cfg(windows)]
+pub struct InstallCommitFailure {pub source:io::Error,pub candidate:SealedCandidate}
+#[cfg(windows)]
+impl std::fmt::Debug for InstallCommitFailure {fn fmt(&self,f:&mut std::fmt::Formatter<'_>)->std::fmt::Result{f.debug_struct("InstallCommitFailure").field("source",&self.source).finish()}}
+#[cfg(windows)]
 impl SealedCandidate {
+    #[cfg(test)] pub fn test_set_seal(&self,i:usize,installed:bool)->io::Result<()> {let s=self.recovery.state();win::set_native(&s.tree.dirs[i].1,if installed{s.installed.as_ref().unwrap()}else{s.entries[i].original.as_ref().unwrap()})}
+    /// Installer-only explicit ownership transfer after its complete transaction
+    /// readback/ack. Preserve the installed ACL, release handles, never label it
+    /// restored or permanently immutable. A refusal returns the original owner.
+    pub fn commit_installed(mut self)->Result<Vec<DirectoryIdentity>,InstallCommitFailure> {
+        let result=(||{if self.recovery.state().phase!=RecoveryPhase::Sealed{return Err(io::Error::other("candidate is not sealed"));}
+            self.recovery.reconcile_all()?;
+            if self.recovery.state().entries.iter().any(|e|e.progress!=DirectoryProgress::Sealed){return Err(io::Error::other("candidate seal incomplete"));}Ok(())})();
+        if let Err(source)=result{return Err(InstallCommitFailure{source,candidate:self});}
+        let ids=self.recovery.state().entries.iter().map(|e|e.identity.as_ref().unwrap().clone()).collect();
+        self.recovery.state_mut().phase=RecoveryPhase::Installed;Ok(ids)
+    }
     pub fn bind_process(self,child:std::process::Child)->RunningCandidate {RunningCandidate{seal:Some(self),child}}
     /// Only valid before a process has been attached; binding consumes this type.
     pub fn restore_unlaunched(mut self)->Result<(),RecoveryFailure> {
@@ -335,12 +407,15 @@ impl RunningCandidate {
 #[cfg(test)]
 pub mod test_faults {
     use std::{cell::RefCell,io};
-    #[derive(Default)] struct Faults {calls:usize,before:Vec<usize>,after:Vec<usize>,identity:bool}
+    #[derive(Default)] struct Faults {calls:usize,before:Vec<usize>,after:Vec<usize>,identity:bool,create_calls:usize,create_before:Option<usize>,create_after:Option<usize>}
     thread_local! {static FAULTS:RefCell<Faults>=RefCell::new(Faults::default());}
     pub fn reset(before:&[usize],after:&[usize]) {FAULTS.with(|f|*f.borrow_mut()=Faults{before:before.to_vec(),after:after.to_vec(),..Default::default()});}
     pub fn clear_failures(){FAULTS.with(|f|{let mut f=f.borrow_mut();f.before.clear();f.after.clear();f.identity=false;});}
     pub fn set_identity_fault(value:bool){FAULTS.with(|f|f.borrow_mut().identity=value);}
     pub fn calls()->usize {FAULTS.with(|f|f.borrow().calls)}
+    pub fn fail_creation(before:Option<usize>,after:Option<usize>){FAULTS.with(|f|{let mut f=f.borrow_mut();f.create_calls=0;f.create_before=before;f.create_after=after;});}
+    pub(super) fn before_create()->io::Result<()> {FAULTS.with(|f|{let mut f=f.borrow_mut();f.create_calls+=1;if f.create_before==Some(f.create_calls){return Err(io::Error::other("injected create error"));}Ok(())})}
+    pub(super) fn after_create()->io::Result<()> {FAULTS.with(|f|{let f=f.borrow();if f.create_after==Some(f.create_calls){return Err(io::Error::other("injected post-create open error"));}Ok(())})}
     pub(super) fn identity_fault()->bool {FAULTS.with(|f|f.borrow().identity)}
     pub(super) fn before_set()->io::Result<bool> {FAULTS.with(|f|{let mut f=f.borrow_mut();f.calls+=1;let n=f.calls;
         if f.before.contains(&n){return Err(io::Error::other("injected SetSecurityInfo error before write"));}Ok(f.after.contains(&n))})}
