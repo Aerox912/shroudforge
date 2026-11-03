@@ -173,21 +173,83 @@ fn validate_e_path(path: &Path, existing: bool, directory: bool) -> Result<()> {
         "noncanonical path: {}",
         path.display()
     );
-    let mut cursor = PathBuf::new();
-    for component in path.components() {
-        cursor.push(component.as_os_str());
-        if !cursor.exists() {
-            ensure!(
-                !existing,
-                "required E: path is missing: {}",
-                cursor.display()
-            );
-            continue;
+    #[cfg(windows)]
+    {
+        let mut components = path.components();
+        let prefix = components.next().context("E: path has no drive prefix")?;
+        ensure!(
+            matches!(prefix, Component::Prefix(_)),
+            "E: path does not start with a drive prefix: {}",
+            path.display()
+        );
+        let root = components.next().context("E: path has no drive root")?;
+        ensure!(
+            matches!(root, Component::RootDir),
+            "E: path is not rooted: {}",
+            path.display()
+        );
+
+        // A Windows drive prefix (`E:` or `\\?\E:`) is syntax, not a
+        // filesystem ancestor. Probe the complete drive root before walking
+        // each existing directory below it, so reparse ancestors are still
+        // rejected without treating `\\?\E:` as a missing path.
+        let mut cursor = PathBuf::new();
+        cursor.push(prefix.as_os_str());
+        cursor.push(root.as_os_str());
+        ensure!(
+            cursor.is_absolute() && is_e_path(&cursor),
+            "invalid E: drive root: {}",
+            cursor.display()
+        );
+        match fs::symlink_metadata(&cursor) {
+            Ok(_) => {
+                ordinary(&cursor, true)
+                    .with_context(|| format!("unsafe E: path component {}", cursor.display()))?;
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                ensure!(
+                    !existing,
+                    "required E: path is missing: {}",
+                    cursor.display()
+                );
+            }
+            Err(error) => {
+                return Err(error)
+                    .with_context(|| format!("inspect E: drive root {}", cursor.display()));
+            }
         }
-        let is_leaf = cursor == path;
-        ordinary(&cursor, if is_leaf { directory } else { true })
-            .with_context(|| format!("unsafe E: path component {}", cursor.display()))?;
+
+        for component in components {
+            ensure!(
+                matches!(component, Component::Normal(_)),
+                "noncanonical E: path component in {}",
+                path.display()
+            );
+            cursor.push(component.as_os_str());
+            match fs::symlink_metadata(&cursor) {
+                Ok(_) => {
+                    let is_leaf = cursor == path;
+                    ordinary(&cursor, if is_leaf { directory } else { true }).with_context(
+                        || format!("unsafe E: path component {}", cursor.display()),
+                    )?;
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                    ensure!(
+                        !existing,
+                        "required E: path is missing: {}",
+                        cursor.display()
+                    );
+                }
+                Err(error) => {
+                    return Err(error).with_context(|| {
+                        format!("inspect E: path component {}", cursor.display())
+                    });
+                }
+            }
+        }
     }
+    #[cfg(not(windows))]
+    bail!("E: path validation is only supported on Windows");
     if existing {
         ordinary(path, directory)?;
     }
