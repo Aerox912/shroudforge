@@ -44,6 +44,7 @@ impl SelectedBootPlanV2 {
 #[derive(Clone,Serialize,Deserialize)]
 #[serde(rename_all="camelCase",deny_unknown_fields)]
 pub struct SelectedDemand {
+    #[serde(default)] pub(crate) xhl:Option<super::xhl_selection::Selection>,
     pub process_role:String,
     #[serde(default)] pub dedicated_guest_qualified:bool,
     #[serde(default)] pub allow_unverified_cursor_gate:bool,
@@ -52,7 +53,7 @@ pub struct SelectedDemand {
     pub vein_settings_path:Option<String>,
 }
 impl Default for SelectedDemand {
-    fn default()->Self {Self{process_role:"client".into(),dedicated_guest_qualified:false,
+    fn default()->Self {Self{xhl:None,process_role:"client".into(),dedicated_guest_qualified:false,
         allow_unverified_cursor_gate:false,flight_transport_enabled:false,vein_selected:false,vein_settings_path:None}}
 }
 pub fn plan(c:&Contract)->Result<SelectedBootPlanV2> {
@@ -102,7 +103,7 @@ pub(super) fn validate_environment(env:&mod_loader::ModEnvironment,c:&Contract)-
         ensure!(mod_loader::package_lookup::find_mod_package(env.game_dir().as_std_path(),FLIGHT_ID).is_none(),"Flight package could not be admitted");
     }
     let fp=selected.iter().any(|m|m.info().id=="shroudweave-first-person");
-    let intended=crate::native_dlls::intended_native_plan(env.game_dir().as_std_path(),false).map_err(anyhow::Error::msg)?;
+    let intended=crate::native_dlls::intended_native_plan_for(env.game_dir().as_std_path(),false,c.selection.xhl.as_ref()).map_err(anyhow::Error::msg)?;
     ensure!(intended.identity==c.dll_plan,"intended native plan differs from prepared composition");
     let mut map=fp;let mut overlay=false;
     for plugin in &intended.entries {
@@ -130,7 +131,7 @@ pub(super) fn validate_live_settings(c:&Contract,id:&str,metadata:&Value)->Resul
     Ok(())
 }
 #[cfg(windows)]
-fn file_identity(file:&fs::File)->Result<(u64,[u8;16])> {
+pub(super) fn file_identity(file:&fs::File)->Result<(u64,[u8;16])> {
     use std::os::windows::io::AsRawHandle;
     #[repr(C)] struct FileIdInfo {volume:u64,id:[u8;16]}
     const _: [();24]=[();std::mem::size_of::<FileIdInfo>()];
@@ -143,11 +144,11 @@ fn file_identity(file:&fs::File)->Result<(u64,[u8;16])> {
     Ok((information.volume,information.id))
 }
 #[cfg(unix)]
-fn file_identity(file:&fs::File)->Result<(u64,[u8;16])> {
+pub(super) fn file_identity(file:&fs::File)->Result<(u64,[u8;16])> {
     use std::os::unix::fs::MetadataExt;let m=file.metadata()?;let mut id=[0;16];id[..8].copy_from_slice(&m.ino().to_le_bytes());Ok((m.dev(),id))
 }
 #[cfg(not(any(windows,unix)))]
-fn file_identity(_:&fs::File)->Result<(u64,[u8;16])> {anyhow::bail!("INI lease identity unsupported")}
+pub(super) fn file_identity(_:&fs::File)->Result<(u64,[u8;16])> {anyhow::bail!("INI lease identity unsupported")}
 pub(super) fn validate_ini_handles(files:&[(String,fs::File)])->Result<()> {
     let ini=files.iter().find(|(name,_)|name==VEIN_INI).context("missing admitted INI lease")?;
     let expected=file_identity(&ini.1)?;

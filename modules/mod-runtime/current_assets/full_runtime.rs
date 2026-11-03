@@ -5,6 +5,10 @@ use std::sync::{Mutex,OnceLock};
 
 #[path="selected_services.rs"]
 pub mod selected_services;
+#[path="xhl_selection.rs"]
+pub(crate) mod xhl_selection;
+#[path="xhl_tree.rs"]
+mod xhl_tree;
 pub use selected_services::{SelectedBootPlanV2,SelectedDemand};
 #[derive(Clone,Serialize,Deserialize)]
 #[serde(rename_all="camelCase",deny_unknown_fields)]
@@ -36,6 +40,7 @@ enum Phase {Verified,Preparing,Prepared,Taken,NativePrepared,Committed,Running,F
 #[derive(Clone)]
 struct PackageBinding {directory:PathBuf,metadata:Value}
 struct Admission {root:PathBuf,contract:Contract,phase:Phase,packages:BTreeMap<String,PackageBinding>,
+    #[cfg(windows)] _xhl:Option<(Vec<fs::File>,xhl_tree::TreeLease)>,
     intended_native:Option<crate::native_dlls::IntendedNativePlan>,_files:Vec<(String,fs::File)>}
 static ADMISSION:OnceLock<Mutex<Option<Admission>>>=OnceLock::new();
 fn state()->&'static Mutex<Option<Admission>> {ADMISSION.get_or_init(||Mutex::new(None))}
@@ -58,7 +63,11 @@ fn validate_contract(c:&Contract,producer:&str,request:&str,receipt:&str)->Resul
 fn validate_contract_pair(c:&Contract,producer:&str,request:&str,receipt:&str,compiled:&str,legacy:Option<&str>)->Result<()> {
     ensure!(valid_hash(compiled)&&valid_hash(producer)&&c.runtime_source_closure==compiled,"full runtime source pair differs");
     ensure!(Some(producer)!=legacy,"historical prepared producer cannot authorize full runtime");
-    ensure!(c.schema_version==2&&c.host=="sf-winmm-selected-services-v2","unsupported full runtime host contract");
+    match (c.schema_version,c.host.as_str(),c.selection.xhl.as_ref()) {
+        (2,"sf-winmm-selected-services-v2",None)=>{},
+        (3,"sf-winmm-selected-services-v3",Some(xhl))=>xhl.validate(c)?,
+        _=>anyhow::bail!("unsupported full runtime host contract"),
+    }
     ensure!(c.prepared_request_sha256==request&&c.prepared_receipt_sha256==receipt,"full runtime composition binding differs");
     selected_services::plan(c)?;
     ensure!(c.files.len()>=4&&c.files.len()<=132&&c.greeneye_paths.len()<=8,"invalid full runtime file set");
@@ -176,7 +185,9 @@ pub(crate) fn validate_plan(root:&Path,c:&Contract)->Result<()> {
     let selections=mod_loader::dll_manager::read_selections(root);
     let mut paths=HashSet::new();let mut images=HashSet::new();let mut greeneye=HashSet::new();
     for entry in &plan.entries {
-        ensure!(entry.mode==mod_loader::dll_manager::DllLoadMode::Library,"schema6 DirectInput chain host is unqualified; select an approved Library route");
+        let core=c.selection.xhl.as_ref().is_some_and(|_|xhl_selection::Selection::is_core(root,&entry.path));
+        if let Some(xhl)=c.selection.xhl.as_ref(){if xhl.delegated(root,&entry.path)?{continue;}}
+        ensure!(if core{entry.mode==mod_loader::dll_manager::DllLoadMode::Dinput8}else{entry.mode==mod_loader::dll_manager::DllLoadMode::Library},"schema6 DirectInput chain host is unqualified; select an approved Library route");
         ensure!(selections.iter().any(|s|s.package_directory.eq_ignore_ascii_case(&entry.package_directory)&&s.enabled&&s.approved&&s.target.applies_to(false)),"full runtime DLL lacks explicit approval");
         let path=fs::canonicalize(&entry.path)?;
         let relative=path.strip_prefix(root).context("DLL escapes full runtime root")?.to_str().context("nonUTF8 DLL")?.replace('\\',"/");
@@ -185,6 +196,7 @@ pub(crate) fn validate_plan(root:&Path,c:&Contract)->Result<()> {
         ensure!(!matches!(name.as_str(),"winmm.dll"|"shroudforge-runtime.dll"|"kfc-runtime.dll"|"shroudtopia.dll"),"full runtime dependency is a proxy/self/unsupported provider");
         ensure!(paths.insert(key.clone()),"duplicate canonical full runtime DLL");
         let expected=c.files.get(&relative).context("unbound full runtime DLL bytes")?;
+        if !core&&c.selection.xhl.is_some(){ensure!(!xhl_selection::PLUGINS.iter().any(|(_,hash)|expected.sha256==*hash)&&expected.sha256!=xhl_selection::CORE_SHA,"XHL image selected outside its owned subtree");}
         for file in ["mod.json","native-plugin.ini"] {
             let name=format!("mods/{}/{file}",entry.package_directory);
             if joined(root,&name)?.exists(){ensure!(c.files.contains_key(&name),"unbound native declaration: {name}");}
@@ -196,6 +208,10 @@ pub(crate) fn validate_plan(root:&Path,c:&Contract)->Result<()> {
         if name=="dbgcore.dll" {ensure!(c.greeneye_paths.contains(&relative),"Greeneye requires explicit qualified selection");greeneye.insert(relative);}
     }
     ensure!(greeneye.len()==c.greeneye_paths.len(),"unknown or duplicate Greeneye selection");
+    if let Some(xhl)=c.selection.xhl.as_ref(){
+        xhl.validate(c)?;
+        ensure!(plan.entries.iter().filter(|e|xhl_selection::Selection::is_core(root,&e.path)).count()==1,"exactly one Core selection required");
+    }
     Ok(())
 }
 pub(super) fn verify_and_stage(root:&Path,c:Contract,request:&str,receipt:&str,producer:&str,environment:&BTreeMap<String,Stamp>)->Result<()> {
@@ -205,10 +221,14 @@ pub(super) fn verify_and_stage(root:&Path,c:Contract,request:&str,receipt:&str,p
     // Preserve the verified package/configuration bytes until start_live has
     // actually read them. Only read leases are created, never asset copies.
     for(name,expected)in environment {
+        if c.selection.xhl.is_some(){xhl_selection::Selection::validate_read_input(name)?;}
         let path=joined(root,name)?;ensure!(plain(&path)?.is_file(),"invalid full runtime environment member");
         let held=keep_readonly(&path)?;ensure!(&stamp(&path)?==expected,"full runtime environment drift: {name}");files.push((name.clone(),held));
     }
     validate_plan(root,&c)?;
+    if c.selection.xhl.is_some(){xhl_selection::Selection::validate_chain_leases(&files)?;}
+    #[cfg(windows)] let xhl=match c.selection.xhl.as_ref(){Some(xhl)=>Some(xhl.admit(root)?),None=>None};
+    #[cfg(not(windows))] ensure!(c.selection.xhl.is_none(),"XHL tree admission requires Windows");
     let packages=bind_runtime_packages(root,&c,environment)?;
     let env=mod_loader::ModEnvironment::load(root.to_str().context("nonUTF8 selected root")?).map_err(|e|anyhow::anyhow!("{e:?}"))?;
     let intended_native=selected_services::validate_environment(&env,&c)?;
@@ -217,7 +237,7 @@ pub(super) fn verify_and_stage(root:&Path,c:Contract,request:&str,receipt:&str,p
         selected_services::validate_ini_handles(&files)?;
     }
     let mut slot=lock();ensure!(slot.is_none(),"full runtime startup already attempted");
-    *slot=Some(Admission{root:root.into(),contract:c,phase:Phase::Verified,packages,intended_native:Some(intended_native),_files:files});Ok(())
+    *slot=Some(Admission{root:root.into(),contract:c,phase:Phase::Verified,packages,intended_native:Some(intended_native),_files:files,#[cfg(windows)] _xhl:xhl});Ok(())
 }
 fn transition(root:&Path,from:Phase,to:Phase)->Result<Contract> {
     let root=fs::canonicalize(root)?;let mut slot=lock();let a=slot.as_mut().context("full runtime admission missing")?;
@@ -289,9 +309,13 @@ pub fn after_create(root:&Path)->Result<()> {
     let mut slot=lock();
     if let Some(a)=slot.as_mut(){
         ensure!(fs::canonicalize(root)?==a.root&&a.phase==Phase::Running,"full runtime create completion differs");
-        a._files.retain(|(name,_)|name.to_ascii_lowercase().ends_with(".dll"));
+        retain_create_leases(a);
     }
     Ok(())
+}
+fn retain_create_leases(a:&mut Admission) {
+    a._files.retain(|(name,_)|name.to_ascii_lowercase().ends_with(".dll")||
+        (a.contract.selection.xhl.is_some()&&name==xhl_selection::CHAIN));
 }
 pub fn abort(_: &Path) {if let Some(a)=lock().as_mut(){a.phase=Phase::Failed;}}
 #[cfg(test)]
@@ -300,7 +324,7 @@ pub(super) fn retire_fixture(){*lock()=None;}
 #[cfg(test)]
 mod tests {
     use super::*;
-    fn contract()->Contract {
+    pub(super) fn contract()->Contract {
         Contract{schema_version:2,host:"sf-winmm-selected-services-v2".into(),runtime_source_closure:"a".repeat(64),prepared_request_sha256:"b".repeat(64),prepared_receipt_sha256:"c".repeat(64),boot_services:vec!["metadata-init-v1".into()],overlay:false,first_person:false,selection:SelectedDemand::default(),runtime_mods:vec![],scripts:BTreeMap::new(),dll_plan:Value::Array(vec![]),files:["winmm.dll","shroudforge/shroudforge-runtime.dll","shroudforge/kfc-runtime.dll","shroudforge/config/modloader-config.json"].into_iter().map(|n|(n.into(),NativeFile{bytes:1,sha256:"d".repeat(64)})).collect(),greeneye_paths:vec![]}
     }
     #[test] fn compiled_full_pair_must_exist_and_match() {
@@ -316,7 +340,7 @@ mod tests {
     }
     #[test] fn full_sequence_is_one_shot_and_wrong_root_cannot_refresh_it() {
         let root=PathBuf::from("E:/owned/synthetic-root");
-        let mut a=Admission{root:root.clone(),contract:contract(),phase:Phase::Verified,packages:BTreeMap::new(),intended_native:None,_files:vec![]};
+        let mut a=Admission{root:root.clone(),contract:contract(),phase:Phase::Verified,packages:BTreeMap::new(),intended_native:None,_files:vec![],#[cfg(windows)] _xhl:None};
         for (from,to) in [(Phase::Verified,Phase::Preparing),(Phase::Preparing,Phase::Prepared),(Phase::Prepared,Phase::Taken),(Phase::Taken,Phase::NativePrepared),(Phase::NativePrepared,Phase::Committed),(Phase::Committed,Phase::Running)] {move_to(&mut a,&root,from,to).unwrap();}
         assert!(move_to(&mut a,&root,Phase::Committed,Phase::Running).is_err());assert_eq!(a.phase,Phase::Failed);
         a.phase=Phase::Prepared;assert!(move_to(&mut a,&root.join("other"),Phase::Prepared,Phase::Taken).is_err());assert_eq!(a.phase,Phase::Failed);
@@ -347,6 +371,7 @@ mod tests {
         let plan=selected_services::plan(&f.c).unwrap();
         let other="shroudforge/config/modloader-config.json";
         let mut a=Admission{root:f.root.clone(),contract:f.c.clone(),phase:Phase::Taken,packages:BTreeMap::new(),intended_native:None,
+            #[cfg(windows)] _xhl:None,
             _files:vec![(selected_services::VEIN_INI.into(),keep_readonly(&ini).unwrap()),
                 (selected_services::VEIN_INI.into(),keep_readonly(&ini).unwrap()),(other.into(),keep_readonly(&f.root.join(other)).unwrap())]};
         selected_services::validate_ini_handles(&a._files).unwrap();
@@ -367,9 +392,23 @@ mod tests {
         assert_eq!(a.phase,Phase::Failed);
         let c=contract();let p=selected_services::plan(&c).unwrap();
         let mut unselected=Admission{root:f.root.clone(),contract:c,phase:Phase::Taken,packages:BTreeMap::new(),intended_native:None,
+            #[cfg(windows)] _xhl:None,
             _files:vec![(selected_services::VEIN_INI.into(),keep_readonly(&ini).unwrap())]};
         assert!(release_ini(&mut unselected,&f.root,&p,p.prepared_services()));
         assert_eq!(unselected._files.len(),1); // No selected Vein input, no lease drop.
+    }
+    #[test] fn xhl_disabled_chain_lease_survives_create_and_aliases_refuse() {
+        let mut f=Fixture::new(&[]);let chain=f.root.join(xhl_selection::CHAIN);fs::create_dir_all(chain.parent().unwrap()).unwrap();fs::write(&chain,xhl_tree::DISABLED_CHAIN).unwrap();
+        let alias=f.root.join("mods/alias.ini");fs::hard_link(&chain,&alias).unwrap();
+        f.c.selection.xhl=Some(xhl_selection::tests::fixture());
+        let mut a=Admission{root:f.root.clone(),contract:f.c.clone(),phase:Phase::Running,packages:BTreeMap::new(),intended_native:None,
+            #[cfg(windows)] _xhl:None,
+            _files:vec![(xhl_selection::CHAIN.into(),keep_readonly(&chain).unwrap()),("mods/alias.ini".into(),keep_readonly(&alias).unwrap()),
+                ("shroudforge/config/modloader-config.json".into(),keep_readonly(&f.root.join("shroudforge/config/modloader-config.json")).unwrap())]};
+        assert!(xhl_selection::Selection::validate_chain_leases(&a._files).is_err());a._files.remove(1);xhl_selection::Selection::validate_chain_leases(&a._files).unwrap();
+        retain_create_leases(&mut a);assert_eq!(a._files.len(),1);assert_eq!(a._files[0].0,xhl_selection::CHAIN);
+        #[cfg(windows)] assert!(fs::OpenOptions::new().write(true).open(&chain).is_err());
+        fs::write(f.root.join("mods/xhl-core/XHL-Native-Plugin-Host.log"),b"writable log").unwrap();
     }
     struct Fixture{root:PathBuf,c:Contract}
     impl Fixture {
