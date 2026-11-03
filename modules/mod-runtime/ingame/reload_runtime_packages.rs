@@ -4,6 +4,7 @@ use mod_loader::ModEnvironment;
 
 impl IngameRuntime {
     pub(super) fn reload_runtime_packages(&mut self, mod_ids: &[String]) -> Result<(), String> {
+        crate::current_assets::full_runtime::reject_package_reload(&self.root).map_err(|e|e.to_string())?;
         self.diagnostics.release_runtime_host();
         let previously_active = self
             .lifecycle

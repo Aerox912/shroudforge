@@ -24,6 +24,9 @@ extern "C" {
 #define KFC_RUNTIME_ABI_VERSION 12u
 KFC_RUNTIME_API uint32_t KFC_RUNTIME_CALL KfcRuntimeAbi(void);
 KFC_RUNTIME_API bool KFC_RUNTIME_CALL KfcRuntimeInitialize(void);
+/* Optional ABI12 pre-entry cache: required hook publication only. No World,
+ * player, prop/cursor or feature-service readiness is implied. */
+KFC_RUNTIME_API bool KFC_RUNTIME_CALL KfcRuntimeStartupReady(void);
 /* Optional ABI-12 bootstrap control: 0 disabled, 1 declared enabled overlay demand. */
 KFC_RUNTIME_API bool KFC_RUNTIME_CALL KfcRuntimePrepareOverlay(unsigned demand);
 KFC_RUNTIME_API void KFC_RUNTIME_CALL KfcRuntimeTick(void);

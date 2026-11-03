@@ -488,8 +488,30 @@ pub fn prepare_startup(root: &Path, is_server: bool) -> Result<(), String> {
     apply_plan(root, is_server, true)
 }
 
+/// Schema6 only. Every selected ordinary DLL is required to load; managed
+/// plugins remain deferred to their existing post-entry lifecycle. No World wait.
+pub(crate) fn prepare_full_startup(root:&Path, contract:&crate::current_assets::full_runtime::Contract)->Result<(),String> {
+    if APPLIED_PLAN.get().is_some(){return Err("Native startup plan was already applied; full startup cannot adopt it".into());}
+    crate::current_assets::full_runtime::validate_plan(root,contract).map_err(|e|e.to_string())?;
+    let plan=mod_loader::dll_manager::resolve_load_plan(root,false);
+    let (_,_,rejected,issues)=classify_plan_entries(root,plan.entries);
+    if !rejected.is_empty()||!issues.is_empty(){return Err("Full runtime native lifecycle selection is unsupported or rejected".into());}
+    apply_plan_impl(root,false,true,true)?;
+    for status in statuses(){
+        if !matches!(status.state,"loaded"|"deferred"){return Err(format!("Required native DLL {} is {}: {}",status.id,status.state,status.detail));}
+    }
+    deferred_native_plugins(root,false)?;
+    let environment=mod_loader::ModEnvironment::load(root.to_str().ok_or("nonUTF8 full runtime root")?).map_err(|e|format!("{e:?}"))?;
+    if crate::native_overlay_startup_demand(&environment)?!=contract.overlay{return Err("Full runtime graphics requirement differs from selected managed plugins".into());}
+    Ok(())
+}
+
 pub(crate) fn apply_plan(root: &Path, is_server: bool, wait: bool) -> Result<(), String> {
+    apply_plan_impl(root,is_server,wait,false)
+}
+fn apply_plan_impl(root:&Path,is_server:bool,wait:bool,strict_new:bool)->Result<(),String> {
     if APPLIED_PLAN.get().is_some() {
+        if strict_new{return Err("Full runtime cannot adopt an already applied native plan".into());}
         return Ok(());
     }
     let enabled = manager_enabled(root)?;
@@ -510,6 +532,7 @@ pub(crate) fn apply_plan(root: &Path, is_server: bool, wait: bool) -> Result<(),
         })
         .is_err()
     {
+        if strict_new{return Err("Another native startup plan won publication; full runtime stopped".into());}
         return Ok(());
     }
     if !enabled {

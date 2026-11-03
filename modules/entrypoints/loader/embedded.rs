@@ -1,5 +1,6 @@
 #[path = "asset_preparation/mod.rs"]
 mod pregame;
+mod full_startup;
 #[cfg(any(windows, target_os = "linux"))]
 #[path = "start_updater_controller.rs"]
 mod start_updater_controller;
@@ -279,9 +280,57 @@ pub unsafe extern "C" fn shroudforge_take_startup_loader_demand(game: *const u16
     }).unwrap_or(u32::MAX)
 }
 
+fn startup_path(value:*const u16)->Option<PathBuf> {
+    if value.is_null(){return None;}
+    let mut length=0;unsafe{while length<32768&&*value.add(length)!=0{length+=1;}}
+    if length==32768{return None;}
+    String::from_utf16(unsafe{std::slice::from_raw_parts(value,length)}).ok().map(PathBuf::from)
+}
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn shroudforge_startup_mode(game:*const u16)->u32 {
+    std::panic::catch_unwind(||startup_path(game).and_then(|p|shroudforge_api::current_assets::full_runtime::mode(&p).ok()).unwrap_or(u32::MAX)).unwrap_or(u32::MAX)
+}
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn shroudforge_startup_first_person_demand(game:*const u16)->u32 {
+    std::panic::catch_unwind(||->u32{
+        let Some(root)=startup_path(game)else{return 2;};
+        let Some(root)=root.to_str()else{return 2;};
+        let Ok(environment)=shroudforge_package::ModEnvironment::load(root)else{return 2;};
+        shroudforge_api::first_person_startup_demand(&environment).map(u32::from).unwrap_or(2)
+    }).unwrap_or(2)
+}
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn shroudforge_take_full_startup(game:*const u16)->u32 {
+    std::panic::catch_unwind(||startup_path(game).map(|p|shroudforge_api::current_assets::full_runtime::take(&p)).unwrap_or(u32::MAX)).unwrap_or(u32::MAX)
+}
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn shroudforge_commit_full_startup(game:*const u16,handshake:u32)->bool {
+    std::panic::catch_unwind(||startup_path(game).is_some_and(|p|shroudforge_api::current_assets::full_runtime::commit(&p,handshake))).unwrap_or(false)
+}
+/// Explicit no-copy entry. Policy removal, verification error or panic cannot
+/// reach the ordinary pregame runner, updater, migrations or baseline recovery.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn shroudforge_prepare_full_startup(game:*const u16)->bool {
+    let Some(root)=startup_path(game)else{return false;};
+    shroudforge_api::current_assets::clear_zoom_demand();
+    let result=full_startup::run(||->Result<(),String>{
+        if shroudforge_api::current_assets::full_runtime::mode(&root).map_err(|e|e.to_string())?!=2{return Err("explicit full-runtime policy missing".into());}
+        if !shroudforge_api::current_assets::prepare(&root).map_err(|e|e.to_string())?{return Err("full-runtime preparation did not verify".into());}
+        Ok(())
+    },||shroudforge_api::current_assets::full_runtime::prepare_native(&root).map_err(|e|e.to_string()));
+    match result {
+        Ok(())=>true,
+        Err(detail)=>{shroudforge_api::current_assets::full_runtime::abort(&root);
+            let _=shroudforge_logging::append(&root,'E',"full-startup",&detail);false}
+    }
+}
+
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn shroudforge_prepare_startup(game: *const u16) -> bool {
     shroudforge_api::current_assets::clear_zoom_demand();
+    // Default closed even if classification itself panics. Once current-assets
+    // ownership is observed, removal/error/panic cannot enable legacy recovery.
+    let no_copy=std::cell::Cell::new(true);
     fn path(value: *const u16) -> Option<PathBuf> {
         if value.is_null() {
             return None;
@@ -296,7 +345,7 @@ pub unsafe extern "C" fn shroudforge_prepare_startup(game: *const u16) -> bool {
             std::slice::from_raw_parts(value, length)
         })))
     }
-    match std::panic::catch_unwind(|| {
+    match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         let Some(game) = path(game) else {
             return false;
         };
@@ -307,12 +356,16 @@ pub unsafe extern "C" fn shroudforge_prepare_startup(game: *const u16) -> bool {
         // legacy baseline on its error path.
         match shroudforge_api::current_assets::active(&game) {
             Ok(true) => return match pregame::run_startup(&game) {
-                Ok(()) => {let _=shroudforge_logging::append(&game,'I',"startup-assets",
+                Ok(()) => {
+                    if shroudforge_api::current_assets::full_runtime::mode(&game).map_err(|e|e.to_string()).and_then(|mode|if mode==2 {
+                        shroudforge_api::current_assets::full_runtime::prepare_native(&game).map_err(|e|e.to_string())
+                    }else{Ok(())}).is_err(){shroudforge_api::current_assets::full_runtime::abort(&game);return false;}
+                    let _=shroudforge_logging::append(&game,'I',"startup-assets",
                     "Current-composition assets verified; unrelated asset mods were not replayed");true},
                 Err(error) => {let _=shroudforge_logging::append(&game,'E',"startup-assets",&error.to_string());false}
             },
             Err(error) => {let _=shroudforge_logging::append(&game,'E',"startup-assets",&error.to_string());return false;},
-            Ok(false) => {}
+            Ok(false) => {no_copy.set(false);}
         }
         let migrations_ready = match run_post_install_migrations(&game) {
             Ok(()) => true,
@@ -352,7 +405,7 @@ pub unsafe extern "C" fn shroudforge_prepare_startup(game: *const u16) -> bool {
             }
         };
         assets_ready && prepare_native_dlls_before_game_entry(&game)
-    }) {
+    })) {
         Ok(result) => result,
         Err(payload) => {
             if let Some(game) = path(game) {
@@ -366,6 +419,7 @@ pub unsafe extern "C" fn shroudforge_prepare_startup(game: *const u16) -> bool {
                         panic_detail(&*payload)
                     ),
                 );
+                if no_copy.get(){shroudforge_api::current_assets::full_runtime::abort(&game);return false;}
                 let assets_ready = pregame::recover_failed_startup(
                     &game,
                     &format!(
@@ -400,6 +454,7 @@ pub unsafe extern "C" fn shroudforge_create(game: *const u16) -> *mut RuntimeHan
         let _ = shroudforge_logging::append(game, 'E', "runtime", message);
     }
     fn create_runtime(game: PathBuf) -> Result<RuntimeHandle, String> {
+        shroudforge_api::current_assets::full_runtime::before_create(&game).map_err(|e|e.to_string())?;
         let _ = shroudforge_logging::initialize(&game, false);
         let executable = std::env::current_exe().map_err(|error| error.to_string())?;
         let name = executable
@@ -421,6 +476,7 @@ pub unsafe extern "C" fn shroudforge_create(game: *const u16) -> *mut RuntimeHan
         loader
             .load_directory(&game)
             .map_err(|error| format!("mod loading failed at {}: {error}", game.display()))?;
+        shroudforge_api::current_assets::full_runtime::after_create(&game).map_err(|e|e.to_string())?;
         Ok(RuntimeHandle(loader))
     }
     match std::panic::catch_unwind(|| {

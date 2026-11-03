@@ -27,6 +27,7 @@ mod zoom;
 mod zoom_demand;
 #[path = "current_assets/manager_generation.rs"]
 mod manager_generation;
+pub mod full_runtime;
 pub use manager_generation::take_loader_demand as take_startup_loader_demand;
 #[path = "current_assets/layout_migration.rs"]
 mod layout_migration;
@@ -698,6 +699,10 @@ pub fn prepare(root: &Path) -> Result<bool> {
     // This ownership mode validates published bytes and hands off zoom demand;
     // it must never enter the map-only recipe or a baseline/backup path.
     let document: serde_json::Value = read_json(&policy_path)?;
+    if document.get("schemaVersion").and_then(serde_json::Value::as_u64) == Some(6) {
+        manager_generation::verify_full_prepared(root)?;
+        return Ok(true);
+    }
     if document.get("schemaVersion").and_then(serde_json::Value::as_u64) == Some(5) {
         manager_generation::verify_prepared(root)?;
         return Ok(true);

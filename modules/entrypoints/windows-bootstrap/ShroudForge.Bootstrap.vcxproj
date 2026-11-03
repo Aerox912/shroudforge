@@ -56,6 +56,7 @@
     <ClInclude Include="runtime_bridge.h" />
     <ClInclude Include="logging_config.h" />
     <ClInclude Include="startup_gate.h" />
+    <ClInclude Include="startup_admission.h" />
     <ClInclude Include="startup_zoom.h" />
     <ClInclude Include="startup_zoom_profile.h" />
     <ClInclude Include="..\..\game-runtime\native\abi\runtime_api.h" />

@@ -74,8 +74,9 @@ impl IngameRuntime {
                 restrict_network_clients,
             );
         }
-        let (plan, mut errors) =
+        let (mut plan, mut errors) =
             super::plan_runtime_mods::plan_runtime_mods(env, &root, is_server, &loader_config);
+        crate::current_assets::full_runtime::select_runtime_plan(env,&mut plan)?;
         let loaded = plan
             .iter()
             .map(|item| {

@@ -28,6 +28,9 @@ use startup::open_game_assets as game_files;
 pub fn native_overlay_startup_demand(environment: &mod_loader::ModEnvironment) -> Result<bool, String> {
     session::native_overlay_startup_demand(environment)
 }
+pub fn first_person_startup_demand(environment:&mod_loader::ModEnvironment)->Result<bool,String> {
+    session::first_person_startup_demand(environment)
+}
 
 pub const API_VERSION: &str = env!("CARGO_PKG_VERSION");
 

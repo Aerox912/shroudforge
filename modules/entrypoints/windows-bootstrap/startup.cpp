@@ -1,4 +1,5 @@
 #include "bootstrap_state.h"
+#include <intrin.h>
 
 using namespace BootstrapImplementation;
 
@@ -65,16 +66,30 @@ extern "C" __declspec(dllexport) BOOL __cdecl ShroudforgeStop(DWORD timeout_mill
 BOOL APIENTRY DllMain(HMODULE module, DWORD reason, LPVOID reserved) {
     if (reason == DLL_PROCESS_ATTACH) {
         self_module = module;
+        StartupGate::direct_static_attachment=reserved!=nullptr;
         DisableThreadLibraryCalls(module);
         // winmm.dll is found beside every executable in the game directory.
         // The bundled ShroudForge UI also runs there, but must never bootstrap
         // another runtime or race Enshrouded's asset startup.
         if (!is_supported_game_process()) return TRUE;
+        if(!reserved) {
+            wchar_t loaded_path[32768]{};
+            const auto size=GetModuleFileNameW(module,loaded_path,32768);
+            if(!size||size>=32768)return FALSE;
+            const auto name=std::filesystem::path(loaded_path).filename().wstring();
+            // The SF winmm host is never a dynamically loaded dependency.
+            // Historical separately named assets bootstraps retain their route.
+            if(CompareStringOrdinal(name.c_str(),-1,L"winmm.dll",-1,TRUE)==CSTR_EQUAL)return FALSE;
+        }
         stop_event = CreateEventW(nullptr, TRUE, FALSE, nullptr);
         if (!stop_event) return FALSE;
         if (!StartupGate::Install()) return FALSE;
         runtime_thread = CreateThread(nullptr, 0, run, nullptr, 0, nullptr);
-        return runtime_thread != nullptr;
+        if(!runtime_thread) {
+            TerminateProcess(GetCurrentProcess(),ERROR_DLL_INIT_FAILED);
+            __fastfail(FAST_FAIL_FATAL_APP_EXIT); // A published gate must stay resident.
+        }
+        return TRUE;
     }
     if (reason == DLL_PROCESS_DETACH && reserved == nullptr && stop_event) {
         SetEvent(stop_event);
