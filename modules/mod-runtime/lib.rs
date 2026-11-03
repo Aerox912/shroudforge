@@ -29,6 +29,14 @@ pub fn native_overlay_startup_demand(environment: &mod_loader::ModEnvironment) -
     session::native_overlay_startup_demand(environment)
 }
 
+/// Return whether the enabled First Person package is part of the startup
+/// client runtime plan and needs its native entrypoint prepared before release.
+pub fn first_person_startup_demand(
+    environment: &mod_loader::ModEnvironment,
+) -> Result<bool, String> {
+    session::first_person_startup_demand(environment)
+}
+
 pub const API_VERSION: &str = env!("CARGO_PKG_VERSION");
 
 /// Deployed contract must describe this binary, not invent native capabilities.

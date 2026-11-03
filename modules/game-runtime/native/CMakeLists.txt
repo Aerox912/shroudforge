@@ -26,6 +26,17 @@ target_include_directories(kfc-runtime-test-map-overlay-c PRIVATE "${CMAKE_CURRE
 target_compile_features(kfc-runtime-test-map-overlay-c PRIVATE c_std_11)
 set_property(TARGET kfc-runtime-test-map-overlay-c PROPERTY MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
 
+add_executable(kfc-runtime-test-first-person-c-abi EXCLUDE_FROM_ALL ../tests/first_person_c_abi_test.c)
+target_include_directories(kfc-runtime-test-first-person-c-abi PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
+target_compile_features(kfc-runtime-test-first-person-c-abi PRIVATE c_std_11)
+set_property(TARGET kfc-runtime-test-first-person-c-abi PROPERTY MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+
+add_executable(kfc-runtime-test-first-person-control EXCLUDE_FROM_ALL ../tests/first_person_control_test.cpp)
+target_include_directories(kfc-runtime-test-first-person-control PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
+target_compile_features(kfc-runtime-test-first-person-control PRIVATE cxx_std_20)
+target_compile_definitions(kfc-runtime-test-first-person-control PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX)
+set_property(TARGET kfc-runtime-test-first-person-control PROPERTY MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+
 add_executable(kfc-runtime-test-vulkan-broker EXCLUDE_FROM_ALL ../tests/vulkan_broker_test.cpp map/read_map_frame.cpp
     map/capture_game_map.cpp map/hud_visibility.cpp graphics/render_overlay.cpp engine-hooks/write_executable_bytes.cpp engine-hooks/allocate_near_code.cpp)
 target_include_directories(kfc-runtime-test-vulkan-broker PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
@@ -219,6 +230,7 @@ add_library(kfc-runtime SHARED
     main-menu/resolve_character_selection.cpp
     main-menu/resolve_game_flow.cpp
     main-menu/manage_native_main_menu.cpp
+    first-person/first_person_control.cpp
     host/manage_runtime_lifecycle.cpp
     code-inventory/export_function_inspection.cpp
     code-inventory/resolve_original_call_graph.cpp

@@ -221,6 +221,7 @@ impl Drop for AppState {
 mod asset_resources;
 pub(crate) mod configure_component_contract;
 mod create_mod_session;
+mod first_person_startup_demand;
 pub(crate) mod loaded_resource_indexes;
 mod loaded_resources;
 mod map_overlay_services;
@@ -229,6 +230,7 @@ mod native_plugin_lifecycle;
 mod native_plugins;
 mod validate_generated_assets;
 pub(crate) use native_plugins::native_overlay_startup_demand;
+pub(crate) use first_person_startup_demand::first_person_startup_demand;
 mod record_runtime_state;
 pub use asset_resources::ResourceInfo;
 use asset_resources::ResourceSource;

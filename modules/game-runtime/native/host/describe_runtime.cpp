@@ -13,6 +13,22 @@
 
 using namespace ProviderImplementation;
 
+namespace {
+std::string FirstPersonDetail() {
+    const auto required = KfcRuntimeFirstPersonDetail(nullptr, 0);
+    if (required < 2 || required > 4096) {
+        return "first-person provider detail is unavailable";
+    }
+    std::string detail(required, '\0');
+    const auto actual = KfcRuntimeFirstPersonDetail(detail.data(), detail.size());
+    if (actual != required || detail.back() != '\0') {
+        return "first-person provider detail changed while being copied";
+    }
+    detail.resize(required - 1);
+    return detail;
+}
+}
+
 extern "C" {
 KFC_RUNTIME_API void __cdecl KfcRuntimeDiagnostics(char* buffer, std::size_t capacity) {
     if (!buffer || !capacity) return;
@@ -26,6 +42,9 @@ KFC_RUNTIME_API void __cdecl KfcRuntimeDiagnostics(char* buffer, std::size_t cap
         auto diagnostics = nlohmann::json::parse(EcsRuntime::Diagnostics());
         diagnostics["resourceService"] = nlohmann::json::parse(ResourceRuntime::Status());
         diagnostics["nativeMainMenu"] = nlohmann::json::parse(NativeMainMenu::Status());
+        diagnostics["firstPerson"] = {
+            {"available", KfcRuntimeFirstPersonAvailable()},
+            {"detail", FirstPersonDetail()}};
         const auto overlay = OverlayRuntime::GraphicsStatus();
         const auto map = MapRuntime::CapturedFrames().Acquire(0, GetTickCount64());
         diagnostics["mapOverlay"] = {
@@ -58,7 +77,9 @@ KFC_RUNTIME_API void __cdecl KfcRuntimeStatus(char* buffer, std::size_t capacity
     if (!buffer || !capacity) return;
     try {
         const auto text = EcsRuntime::Status() + " resource_service=" + ResourceRuntime::Status() +
-            " native_main_menu=" + NativeMainMenu::Status();
+            " native_main_menu=" + NativeMainMenu::Status() +
+            " first_person_available=" + (KfcRuntimeFirstPersonAvailable() ? "true" : "false") +
+            " first_person_detail=" + FirstPersonDetail();
         const auto size = (std::min)(text.size(), capacity - 1);
         std::memcpy(buffer, text.data(), size); buffer[size] = 0;
     } catch (...) { buffer[0] = 0; }

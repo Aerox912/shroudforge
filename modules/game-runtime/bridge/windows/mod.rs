@@ -8,6 +8,8 @@ mod building;
 pub use building::*;
 mod ecs;
 pub use ecs::*;
+mod first_person;
+pub use first_person::*;
 mod functions;
 pub use functions::*;
 mod impact;

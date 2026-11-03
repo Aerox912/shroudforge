@@ -21,6 +21,14 @@ pub(crate) fn available(state: &AppState, r#mod: &Mod, feature: &str) -> bool {
             state.phase()==RuntimePhase::Ingame && state.is_client() && state.api().has_runtime(feature)
                 && has_capability(r#mod,Capability::Runtime)
         }
+        "runtime.first_person.set_mode" => {
+            state.phase() == RuntimePhase::Ingame
+                && state.is_client()
+                && r#mod.info().target.supports_process(false)
+                && state.api().has_runtime(feature)
+                && has_capability(r#mod, Capability::Runtime)
+                && runtime_provider::first_person_available()
+        }
         "runtime.lifecycle" => {
             state.phase() == RuntimePhase::Ingame
                 && state.api().has_runtime("runtime.lifecycle")
@@ -197,7 +205,30 @@ pub(super) fn operation_status(
     if feature.starts_with("runtime.map.") && state.is_server() {
         return availability_to_lua(lua,Availability::Unavailable{reason:"map services require a client process".into()});
     }
+    if feature.starts_with("runtime.first_person.")
+        && (state.is_server() || !r#mod.info().target.supports_process(false))
+    {
+        return availability_to_lua(
+            lua,
+            Availability::Unavailable {
+                reason:
+                    "first-person camera control requires a client-targeted mod in a client process"
+                        .into(),
+            },
+        );
+    }
     let availability = state.api().runtime(&feature);
+    if feature == "runtime.first_person.set_mode"
+        && matches!(availability, Availability::Available)
+        && !runtime_provider::first_person_available()
+    {
+        return availability_to_lua(
+            lua,
+            Availability::Unavailable {
+                reason: runtime_provider::first_person_detail(),
+            },
+        );
+    }
     if feature == "runtime.is_main_menu"
         && matches!(availability, Availability::Available)
         && runtime_provider::is_main_menu().is_none()

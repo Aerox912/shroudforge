@@ -1,0 +1,28 @@
+{
+  "$schema": "https://bonsaibauer.github.io/shroudforge/schemas/mod-locale.schema.json",
+  "mod": {
+    "name": "Shroudweave First Person",
+    "description": "Schaltet mit Home die Ego-Perspektive und die korrigierte Ausdauerleiste gemeinsam um."
+  },
+  "settings": {
+    "toggleFirstPerson": {
+      "label": "Ego-Perspektive umschalten",
+      "description": "Home schaltet die Ego-Kamera und die korrigierte Ausdauerleiste gemeinsam um."
+    },
+    "cameraDistance": {
+      "label": "Kameraabstand",
+      "description": "Kameraoffset während die Ego-Perspektive aktiv ist."
+    }
+  },
+  "groups": [
+    {
+      "label": "Ego-Perspektive",
+      "description": "Der Modus startet bei jedem Laden des Laufzeitmoduls in der Third-Person-Ansicht."
+    }
+  ],
+  "changelog": [
+    "Ergänzt einen loader-eigenen Home-Schalter für Kamera und Ausdauerleiste.",
+    "Behält den Upstream-Standardwert -0,15 bei und lässt nur das exakt unterstützte Client-Abbild zu."
+  ],
+  "strings": {}
+}
