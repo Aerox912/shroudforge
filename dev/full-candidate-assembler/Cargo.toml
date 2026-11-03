@@ -1,0 +1,20 @@
+[package]
+name = "sf-full-candidate-assembler"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.88.0"
+license = "MIT"
+publish = false
+
+[workspace]
+
+[dependencies]
+anyhow = "1.0"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+sha2 = "0.10"
+shroudforge-package = { path = "../../modules/modloader" }
+shroudforge-api = { path = "../../modules/mod-runtime" }
+hdmap-prepared-generator = { path = "../hdmap-prepared-generator" }
+sf-xhl-tree-adapter = { path = "../xhl-tree-adapter" }
+shroudforge-loader-config = { path = "../../modules/loader-config" }
