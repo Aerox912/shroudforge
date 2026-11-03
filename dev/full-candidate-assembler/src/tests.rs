@@ -14,6 +14,7 @@ fn greeneye_profile_pin_matches_reviewed_definition() {
 
 struct Fixture {
     base: PathBuf,
+    xhl_source: PathBuf,
     manifest: InputManifest,
     request_path: PathBuf,
     asset_receipt_path: PathBuf,
@@ -59,7 +60,10 @@ fn selected_feature_rows() -> Vec<SelectedFeature> {
 fn cli_input_reader_checks_owned_ancestry_and_size_before_reading() {
     let fixture = Fixture::new(false);
     let expected = fs::read(&fixture.request_path).unwrap();
-    assert_eq!(read_input_file(&fixture.request_path, expected.len() as u64).unwrap(), expected);
+    assert_eq!(
+        read_input_file(&fixture.request_path, expected.len() as u64).unwrap(),
+        expected
+    );
     assert!(read_input_file(&fixture.request_path, 0).is_err());
     assert!(read_input_file(Path::new(r"D:\not-read\input.json"), 1024).is_err());
     let traversed = fixture.base.join(r"..\outside.json");
@@ -93,6 +97,45 @@ impl Fixture {
         fs::create_dir_all(&env_root).unwrap();
         fs::create_dir_all(&stage).unwrap();
         fs::create_dir_all(&xhl_source).unwrap();
+
+        let pinned_xhl_sources = [
+            ("xhl-core.dll", "SF_XHL_CORE_FIXTURE_SOURCE"),
+            (
+                "mods/XHL-Remote-Altar-Close/XHL-Remote-Altar-Close.dll",
+                "SF_XHL_REMOTE_FIXTURE_SOURCE",
+            ),
+            (
+                "mods/XHL-Grappling-Hook-Pull-2x/XHL-Grappling-Hook-Pull-2x.dll",
+                "SF_XHL_GRAPPLING_FIXTURE_SOURCE",
+            ),
+            (
+                "mods/XHL-Unlimited-Gifting-Range/XHL-Unlimited-Gifting-Range.dll",
+                "SF_XHL_GIFTING_FIXTURE_SOURCE",
+            ),
+        ];
+        for (relative, variable) in pinned_xhl_sources {
+            let source = PathBuf::from(std::env::var_os(variable).unwrap_or_else(|| {
+                panic!("explicit E: source fixture binding {variable} is required")
+            }));
+            assert!(is_e_path(&source), "{variable} must bind an E: file");
+            let destination = xhl_source.join(relative.replace('/', "\\"));
+            fs::create_dir_all(destination.parent().unwrap()).unwrap();
+            fs::copy(&source, &destination).unwrap_or_else(|error| {
+                panic!("copy pinned inert XHL fixture source from {variable}: {error}")
+            });
+        }
+        for (plugin, _) in sf_xhl_tree_adapter::pins::PLUGINS {
+            let source = xhl_source.join(format!("mods/{plugin}").replace('/', "\\"));
+            let parent = source.parent().unwrap();
+            fs::write(
+                parent.join("native-plugin.ini"),
+                format!(
+                    "[Plugin]\r\nEnabled=true\r\nDll={}\r\n",
+                    source.file_name().unwrap().to_string_lossy()
+                ),
+            )
+            .unwrap();
+        }
 
         let selected_features = selected_feature_rows();
         let mut components = Vec::new();
@@ -134,7 +177,11 @@ impl Fixture {
             input_files.insert(rel, value.clone());
             // Canonical activation is persisted in the extension, not mod.json.
             let extension = package_root.join("extended.mod.json");
-            fs::write(&extension, br#"{"schemaVersion":1,"enabled":true,"targets":["client"]}"#).unwrap();
+            fs::write(
+                &extension,
+                br#"{"schemaVersion":1,"enabled":true,"targets":["client"]}"#,
+            )
+            .unwrap();
             let extension_stamp = stamp(&extension).unwrap();
             let extension_rel = format!("mods/{directory}/extended.mod.json");
             environment_files.insert(extension_rel.clone(), extension_stamp.clone());
@@ -157,7 +204,12 @@ impl Fixture {
                 package_directory: directory,
                 origin: PackageOrigin::AssetEnvironment,
                 source_root: None,
-                source_files: [("mod.json".into(), value), ("extended.mod.json".into(), extension_stamp)].into_iter().collect(),
+                source_files: [
+                    ("mod.json".into(), value),
+                    ("extended.mod.json".into(), extension_stamp),
+                ]
+                .into_iter()
+                .collect(),
                 overlays: Vec::new(),
             });
         }
@@ -296,64 +348,48 @@ impl Fixture {
         let target_root = request.target_root.clone();
         let target_parent = target_root.join("mods");
         let mut xhl_inputs = BTreeMap::new();
-        let mut identity_seed = 20u8;
-        let mut add_input = |name: String, source: Option<String>, bytes: u64, sha256: String| {
-            let source_identity = source.as_ref().map(|_| Identity {
-                volume: 1,
-                id: [identity_seed; 16],
-            });
-            identity_seed = identity_seed.wrapping_add(1);
+        let mut add_source = |name: String, source: String| {
+            let path = xhl_source.join(source.replace('/', "\\"));
+            let value = stamp(&path).unwrap();
+            let file = std::fs::File::open(&path).unwrap();
+            let (volume, id) = sf_xhl_tree_adapter::tree::held_file_identity(&file).unwrap();
             xhl_inputs.insert(
                 name,
                 InputFile {
-                    source,
-                    source_identity,
-                    bytes,
-                    sha256,
+                    source: Some(source),
+                    source_identity: Some(Identity { volume, id }),
+                    bytes: value.bytes,
+                    sha256: value.sha256,
                 },
             );
         };
-        add_input(
-            "xhl-core.dll".into(),
-            Some("xhl-core.dll".into()),
-            588_800,
-            sf_xhl_tree_adapter::pins::CORE_SHA.into(),
-        );
-        for (plugin, pin) in sf_xhl_tree_adapter::pins::PLUGINS {
+        add_source("xhl-core.dll".into(), "xhl-core.dll".into());
+        for (plugin, _) in sf_xhl_tree_adapter::pins::PLUGINS {
             let path = format!("mods/{plugin}");
-            let bytes = if plugin == sf_xhl_tree_adapter::pins::GIFTING_PATH {
-                sf_xhl_tree_adapter::pins::GIFTING_BYTES
-            } else {
-                32_768
-            };
-            add_input(path.clone(), Some(path), bytes, pin.into());
+            add_source(path.clone(), path.clone());
             let parent = plugin.rsplit_once('/').unwrap().0;
             let declaration = format!("mods/{parent}/native-plugin.ini");
-            let declaration_bytes = format!(
-                "[Plugin]\r\nEnabled=true\r\nDll={}\r\n",
-                plugin.rsplit('/').next().unwrap()
-            );
-            add_input(
-                declaration,
-                Some(format!("{parent}/native-plugin.ini")),
-                declaration_bytes.len() as u64,
-                digest(declaration_bytes.as_bytes()),
-            );
+            add_source(declaration.clone(), declaration);
         }
-        add_input(
+        xhl_inputs.insert(
             "dinput8-chain.ini".into(),
-            None,
-            sf_xhl_tree_adapter::tree::DISABLED_CHAIN.len() as u64,
-            digest(sf_xhl_tree_adapter::tree::DISABLED_CHAIN),
+            InputFile {
+                source: None,
+                source_identity: None,
+                bytes: sf_xhl_tree_adapter::tree::DISABLED_CHAIN.len() as u64,
+                sha256: digest(sf_xhl_tree_adapter::tree::DISABLED_CHAIN),
+            },
         );
+        let source_root_identity = sf_xhl_tree_adapter::tree::pin_directory_chain(&xhl_source)
+            .unwrap()
+            .first()
+            .unwrap()
+            .identity();
         let plan = ApprovedPlan {
             schema_version: 1,
             transaction: "rb65-synthetic-transaction-001".into(),
             source_root: xhl_source.clone(),
-            source_root_identity: Identity {
-                volume: 1,
-                id: [3; 16],
-            },
+            source_root_identity: Identity::directory(&source_root_identity),
             target_parent,
             target_parent_identity: Identity {
                 volume: 2,
@@ -405,6 +441,31 @@ impl Fixture {
         let plan_bytes = serde_json::to_vec_pretty(&plan).unwrap();
         fs::write(&plan_path, &plan_bytes).unwrap();
 
+        let mut loader_config = shroudforge_loader_config::config::read_loader_defaults().unwrap();
+        loader_config["modules"]["dllManager"]["enabled"] = json!(true);
+        let mut xhl_dll_files = vec![json!({"path":"xhl-core.dll","mode":"dinput8"})];
+        for (plugin, _) in sf_xhl_tree_adapter::pins::PLUGINS {
+            xhl_dll_files.push(json!({"path":format!("mods/{plugin}"),"mode":"library"}));
+        }
+        loader_config["modules"]["dllManager"]["profiles"] = json!([{
+            "id":"xhl-core",
+            "packageDirectory":"xhl-core",
+            "name":"XHL Core",
+            "target":"client",
+            "enabled":true,
+            "approved":true,
+            "files":xhl_dll_files
+        },{
+            "id":"legacy-xhl-gifting-disabled",
+            "packageDirectory":"XHL-Unlimited-Gifting-Range",
+            "name":"Disabled legacy Gifting DLL selection",
+            "target":"client",
+            "enabled":false,
+            "approved":true,
+            "compatibilityProfile":null,
+            "files":[]
+        }]);
+        let loader_config_bytes = serde_json::to_vec(&loader_config).unwrap();
         let mut root_files = Vec::new();
         for (target, body) in [
             ("winmm.dll", b"synthetic selected host".as_slice()),
@@ -419,7 +480,7 @@ impl Fixture {
             ),
             (
                 "shroudforge/config/modloader-config.json",
-                b"{\"schemaVersion\":1,\"modules\":{}}".as_slice(),
+                loader_config_bytes.as_slice(),
             ),
         ] {
             if target == "dinput8.dll" && !with_dinput {
@@ -465,6 +526,7 @@ impl Fixture {
                 path: asset_receipt_path.clone(),
                 sha256: digest(&asset_receipt_bytes),
             },
+            derived_environment_evidence: None,
             prepared_producer_closure: "a".repeat(64),
             runtime_source_closure: "b".repeat(64),
             selected_manifest: EvidencePin {
@@ -507,6 +569,7 @@ impl Fixture {
         fs::write(&xhl_receipt_path, &receipt_bytes).unwrap();
         Self {
             base,
+            xhl_source,
             manifest,
             request_path,
             asset_receipt_path,
@@ -560,6 +623,28 @@ fn add_greeneye_host(fixture: &mut Fixture) -> String {
         source_files: host_files,
         overlays: Vec::new(),
     });
+    let config = fixture
+        .manifest
+        .root_files
+        .iter_mut()
+        .find(|file| file.target == "shroudforge/config/modloader-config.json")
+        .unwrap();
+    let mut loader: Value = serde_json::from_slice(&fs::read(&config.source).unwrap()).unwrap();
+    let profiles = loader
+        .pointer_mut("/modules/dllManager/profiles")
+        .and_then(Value::as_array_mut)
+        .unwrap();
+    profiles.push(json!({
+        "id":"greeneye-host",
+        "packageDirectory":"greeneye-host",
+        "name":"Greeneye host",
+        "target":"client",
+        "enabled":true,
+        "approved":true,
+        "files":[{"path":"dbgcore.dll","mode":"library"}]
+    }));
+    fs::write(&config.source, serde_json::to_vec(&loader).unwrap()).unwrap();
+    config.stamp = stamp(&config.source).unwrap();
     let target = "mods/greeneye-host/dbgcore.dll".to_string();
     fixture.manifest.greeneye_paths.push(target.clone());
     target
@@ -624,36 +709,77 @@ fn write_json(path: &Path, value: &impl Serialize) {
 
 fn add_preserved_vein(fixture: &mut Fixture) -> PreservedRuntimeFile {
     let target = "mods/shroudweave-vein-mining-test.ini";
-    let stamp = Stamp { bytes: 82, sha256: "c".repeat(64) };
+    let stamp = Stamp {
+        bytes: 82,
+        sha256: "c".repeat(64),
+    };
     let evidence_path = fixture.base.join("preserved-values.json");
     let evidence = json!({"sourceRoot":fixture.manifest.target_root,"files":[{
         "relativePath":target,"bytes":stamp.bytes,"sha256":stamp.sha256,
         "postSha256":stamp.sha256,"status":"PRESENT_PRESERVE_BYTES"
     }]});
     write_json(&evidence_path, &evidence);
-    let pin = EvidencePin { path:evidence_path.clone(), sha256:digest(&fs::read(&evidence_path).unwrap()) };
-    let input = PreservedRuntimeFile { component_id:"vein-support".into(), target:target.into(), stamp, evidence:pin.clone() };
+    let pin = EvidencePin {
+        path: evidence_path.clone(),
+        sha256: digest(&fs::read(&evidence_path).unwrap()),
+    };
+    let input = PreservedRuntimeFile {
+        component_id: "vein-support".into(),
+        target: target.into(),
+        stamp,
+        evidence: pin.clone(),
+    };
     fixture.manifest.preservation_evidence.push(pin.clone());
-    fixture.manifest.preservation.push(PreservationEntry { component_id:input.component_id.clone(), target:target.into(), evidence_sha256:pin.sha256, fields:vec!["all bytes including unknown fields".into()], disposition:"PRESERVE_BYTES".into() });
+    fixture.manifest.preservation.push(PreservationEntry {
+        component_id: input.component_id.clone(),
+        target: target.into(),
+        evidence_sha256: pin.sha256,
+        fields: vec!["all bytes including unknown fields".into()],
+        disposition: "PRESERVE_BYTES".into(),
+    });
     fixture.manifest.preserved_runtime_files.push(input.clone());
     fixture.manifest.selection.vein_settings_path = Some(target.into());
     fixture.manifest.selection.vein_selected = true;
     fixture.manifest.selection.dedicated_guest_qualified = true;
     fixture.manifest.selection.allow_unverified_cursor_gate = true;
-    fixture.manifest.selection.boot_services.extend(["vein-flight-provider-v1".into(),"vein-activation-v1".into()]);
+    fixture.manifest.selection.boot_services.extend([
+        "vein-flight-provider-v1".into(),
+        "vein-activation-v1".into(),
+    ]);
     for (id, service, dependency) in [
-        ("shared-vein-service", "vein-flight-provider-v1", "metadata-service"),
-        ("activate-vein-service", "vein-activation-v1", "shared-vein-service"),
+        (
+            "shared-vein-service",
+            "vein-flight-provider-v1",
+            "metadata-service",
+        ),
+        (
+            "activate-vein-service",
+            "vein-activation-v1",
+            "shared-vein-service",
+        ),
     ] {
         fixture.manifest.components.push(SelectedComponent {
-            feature_rows: Vec::new(), dependencies: vec![dependency.into()],
-            id: id.into(), version: "1.0.0".into(), kind: ComponentKind::RuntimeService,
-            enabled: true, package_directory: None, service_id: Some(service.into()),
-            xhl_paths: Vec::new(), requires_greeneye: false, target: "client".into(),
+            feature_rows: Vec::new(),
+            dependencies: vec![dependency.into()],
+            id: id.into(),
+            version: "1.0.0".into(),
+            kind: ComponentKind::RuntimeService,
+            enabled: true,
+            package_directory: None,
+            service_id: Some(service.into()),
+            xhl_paths: Vec::new(),
+            requires_greeneye: false,
+            target: "client".into(),
         });
     }
-    fixture.manifest.components.iter_mut().find(|unit| unit.id == "vein-support").unwrap()
-        .dependencies.push("activate-vein-service".into());
+    fixture
+        .manifest
+        .components
+        .iter_mut()
+        .find(|unit| unit.id == "vein-support")
+        .unwrap()
+        .dependencies
+        .push("activate-vein-service".into());
     input
 }
 
@@ -670,10 +796,28 @@ fn preserved_runtime_ini_binds_without_copy_and_survives_finalization() {
     assert_eq!(contract.files[&input.target].bytes, 82);
     let path = fixture.output_root.join("template.json");
     let hash = digest(&fs::read(&path).unwrap());
-    let result = finalize_policy(&path,&hash,&fixture.xhl_plan_path,&fixture.xhl_receipt_path,&fixture.receipt_sha256).unwrap();
+    let result = finalize_policy(
+        &path,
+        &hash,
+        &fixture.xhl_plan_path,
+        &fixture.xhl_receipt_path,
+        &fixture.receipt_sha256,
+    )
+    .unwrap();
     assert!(!result.install_performed);
-    let policy: Value = serde_json::from_slice(&fs::read(template.payload_root.join("shroudforge/config/current-assets.json")).unwrap()).unwrap();
-    assert_eq!(policy["runtime"]["files"][&input.target]["sha256"], input.stamp.sha256);
+    let policy: Value = serde_json::from_slice(
+        &fs::read(
+            template
+                .payload_root
+                .join("shroudforge/config/current-assets.json"),
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        policy["runtime"]["files"][&input.target]["sha256"],
+        input.stamp.sha256
+    );
 }
 
 #[test]
@@ -682,16 +826,67 @@ fn preserved_runtime_ini_rejects_wrong_evidence_copy_and_contract_drift() {
     let input = add_preserved_vein(&mut fixture);
     let mut changed = input.clone();
     changed.stamp.bytes += 1;
-    assert!(validate_preserved_runtime_files(&[changed], &fixture.manifest.target_root, Some(&input.target), &fixture.manifest.preservation, &BTreeMap::new()).is_err());
-    let payload = [(input.target.to_ascii_uppercase(), FileBinding {bytes:82,sha256:input.stamp.sha256.clone()})].into_iter().collect();
-    assert!(validate_preserved_runtime_files(&[input.clone()], &fixture.manifest.target_root, Some(&input.target), &fixture.manifest.preservation, &payload).is_err());
-    assert!(validate_preserved_runtime_files(&[input.clone()], &fixture.manifest.target_root, None, &fixture.manifest.preservation, &BTreeMap::new()).is_err());
+    assert!(
+        validate_preserved_runtime_files(
+            &[changed],
+            &fixture.manifest.target_root,
+            Some(&input.target),
+            &fixture.manifest.preservation,
+            &BTreeMap::new()
+        )
+        .is_err()
+    );
+    let payload = [(
+        input.target.to_ascii_uppercase(),
+        FileBinding {
+            bytes: 82,
+            sha256: input.stamp.sha256.clone(),
+        },
+    )]
+    .into_iter()
+    .collect();
+    assert!(
+        validate_preserved_runtime_files(
+            &[input.clone()],
+            &fixture.manifest.target_root,
+            Some(&input.target),
+            &fixture.manifest.preservation,
+            &payload
+        )
+        .is_err()
+    );
+    assert!(
+        validate_preserved_runtime_files(
+            &[input.clone()],
+            &fixture.manifest.target_root,
+            None,
+            &fixture.manifest.preservation,
+            &BTreeMap::new()
+        )
+        .is_err()
+    );
     let mut template = fixture.prepare();
-    template.contract.as_mut().unwrap().files.get_mut(&input.target).unwrap().bytes += 1;
+    template
+        .contract
+        .as_mut()
+        .unwrap()
+        .files
+        .get_mut(&input.target)
+        .unwrap()
+        .bytes += 1;
     let path = fixture.output_root.join("tampered-template.json");
     write_json(&path, &template);
     let hash = digest(&fs::read(&path).unwrap());
-    assert!(finalize_policy(&path,&hash,&fixture.xhl_plan_path,&fixture.xhl_receipt_path,&fixture.receipt_sha256).is_err());
+    assert!(
+        finalize_policy(
+            &path,
+            &hash,
+            &fixture.xhl_plan_path,
+            &fixture.xhl_receipt_path,
+            &fixture.receipt_sha256
+        )
+        .is_err()
+    );
 }
 
 #[test]
@@ -722,6 +917,36 @@ fn prepares_and_finalizes_without_reading_target_and_keeps_digest_forms_distinct
             })
             .unwrap()
     );
+    let template_contract = template.contract.as_ref().unwrap();
+    let core_target = target_path(&template.target_root, XHL_CORE_PATH).unwrap();
+    let core_plan_entries = template_contract
+        .dll_plan
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|entry| {
+            entry
+                .get("path")
+                .and_then(Value::as_str)
+                .is_some_and(|path| {
+                    normalize_absolute(Path::new(path)).ok()
+                        == normalize_absolute(&core_target).ok()
+                })
+        })
+        .count();
+    assert_eq!(core_plan_entries, 1);
+    assert!(!template_contract.files.contains_key(XHL_CORE_PATH));
+    assert_eq!(
+        template.xhl_files[XHL_CORE_PATH].sha256,
+        sf_xhl_tree_adapter::pins::CORE_SHA
+    );
+    assert!(
+        template
+            .payload_files
+            .keys()
+            .all(|path| !path.to_ascii_lowercase().starts_with("mods/xhl-core/"))
+    );
+    assert!(!template.payload_root.join("mods/xhl-core").exists());
     let template_path = fixture.output_root.join("template.json");
     let template_bytes = fs::read(&template_path).unwrap();
     let template_hash = digest(&template_bytes);
@@ -769,6 +994,27 @@ fn prepares_and_finalizes_without_reading_target_and_keeps_digest_forms_distinct
             .unwrap()
             .len(),
         4
+    );
+    assert_eq!(
+        policy["runtime"]["dllPlan"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|entry| {
+                entry
+                    .get("path")
+                    .and_then(Value::as_str)
+                    .is_some_and(|path| {
+                        normalize_absolute(Path::new(path)).ok()
+                            == normalize_absolute(&core_target).ok()
+                    })
+            })
+            .count(),
+        1
+    );
+    assert_eq!(
+        policy["runtime"]["files"][XHL_CORE_PATH]["sha256"],
+        sf_xhl_tree_adapter::pins::CORE_SHA
     );
 }
 
@@ -939,10 +1185,12 @@ fn selected_greeneye_requires_and_binds_explicit_paths() {
     assert!(template.contract.is_none());
     assert!(template.greeneye_paths.contains(&host_target));
     assert!(template.payload_files.contains_key(&host_target));
-    assert!(template
-        .missing_requirements
-        .iter()
-        .any(|item| item.id == "greeneye-route-evidence"));
+    assert!(
+        template
+            .missing_requirements
+            .iter()
+            .any(|item| item.id == "greeneye-route-evidence")
+    );
 }
 
 #[test]
@@ -1090,7 +1338,9 @@ fn grouped_ember_and_building_features_map_to_distinct_provider_units() {
             .manifest
             .components
             .iter()
-            .filter(|unit| unit.kind == ComponentKind::AssetProvider && unit.feature_rows.contains(&row))
+            .filter(|unit| {
+                unit.kind == ComponentKind::AssetProvider && unit.feature_rows.contains(&row)
+            })
             .count()
     };
     assert_eq!(row_units(8), 5);
@@ -1105,10 +1355,7 @@ fn grouped_ember_and_building_features_map_to_distinct_provider_units() {
             .count(),
         REQUIRED_ASSET_PROVIDERS
     );
-    assert_eq!(
-        fixture.manifest.selected_features.len(),
-        REQUIRED_FEATURES
-    );
+    assert_eq!(fixture.manifest.selected_features.len(), REQUIRED_FEATURES);
 }
 
 #[test]
@@ -1133,4 +1380,262 @@ fn xhl_units_must_own_each_approved_plan_file_exactly_once() {
         .unwrap();
     core.xhl_paths.pop();
     assert!(validate_xhl_unit_ownership(&fixture.manifest.components, &plan).is_err());
+}
+
+#[test]
+fn xhl_planning_view_refuses_missing_or_wrong_mode_core_and_source_drift() {
+    fn bytes_for(fixture: &Fixture) -> Vec<u8> {
+        serde_json::to_vec_pretty(&fixture.manifest).unwrap()
+    }
+    fn rewrite_config(fixture: &mut Fixture, change: impl FnOnce(&mut Value)) {
+        let root = fixture
+            .manifest
+            .root_files
+            .iter_mut()
+            .find(|file| file.target == "shroudforge/config/modloader-config.json")
+            .unwrap();
+        let mut value: Value = serde_json::from_slice(&fs::read(&root.source).unwrap()).unwrap();
+        change(&mut value);
+        fs::write(&root.source, serde_json::to_vec(&value).unwrap()).unwrap();
+        root.stamp = stamp(&root.source).unwrap();
+    }
+
+    let mut missing_core = Fixture::new(true);
+    rewrite_config(&mut missing_core, |config| {
+        config["modules"]["dllManager"]["profiles"][0]["files"] = json!([
+            {"path":"mods/XHL-Remote-Altar-Close/XHL-Remote-Altar-Close.dll","mode":"library"},
+            {"path":"mods/XHL-Grappling-Hook-Pull-2x/XHL-Grappling-Hook-Pull-2x.dll","mode":"library"},
+            {"path":"mods/XHL-Unlimited-Gifting-Range/XHL-Unlimited-Gifting-Range.dll","mode":"library"}
+        ]);
+    });
+    let manifest = bytes_for(&missing_core);
+    assert!(prepare_template(&manifest, &digest(&manifest)).is_err());
+    assert!(!missing_core.output_root.join(".dll-planning-view").exists());
+
+    let mut wrong_mode = Fixture::new(true);
+    rewrite_config(&mut wrong_mode, |config| {
+        config["modules"]["dllManager"]["profiles"][0]["files"][0]["mode"] = json!("library");
+    });
+    let manifest = bytes_for(&wrong_mode);
+    assert!(prepare_template(&manifest, &digest(&manifest)).is_err());
+    assert!(!wrong_mode.output_root.join(".dll-planning-view").exists());
+
+    let mut drifted_source = Fixture::new(true);
+    let core = drifted_source.xhl_source.join("xhl-core.dll");
+    let mut image = fs::read(&core).unwrap();
+    image[0] ^= 1;
+    fs::write(&core, image).unwrap();
+    let manifest = bytes_for(&drifted_source);
+    assert!(prepare_template(&manifest, &digest(&manifest)).is_err());
+    assert!(
+        !drifted_source
+            .output_root
+            .join(".dll-planning-view")
+            .exists()
+    );
+}
+
+#[test]
+fn disabled_legacy_gifting_selection_suppresses_only_its_patch_dll() {
+    use shroudforge_package::dll_manager::{self, DllLoadMode};
+
+    fn write_config(root: &Path, include_suppression: bool, enabled: bool, core_files: Vec<Value>) {
+        let mut config = shroudforge_loader_config::config::read_loader_defaults().unwrap();
+        config["modules"]["dllManager"]["enabled"] = json!(true);
+        let mut profiles = vec![json!({
+            "id":"xhl-core",
+            "packageDirectory":"xhl-core",
+            "name":"XHL Core",
+            "target":"client",
+            "enabled":true,
+            "approved":true,
+            "files":core_files
+        })];
+        if include_suppression {
+            profiles.push(json!({
+                "id":"legacy-xhl-gifting-disabled",
+                "packageDirectory":"XHL-Unlimited-Gifting-Range",
+                "name":"Disabled legacy Gifting DLL selection",
+                "target":"client",
+                "enabled":enabled,
+                "approved":true,
+                "compatibilityProfile":null,
+                "files":[]
+            }));
+        }
+        config["modules"]["dllManager"]["profiles"] = Value::Array(profiles);
+        let directory = root.join("shroudforge/config");
+        fs::create_dir_all(&directory).unwrap();
+        fs::write(
+            directory.join("modloader-config.json"),
+            serde_json::to_vec(&config).unwrap(),
+        )
+        .unwrap();
+    }
+
+    let fixture = Fixture::new(false);
+    let root = fixture.base.join("legacy-gifting-resolver");
+    let core = root.join("mods/xhl-core");
+    fs::create_dir_all(&core).unwrap();
+    fs::write(core.join("xhl-core.dll"), b"inert Core image fixture").unwrap();
+    let plugin_files = [
+        "mods/XHL-Remote-Altar-Close/XHL-Remote-Altar-Close.dll",
+        "mods/XHL-Grappling-Hook-Pull-2x/XHL-Grappling-Hook-Pull-2x.dll",
+        "mods/XHL-Unlimited-Gifting-Range/XHL-Unlimited-Gifting-Range.dll",
+    ];
+    let mut core_files = vec![json!({"path":"xhl-core.dll","mode":"dinput8"})];
+    for relative in plugin_files {
+        let path = core.join(relative.replace('/', "\\"));
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(&path, b"inert XHL plugin image fixture").unwrap();
+        core_files.push(json!({"path":relative,"mode":"library"}));
+    }
+    let legacy = root.join("mods/XHL-Unlimited-Gifting-Range");
+    fs::create_dir_all(&legacy).unwrap();
+    fs::write(
+        legacy.join("mod.json"),
+        br#"{"id":"legacy.xhl-gifting","name":"Legacy Gifting","version":"0.4.0","capabilities":["patch"]}"#,
+    )
+    .unwrap();
+    fs::write(
+        legacy.join("extended.mod.json"),
+        br#"{"schemaVersion":1,"enabled":true,"targets":["client"]}"#,
+    )
+    .unwrap();
+    fs::write(
+        legacy.join("native-plugin.ini"),
+        b"[Plugin]\r\nEnabled=true\r\nDll=legacy_gifting.dll\r\n",
+    )
+    .unwrap();
+    fs::write(
+        legacy.join("legacy_gifting.dll"),
+        b"inert DLL fixture, never loaded",
+    )
+    .unwrap();
+
+    write_config(&root, true, false, core_files.clone());
+    let disabled = dll_manager::resolve_load_plan(&root, false);
+    assert!(disabled.issues.is_empty(), "{:?}", disabled.issues);
+    let disabled_paths: BTreeSet<_> = disabled
+        .entries
+        .iter()
+        .map(|entry| relative_native_path(&entry.path, &root).unwrap())
+        .collect();
+    assert!(disabled_paths.contains("mods/xhl-core/xhl-core.dll"));
+    for relative in plugin_files {
+        assert!(disabled_paths.contains(&format!("mods/xhl-core/{relative}")));
+    }
+    assert!(!disabled_paths.contains("mods/XHL-Unlimited-Gifting-Range/legacy_gifting.dll"));
+    assert_eq!(
+        disabled
+            .entries
+            .iter()
+            .filter(|entry| entry.mode == DllLoadMode::Dinput8)
+            .count(),
+        1
+    );
+
+    write_config(&root, true, true, core_files.clone());
+    let reenabled = dll_manager::resolve_load_plan(&root, false);
+    assert!(reenabled.entries.iter().any(|entry| {
+        relative_native_path(&entry.path, &root).unwrap() == "mods/xhl-core/xhl-core.dll"
+    }));
+    assert!(reenabled.entries.iter().any(|entry| {
+        relative_native_path(&entry.path, &root).unwrap()
+            == "mods/XHL-Unlimited-Gifting-Range/legacy_gifting.dll"
+    }));
+
+    write_config(&root, false, false, core_files);
+    let missing_suppression = dll_manager::resolve_load_plan(&root, false);
+    assert!(missing_suppression.entries.iter().any(|entry| {
+        relative_native_path(&entry.path, &root).unwrap() == "mods/xhl-core/xhl-core.dll"
+    }));
+    assert!(missing_suppression.entries.iter().any(|entry| {
+        relative_native_path(&entry.path, &root).unwrap()
+            == "mods/XHL-Unlimited-Gifting-Range/legacy_gifting.dll"
+    }));
+}
+
+#[test]
+fn drive_prefix_comparison_rejects_unc_device_and_traversal_paths() {
+    assert_eq!(
+        normalize_absolute(Path::new(r"D:\Games\Enshrouded")).unwrap(),
+        normalize_absolute(Path::new(r"\\?\D:\Games\Enshrouded")).unwrap()
+    );
+    for path in [
+        r"\\server\share\Enshrouded",
+        r"\\?\UNC\server\share\Enshrouded",
+        r"\\.\D:\Games\Enshrouded",
+        r"D:\Games\..\Enshrouded",
+        r"D:\Games\.\Enshrouded",
+        r"D:relative\Enshrouded",
+    ] {
+        assert!(normalize_absolute(Path::new(path)).is_err(), "{path}");
+    }
+}
+
+#[test]
+fn accepted_derived_cache_binding_adds_only_the_two_fixed_outputs() {
+    let bridge_path = PathBuf::from(
+        std::env::var_os("SF_DERIVED_CACHE_BRIDGE_MANIFEST")
+            .expect("explicit E: cache bridge manifest is required"),
+    );
+    let verdict_path = PathBuf::from(
+        std::env::var_os("SF_DERIVED_CACHE_TESTER_VERDICT")
+            .expect("explicit E: cache tester verdict is required"),
+    );
+    let receipt_path = PathBuf::from(
+        std::env::var_os("SF_DERIVED_CACHE_ASSET_RECEIPT")
+            .expect("explicit E: prepared asset receipt is required"),
+    );
+    assert!(is_e_path(&bridge_path) && is_e_path(&verdict_path) && is_e_path(&receipt_path));
+    let bridge_bytes = read_input_file(&bridge_path, 1024 * 1024).unwrap();
+    assert_eq!(digest(&bridge_bytes), CACHE_BINDING_SHA256);
+    let bridge: Value = serde_json::from_slice(&bridge_bytes).unwrap();
+    let request_path = PathBuf::from(
+        bridge
+            .pointer("/request/path")
+            .and_then(Value::as_str)
+            .unwrap(),
+    );
+    let request_bytes = read_input_file(&request_path, 16 * 1024 * 1024).unwrap();
+    let request: AssetRequest = serde_json::from_slice(&request_bytes).unwrap();
+    let receipt_bytes = read_input_file(&receipt_path, 32 * 1024 * 1024).unwrap();
+    let receipt: AssetReceipt = serde_json::from_slice(&receipt_bytes).unwrap();
+    let mut fixture = Fixture::new(false);
+    let mut manifest = fixture.manifest.clone();
+    manifest.request = EvidencePin {
+        path: request_path.clone(),
+        sha256: digest(&request_bytes),
+    };
+    manifest.prepared_producer_closure = receipt.source_closure.clone();
+    manifest.derived_environment_evidence = Some(DerivedEnvironmentEvidence {
+        bridge_manifest: EvidencePin {
+            path: bridge_path.clone(),
+            sha256: CACHE_BINDING_SHA256.into(),
+        },
+        tester_verdict: EvidencePin {
+            path: verdict_path,
+            sha256: CACHE_VERDICT_SHA256.into(),
+        },
+    });
+    let frozen_environment = request.environment_files.clone();
+    let outputs =
+        validate_derived_environment_evidence(&manifest, &request_bytes, &request, &receipt)
+            .unwrap();
+    assert_eq!(outputs.len(), 2);
+    assert_eq!(request.environment_files, frozen_environment);
+    assert_eq!(outputs[CACHE_IDENTITY_RELATIVE].bytes, CACHE_IDENTITY_BYTES);
+    assert_eq!(outputs[CACHE_REGISTRY_RELATIVE].bytes, CACHE_REGISTRY_BYTES);
+    for (relative, expected) in &outputs {
+        let path = request.environment_root.join(relative.replace('/', "\\"));
+        validate_e_path(&path, true, false).unwrap();
+        assert_eq!(stamp(&path).unwrap(), *expected);
+    }
+
+    manifest.request.path = fixture.request_path.clone();
+    assert!(
+        validate_derived_environment_evidence(&manifest, &request_bytes, &request, &receipt,)
+            .is_err()
+    );
 }

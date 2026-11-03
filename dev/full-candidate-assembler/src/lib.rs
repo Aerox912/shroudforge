@@ -29,9 +29,11 @@ const REQUIRED_ASSET_PROVIDERS: usize = 13;
 const MAX_DEPLOYMENT_UNITS: usize = 64;
 const GREENEYE_PROFILE_ID: &str = "greeneye-entry-continuation-v1";
 const GREENEYE_PROFILE_VERSION: u32 = 1;
-const GREENEYE_PROFILE_SHA256: &str = "dae3fcd2185451c97d1e9f4d41676f6748eaecc8cb194eb9a438c6a7f5d038d2";
+const GREENEYE_PROFILE_SHA256: &str =
+    "dae3fcd2185451c97d1e9f4d41676f6748eaecc8cb194eb9a438c6a7f5d038d2";
 const GREENEYE_HOST_BYTES: u64 = 288_256;
-const GREENEYE_HOST_SHA256: &str = "7b97b41bd89d46528db9de4fb63b4f9fb32878192ade605c6da5e39da003687f";
+const GREENEYE_HOST_SHA256: &str =
+    "7b97b41bd89d46528db9de4fb63b4f9fb32878192ade605c6da5e39da003687f";
 const GREENEYE_SCAN_INPUTS: [(&str, u64, &str); 4] = [
     (
         "greeneye/find/mod.json",
@@ -58,6 +60,22 @@ const XHL_CORE_PATH: &str = "mods/xhl-core/xhl-core.dll";
 const XHL_CHAIN_PATH: &str = "mods/xhl-core/dinput8-chain.ini";
 const XHL_SCAN_PREFIX: &str = "mods/xhl-core/mods/";
 const POLICY_NAME: &str = "shroudforge-full-runtime.json";
+const CACHE_IDENTITY_RELATIVE: &str = "shroudforge/cache/types-enshrouded.identity.json";
+const CACHE_REGISTRY_RELATIVE: &str = "shroudforge/cache/types-enshrouded.json";
+const CACHE_IDENTITY_BYTES: u64 = 187;
+const CACHE_IDENTITY_SHA256: &str =
+    "1beb89917f807c5183a0bb3cb1f5a61a4bb932e9cdf176d938fe8ede97b9a39d";
+const CACHE_REGISTRY_BYTES: u64 = 22_570_549;
+const CACHE_REGISTRY_SHA256: &str =
+    "dcbc2c1374ddc528a51c1d424219047180f380f8ea61fe3db11e6e738f35c852";
+const CACHE_BINDING_SHA256: &str =
+    "e1c08ae2a1bdf01154225456cf9587c8cdb755c48690996a64bea1e611dc47d7";
+const CACHE_VERDICT_SHA256: &str =
+    "590a1fa95c547c6cb77cd9236aa31267c2ba976b187d6348b65848317927074c";
+const CACHE_EXE_SHA256: &str = "0403981fd2e8ad18bd8c5698dff03c8d505b5a46677832c496db9c645513f2a6";
+const CACHE_GENERATOR_EXE_SHA256: &str =
+    "d7043ab668c5bdeeda6c5ffdd2913d863a8003331ae9516aa7ed9a8fa27b8e94";
+const CACHE_EXTRACTOR_ID: &str = "kfc-a404b15cde40fc7bd43d812bb460ce40d2a9d3b1";
 
 fn digest(bytes: &[u8]) -> String {
     format!("{:x}", Sha256::digest(bytes))
@@ -171,7 +189,10 @@ fn validate_e_path(path: &Path, existing: bool, directory: bool) -> Result<()> {
 /// Read a CLI input only after validating its entire E: ancestry.
 pub fn read_input_file(path: &Path, limit: u64) -> Result<Vec<u8>> {
     validate_e_path(path, true, false)?;
-    ensure!(fs::metadata(path)?.len() <= limit, "input exceeds size bound");
+    ensure!(
+        fs::metadata(path)?.len() <= limit,
+        "input exceeds size bound"
+    );
     fs::read(path).with_context(|| format!("read {}", path.display()))
 }
 fn safe_relative(value: &str) -> Result<()> {
@@ -221,19 +242,7 @@ fn target_path(root: &Path, relative: &str) -> Result<PathBuf> {
     Ok(path)
 }
 fn target_root(value: &Path) -> Result<()> {
-    ensure!(
-        value.is_absolute()
-            && !value
-                .components()
-                .any(|c| matches!(c, Component::ParentDir | Component::CurDir)),
-        "target root must be a canonical absolute path"
-    );
-    let raw = value.to_string_lossy();
-    let text = raw.strip_prefix("\\\\?\\").unwrap_or(&raw);
-    ensure!(
-        text.len() >= 3 && text.as_bytes()[1] == b':' && text.as_bytes()[2] == b'\\',
-        "target root must be a native drive path"
-    );
+    normalize_absolute(value).context("target root must be a canonical native drive path")?;
     // Deliberately lexical only: target roots may be the live game path and must not be probed.
     Ok(())
 }
@@ -287,6 +296,12 @@ fn excluded_identity(value: &str) -> bool {
 pub struct EvidencePin {
     pub path: PathBuf,
     pub sha256: String,
+}
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct DerivedEnvironmentEvidence {
+    pub bridge_manifest: EvidencePin,
+    pub tester_verdict: EvidencePin,
 }
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "kebab-case")]
@@ -419,6 +434,8 @@ pub struct InputManifest {
     pub output_root: PathBuf,
     pub request: EvidencePin,
     pub asset_receipt: EvidencePin,
+    #[serde(default)]
+    pub derived_environment_evidence: Option<DerivedEnvironmentEvidence>,
     pub prepared_producer_closure: String,
     pub runtime_source_closure: String,
     pub selected_manifest: EvidencePin,
@@ -699,17 +716,27 @@ fn raw_request_receipt(
         request_dats == receipt.source_dat_membership,
         "prepared receipt DAT membership differs from typed request inputs"
     );
+    let target = normalize_absolute(&manifest.target_root)?;
     ensure!(
-        request.target_root == manifest.target_root
-            && request.asset_input_root == manifest.target_root
-            && receipt.target_root == manifest.target_root,
+        normalize_absolute(&request.target_root)? == target
+            && normalize_absolute(&request.asset_input_root)? == target
+            && normalize_absolute(&receipt.target_root)? == target,
         "asset request/receipt target identity differs"
     );
     target_root(&request.target_root)?;
     validate_e_path(&request.environment_root, true, true)?;
     validate_e_path(&request.output_root, true, true)?;
+    let mut expected_environment = request.environment_files.clone();
+    for (name, value) in
+        validate_derived_environment_evidence(manifest, &request_bytes, &request, &receipt)?
+    {
+        ensure!(
+            expected_environment.insert(name.clone(), value).is_none(),
+            "derived cache output was already part of the immutable request: {name}"
+        );
+    }
     ensure!(
-        inventory(&request.environment_root)? == request.environment_files,
+        inventory(&request.environment_root)? == expected_environment,
         "prepared request environment closure changed"
     );
     for name in request
@@ -725,7 +752,7 @@ fn raw_request_receipt(
     let expected_stage = request.output_root.join(".enshrouded.shroudforge-stage");
     // The prepared generator owns the exact stage name; compare against its actual receipt output.
     ensure!(
-        receipt.output_stage == expected_stage,
+        normalize_absolute(&receipt.output_stage)? == normalize_absolute(&expected_stage)?,
         "prepared receipt stage path differs from request output root"
     );
     validate_e_path(&receipt.output_stage, true, true)?;
@@ -787,6 +814,190 @@ fn raw_request_receipt(
     );
     Ok((request_bytes, receipt_bytes, request, receipt))
 }
+
+fn required_json_string<'a>(value: &'a Value, key: &str) -> Result<&'a str> {
+    value
+        .get(key)
+        .and_then(Value::as_str)
+        .with_context(|| format!("cache evidence is missing string field {key}"))
+}
+
+fn required_json_u64(value: &Value, key: &str) -> Result<u64> {
+    value
+        .get(key)
+        .and_then(Value::as_u64)
+        .with_context(|| format!("cache evidence is missing integer field {key}"))
+}
+
+fn required_json_bool(value: &Value, key: &str) -> Result<bool> {
+    value
+        .get(key)
+        .and_then(Value::as_bool)
+        .with_context(|| format!("cache evidence is missing Boolean field {key}"))
+}
+
+fn validate_derived_environment_evidence(
+    manifest: &InputManifest,
+    request_bytes: &[u8],
+    request: &AssetRequest,
+    receipt: &AssetReceipt,
+) -> Result<BTreeMap<String, Stamp>> {
+    let Some(evidence) = manifest.derived_environment_evidence.as_ref() else {
+        return Ok(BTreeMap::new());
+    };
+    ensure!(
+        evidence.bridge_manifest.sha256 == CACHE_BINDING_SHA256
+            && evidence.tester_verdict.sha256 == CACHE_VERDICT_SHA256,
+        "derived cache evidence is not the accepted narrow binding and verdict"
+    );
+    let bridge_bytes = check_raw_evidence(
+        &evidence.bridge_manifest.path,
+        CACHE_BINDING_SHA256,
+        1024 * 1024,
+    )?;
+    let verdict_bytes = check_raw_evidence(
+        &evidence.tester_verdict.path,
+        CACHE_VERDICT_SHA256,
+        1024 * 1024,
+    )?;
+    let bridge: Value = serde_json::from_slice(&bridge_bytes).context("parse cache binding")?;
+    let verdict: Value = serde_json::from_slice(&verdict_bytes).context("parse cache verdict")?;
+    let canonical_request_sha256 = digest(&serde_json::to_vec(request)?);
+    ensure!(
+        bridge.get("schema_version").and_then(Value::as_u64) == Some(1)
+            && required_json_string(&bridge, "task_id")? == "RB82"
+            && required_json_string(&bridge, "status")?
+                == "read_only_provenance_and_serialization_binding",
+        "cache binding schema or status differs"
+    );
+    let bridge_request = bridge
+        .get("request")
+        .context("cache binding request identity is missing")?;
+    ensure!(
+        normalize_absolute(Path::new(required_json_string(bridge_request, "path")?))?
+            == normalize_absolute(&manifest.request.path)?
+            && required_json_string(bridge_request, "raw_sha256")? == digest(request_bytes)
+            && required_json_string(bridge_request, "raw_sha256")? == manifest.request.sha256
+            && required_json_string(bridge_request, "canonical_request_sha256")?
+                == canonical_request_sha256
+            && required_json_string(bridge_request, "canonical_request_sha256")?
+                == receipt.request_sha256
+            && required_json_string(bridge_request, "source_dat_membership_sha256")?
+                == receipt.source_dat_membership_sha256
+            && required_json_u64(bridge_request, "environment_files")? == 75
+            && required_json_u64(bridge_request, "selected_ids")?
+                == REQUIRED_ASSET_PROVIDERS as u64
+            && required_json_u64(bridge_request, "inputs_total")? == request.inputs.len() as u64,
+        "cache binding does not match the exact immutable request and producer receipt"
+    );
+    ensure!(
+        request.environment_files.len() == 75
+            && request
+                .inputs
+                .get("enshrouded.exe")
+                .is_some_and(|stamp| { stamp.sha256 == CACHE_EXE_SHA256 }),
+        "cache binding requires the exact 75-file environment and requested executable"
+    );
+    for relative in [CACHE_IDENTITY_RELATIVE, CACHE_REGISTRY_RELATIVE] {
+        ensure!(
+            !request
+                .environment_files
+                .keys()
+                .any(|name| name.eq_ignore_ascii_case(relative))
+                && !request
+                    .inputs
+                    .keys()
+                    .any(|name| name.eq_ignore_ascii_case(relative)),
+            "derived cache output is present in the frozen request: {relative}"
+        );
+    }
+    let frozen_source = bridge
+        .get("frozen_source")
+        .context("cache binding frozen source identity is missing")?;
+    ensure!(
+        required_json_string(frozen_source, "source_closure_sha256")? == receipt.source_closure
+            && required_json_string(frozen_source, "executable_sha256")?
+                == CACHE_GENERATOR_EXE_SHA256,
+        "cache binding producer or executable identity differs"
+    );
+    let bridge_outputs = bridge
+        .get("derived_schema_cache_outputs")
+        .and_then(Value::as_array)
+        .context("cache binding outputs are missing")?;
+    let verdict_outputs = verdict
+        .get("derivedSchemaOutputs")
+        .and_then(Value::as_array)
+        .context("cache verdict outputs are missing")?;
+    ensure!(
+        bridge_outputs.len() == 2 && verdict_outputs == bridge_outputs,
+        "cache evidence must bind the same exact two derived outputs"
+    );
+    ensure!(
+        required_json_string(&verdict, "status")?
+            == "PASS_NARROW_FROZEN_CACHE_PROVENANCE_AND_CANONICAL_SERIALIZATION_SUPPLEMENT"
+            && required_json_string(&verdict, "bridgeManifestSha256")? == CACHE_BINDING_SHA256
+            && required_json_string(&verdict, "canonicalRequestSha256")?
+                == canonical_request_sha256
+            && required_json_string(&verdict, "datMembershipSha256")?
+                == receipt.source_dat_membership_sha256
+            && required_json_bool(&verdict, "typeRegistryParsed")? == false
+            && required_json_bool(&verdict, "semanticsAccepted")? == false
+            && required_json_bool(&verdict, "installationApproved")? == false
+            && required_json_string(&verdict, "publication")? == "HOLD",
+        "cache verdict differs from its accepted read-only scope"
+    );
+
+    // This helper binds provenance and bytes only; it intentionally does not parse the registry.
+    let expected = [
+        (
+            "executable/extractor identity",
+            CACHE_IDENTITY_RELATIVE,
+            CACHE_IDENTITY_BYTES,
+            CACHE_IDENTITY_SHA256,
+        ),
+        (
+            "type registry",
+            CACHE_REGISTRY_RELATIVE,
+            CACHE_REGISTRY_BYTES,
+            CACHE_REGISTRY_SHA256,
+        ),
+    ];
+    let mut outputs = BTreeMap::new();
+    for (row, (role, relative, bytes, sha256)) in bridge_outputs.iter().zip(expected) {
+        ensure!(
+            required_json_string(row, "role")? == role
+                && normalize_absolute(Path::new(required_json_string(row, "path")?))?
+                    == normalize_absolute(&request.environment_root.join(relative))?
+                && required_json_u64(row, "bytes")? == bytes
+                && required_json_string(row, "sha256")? == sha256,
+            "derived cache output differs from its fixed path or content pin: {relative}"
+        );
+        if relative == CACHE_IDENTITY_RELATIVE {
+            ensure!(
+                row.get("identity_schema").and_then(Value::as_u64) == Some(2)
+                    && required_json_string(row, "executable_sha256")? == CACHE_EXE_SHA256
+                    && required_json_string(row, "reflection_extractor")? == CACHE_EXTRACTOR_ID
+                    && required_json_bool(row, "executable_matches_request")?
+                    && required_json_bool(row, "parsed_content")?,
+                "executable/extractor cache identity differs"
+            );
+        } else {
+            ensure!(
+                !required_json_bool(row, "parsed_content")?,
+                "type registry content must remain unparsed by this helper"
+            );
+        }
+        outputs.insert(
+            relative.to_string(),
+            Stamp {
+                bytes,
+                sha256: sha256.to_string(),
+            },
+        );
+    }
+    Ok(outputs)
+}
+
 #[derive(Clone)]
 struct StagedSource {
     source: PathBuf,
@@ -798,7 +1009,10 @@ fn path_key(value: &str) -> String {
     value.replace('\\', "/").to_ascii_lowercase()
 }
 fn same_path(a: &Path, b: &Path) -> bool {
-    path_key(&a.to_string_lossy()) == path_key(&b.to_string_lossy())
+    match (normalize_absolute(a), normalize_absolute(b)) {
+        (Ok(left), Ok(right)) => left == right,
+        _ => false,
+    }
 }
 fn package_environment_files(
     request: &AssetRequest,
@@ -926,14 +1140,11 @@ fn validate_feature_unit_mapping(manifest: &InputManifest) -> Result<()> {
     let mut features = BTreeMap::new();
     for feature in &manifest.selected_features {
         ensure!(
-            (1..=REQUIRED_FEATURES as u8).contains(&feature.row)
-                && !feature.name.trim().is_empty(),
+            (1..=REQUIRED_FEATURES as u8).contains(&feature.row) && !feature.name.trim().is_empty(),
             "selected feature row is invalid"
         );
         ensure!(
-            features
-                .insert(feature.row, feature)
-                .is_none(),
+            features.insert(feature.row, feature).is_none(),
             "duplicate selected feature row"
         );
     }
@@ -1044,7 +1255,10 @@ fn validate_feature_unit_mapping(manifest: &InputManifest) -> Result<()> {
         if complete.contains(&key) {
             return Ok(());
         }
-        ensure!(active.insert(key.clone()), "deployment dependency cycle at {id}");
+        ensure!(
+            active.insert(key.clone()),
+            "deployment dependency cycle at {id}"
+        );
         let unit = units.get(&key).context("missing deployment unit")?;
         for dependency in &unit.dependencies {
             visit_dependency(dependency, units, active, complete)?;
@@ -1060,7 +1274,11 @@ fn validate_feature_unit_mapping(manifest: &InputManifest) -> Result<()> {
     }
 
     let mut owned = BTreeSet::new();
-    for feature in manifest.selected_features.iter().filter(|item| item.enabled) {
+    for feature in manifest
+        .selected_features
+        .iter()
+        .filter(|item| item.enabled)
+    {
         let providers: Vec<_> = manifest
             .components
             .iter()
@@ -1112,7 +1330,10 @@ fn validate_feature_unit_mapping(manifest: &InputManifest) -> Result<()> {
     Ok(())
 }
 
-fn validate_xhl_unit_ownership(components: &[SelectedComponent], plan: &ApprovedPlan) -> Result<()> {
+fn validate_xhl_unit_ownership(
+    components: &[SelectedComponent],
+    plan: &ApprovedPlan,
+) -> Result<()> {
     let mut owners = BTreeMap::new();
     for unit in components
         .iter()
@@ -1143,7 +1364,11 @@ fn same_stamp(left: &Stamp, right: &Stamp) -> bool {
     left.bytes == right.bytes && left.sha256.eq_ignore_ascii_case(&right.sha256)
 }
 
-fn validate_greeneye_dll_plan(identity: &Value, target_root: &Path, host_target: &str) -> Result<()> {
+fn validate_greeneye_dll_plan(
+    identity: &Value,
+    target_root: &Path,
+    host_target: &str,
+) -> Result<()> {
     let expected = path_key(&target_path(target_root, host_target)?.to_string_lossy());
     let entries = identity
         .as_array()
@@ -1158,8 +1383,7 @@ fn validate_greeneye_dll_plan(identity: &Value, target_root: &Path, host_target:
         })
         .collect();
     ensure!(
-        selected.len() == 1
-            && selected[0].get("mode").and_then(Value::as_str) == Some("library"),
+        selected.len() == 1 && selected[0].get("mode").and_then(Value::as_str) == Some("library"),
         "Greeneye host must have exactly one selected ordinary Library load entry"
     );
     Ok(())
@@ -1198,7 +1422,9 @@ fn validate_greeneye_route(manifest: &InputManifest, route: &GreeneyeRouteEviden
             .root_files
             .iter()
             .find(|item| item.target.eq_ignore_ascii_case(expected_target))
-            .with_context(|| format!("Greeneye artifact is not a declared root input: {expected_target}"))?;
+            .with_context(|| {
+                format!("Greeneye artifact is not a declared root input: {expected_target}")
+            })?;
         ensure!(
             input.runtime_binding && same_stamp(&input.stamp, &artifact.stamp),
             "Greeneye artifact stamp differs from its declared runtime binding: {expected_target}"
@@ -1207,11 +1433,7 @@ fn validate_greeneye_route(manifest: &InputManifest, route: &GreeneyeRouteEviden
             normalize_absolute(&input.source)? == normalize_absolute(&artifact.source)?,
             "Greeneye artifact path differs from the declared source: {expected_target}"
         );
-        check_stamp(
-            &stamp(&artifact.source)?,
-            &artifact.stamp,
-            expected_target,
-        )?;
+        check_stamp(&stamp(&artifact.source)?, &artifact.stamp, expected_target)?;
     }
 
     let required_host = manifest
@@ -1234,7 +1456,10 @@ fn validate_greeneye_route(manifest: &InputManifest, route: &GreeneyeRouteEviden
         .context("Greeneye host unit lacks a package directory")?;
     let expected_host_target = format!("mods/{package_directory}/dbgcore.dll");
     ensure!(
-        route.host.target.eq_ignore_ascii_case(&expected_host_target)
+        route
+            .host
+            .target
+            .eq_ignore_ascii_case(&expected_host_target)
             && manifest.greeneye_paths.len() == 1
             && manifest.greeneye_paths[0].eq_ignore_ascii_case(&expected_host_target),
         "Greeneye host path differs from the exact selected ordinary Library route"
@@ -1251,7 +1476,9 @@ fn validate_greeneye_route(manifest: &InputManifest, route: &GreeneyeRouteEviden
         .context("Greeneye host package source is missing")?;
     ensure!(
         package.origin == PackageOrigin::ApprovedE
-            && package.package_directory.eq_ignore_ascii_case(package_directory),
+            && package
+                .package_directory
+                .eq_ignore_ascii_case(package_directory),
         "Greeneye host package must come from its exact approved E source"
     );
     let host_overlay = package
@@ -1276,7 +1503,11 @@ fn validate_greeneye_route(manifest: &InputManifest, route: &GreeneyeRouteEviden
         same_stamp(host_stamp, &route.host.stamp),
         "Greeneye package host stamp differs from the accepted profile"
     );
-    check_stamp(&stamp(&host_source)?, &route.host.stamp, &expected_host_target)?;
+    check_stamp(
+        &stamp(&host_source)?,
+        &route.host.stamp,
+        &expected_host_target,
+    )?;
 
     ensure!(
         route.scan_inputs.len() == GREENEYE_SCAN_INPUTS.len(),
@@ -1296,7 +1527,9 @@ fn validate_greeneye_route(manifest: &InputManifest, route: &GreeneyeRouteEviden
             .root_files
             .iter()
             .find(|item| item.target.eq_ignore_ascii_case(target))
-            .with_context(|| format!("Greeneye scan input is not a declared root file: {target}"))?;
+            .with_context(|| {
+                format!("Greeneye scan input is not a declared root file: {target}")
+            })?;
         ensure!(
             input.runtime_binding && same_stamp(&input.stamp, &binding.stamp),
             "Greeneye scan input is not bound to the runtime contract: {target}"
@@ -1330,10 +1563,9 @@ fn validate_greeneye_route(manifest: &InputManifest, route: &GreeneyeRouteEviden
         "legacy root Greeneye host cannot be bound as a candidate input"
     );
     ensure!(
-        !manifest
-            .root_files
-            .iter()
-            .any(|input| input.target.eq_ignore_ascii_case("greeneye/hotreload.enable")),
+        !manifest.root_files.iter().any(|input| input
+            .target
+            .eq_ignore_ascii_case("greeneye/hotreload.enable")),
         "Greeneye hotreload marker is not allowed in the selected namespace"
     );
     Ok(())
@@ -1473,7 +1705,10 @@ fn validate_greeneye_template(template: &Template, contract: &Contract) -> Resul
     );
 
     for (artifact, target) in [
-        (&route.runtime_artifact, "shroudforge/shroudforge-runtime.dll"),
+        (
+            &route.runtime_artifact,
+            "shroudforge/shroudforge-runtime.dll",
+        ),
         (&route.bootstrap_artifact, "winmm.dll"),
     ] {
         ensure!(
@@ -1767,11 +2002,13 @@ fn collect_staged_sources(
             );
         }
         ensure!(
-            !matches!(component.kind, ComponentKind::RuntimeService | ComponentKind::XhlNative)
-                || !manifest
-                    .packages
-                    .iter()
-                    .any(|package| package.component_id.eq_ignore_ascii_case(&component.id)),
+            !matches!(
+                component.kind,
+                ComponentKind::RuntimeService | ComponentKind::XhlNative
+            ) || !manifest
+                .packages
+                .iter()
+                .any(|package| package.component_id.eq_ignore_ascii_case(&component.id)),
             "service or XHL unit cannot also declare a package input: {}",
             component.id
         );
@@ -1849,17 +2086,71 @@ fn normalize_absolute(path: &Path) -> Result<String> {
         "expected an absolute path: {}",
         path.display()
     );
-    let text = path.to_str().context("non-UTF8 absolute path")?;
-    let normalized = text
-        .strip_prefix("\\\\?\\")
-        .unwrap_or(text)
-        .replace('/', "\\")
-        .to_ascii_lowercase();
+    let text = path
+        .to_str()
+        .context("non-UTF8 absolute path")?
+        .replace('/', "\\");
+    let drive_path = text.strip_prefix("\\\\?\\").unwrap_or(&text);
     ensure!(
-        !normalized.contains("\\.\\") && !normalized.contains("\\..\\"),
-        "noncanonical absolute path"
+        drive_path.len() >= 3
+            && drive_path.as_bytes()[0].is_ascii_alphabetic()
+            && drive_path.as_bytes()[1] == b':'
+            && drive_path.as_bytes()[2] == b'\\',
+        "absolute path must use a native drive spelling; UNC and device paths are refused"
     );
-    Ok(normalized.trim_end_matches('\\').to_owned())
+    let tail = drive_path[3..].trim_end_matches('\\');
+    ensure!(
+        !tail.contains(':')
+            && tail.split('\\').all(|part| {
+                !part.is_empty()
+                    && part != "."
+                    && part != ".."
+                    && !part.ends_with(['.', ' '])
+                    && !part.chars().any(char::is_control)
+            }),
+        "absolute path contains a traversal, alias, or invalid component"
+    );
+    if tail.is_empty() {
+        Ok(format!(
+            "{}:\\",
+            (drive_path.as_bytes()[0] as char).to_ascii_lowercase()
+        ))
+    } else {
+        Ok(format!(
+            "{}:\\{}",
+            (drive_path.as_bytes()[0] as char).to_ascii_lowercase(),
+            tail.to_ascii_lowercase()
+        ))
+    }
+}
+fn relative_native_path(path: &Path, root: &Path) -> Result<String> {
+    let path_key = normalize_absolute(path)?;
+    let root_key = normalize_absolute(root)?;
+    let prefix = format!("{}\\", root_key.trim_end_matches('\\'));
+    ensure!(
+        path_key.starts_with(&prefix),
+        "path escapes its native drive root"
+    );
+    let raw_path = path
+        .to_str()
+        .context("non-UTF8 absolute path")?
+        .replace('/', "\\");
+    let raw_root = root
+        .to_str()
+        .context("non-UTF8 absolute root")?
+        .replace('/', "\\");
+    let raw_path = raw_path.strip_prefix("\\\\?\\").unwrap_or(&raw_path);
+    let raw_root = raw_root.strip_prefix("\\\\?\\").unwrap_or(&raw_root);
+    let raw_prefix = format!("{}\\", raw_root.trim_end_matches('\\'));
+    ensure!(
+        raw_path
+            .to_ascii_lowercase()
+            .starts_with(&raw_prefix.to_ascii_lowercase()),
+        "path spelling does not match its native drive root"
+    );
+    let relative = raw_path[raw_prefix.len()..].replace('\\', "/");
+    safe_relative(&relative)?;
+    Ok(relative)
 }
 fn is_reserved_xhl_output(name: &str) -> bool {
     name.eq_ignore_ascii_case("XHL-Native-Plugin-Host.log")
@@ -2062,8 +2353,7 @@ fn check_selected_feature_rows(manifest: &InputManifest, bytes: &[u8]) -> Result
     let mut bound_rows = BTreeMap::new();
     for feature in &manifest.selected_features {
         ensure!(
-            (1..=REQUIRED_FEATURES as u8).contains(&feature.row)
-                && !feature.name.trim().is_empty(),
+            (1..=REQUIRED_FEATURES as u8).contains(&feature.row) && !feature.name.trim().is_empty(),
             "selected feature row binding is invalid"
         );
         ensure!(
@@ -2071,7 +2361,9 @@ fn check_selected_feature_rows(manifest: &InputManifest, bytes: &[u8]) -> Result
             "the pinned selected-feature matrix cannot contain a disabled feature row"
         );
         ensure!(
-            bound_rows.insert(feature.row, feature.name.trim().to_string()).is_none(),
+            bound_rows
+                .insert(feature.row, feature.name.trim().to_string())
+                .is_none(),
             "duplicate selected feature row binding"
         );
     }
@@ -2494,9 +2786,446 @@ fn effective_scripts(
     }
     Ok(result)
 }
+
+fn xhl_profile_files(
+    plan: &ApprovedPlan,
+) -> Result<Vec<(String, shroudforge_package::dll_manager::DllLoadMode)>> {
+    ensure!(
+        plan.files.contains_key("xhl-core.dll"),
+        "XHL DLL plan is missing Core"
+    );
+    let mut files = vec![(
+        "xhl-core.dll".to_string(),
+        shroudforge_package::dll_manager::DllLoadMode::Dinput8,
+    )];
+    for (plugin, _) in sf_xhl_tree_adapter::pins::PLUGINS {
+        let relative = format!("mods/{plugin}");
+        ensure!(
+            plan.files.contains_key(&relative),
+            "XHL DLL plan is missing selected plugin {plugin}"
+        );
+        files.push((
+            relative,
+            shroudforge_package::dll_manager::DllLoadMode::Library,
+        ));
+    }
+    Ok(files)
+}
+
+fn check_xhl_core_selection(
+    root: &Path,
+    manifest: &InputManifest,
+    plan: &ApprovedPlan,
+) -> Result<()> {
+    use shroudforge_package::dll_manager::{DllLoadMode, DllProfileTarget};
+    let core_units: Vec<_> = manifest
+        .components
+        .iter()
+        .filter(|unit| unit.id.eq_ignore_ascii_case("xhl-core"))
+        .collect();
+    ensure!(
+        core_units.len() == 1
+            && core_units[0].kind == ComponentKind::XhlNative
+            && core_units[0].enabled
+            && core_units[0].target.eq_ignore_ascii_case("client")
+            && plan.files.contains_key("xhl-core.dll"),
+        "selected client XHL Core unit or approved Core image is missing"
+    );
+    let selections = dll_manager::read_selections(root);
+    let core_profiles: Vec<_> = selections
+        .iter()
+        .filter(|profile| profile.package_directory.eq_ignore_ascii_case("xhl-core"))
+        .collect();
+    ensure!(
+        dll_manager::enabled(root) && core_profiles.len() == 1,
+        "XHL Core requires exactly one enabled DLL Manager selection"
+    );
+    let selection = core_profiles[0];
+    let expected_files = xhl_profile_files(plan)?;
+    ensure!(
+        selection.id.eq_ignore_ascii_case("xhl-core")
+            && selection.enabled
+            && selection.approved
+            && matches!(selection.target, DllProfileTarget::Client)
+            && selection
+                .compatibility_profile
+                .as_deref()
+                .is_none_or(|id| id.is_empty() || id == "none")
+            && selection.files.len() == expected_files.len()
+            && selection
+                .files
+                .iter()
+                .zip(expected_files.iter())
+                .all(|(actual, (path, mode))| {
+                    actual.path.eq_ignore_ascii_case(path) && actual.mode == *mode
+                })
+            && selection.files.first().is_some_and(|file| {
+                file.path.eq_ignore_ascii_case("xhl-core.dll") && file.mode == DllLoadMode::Dinput8
+            }),
+        "XHL Core DLL Manager selection differs from the approved client plan"
+    );
+    let legacy_gifting: Vec<_> = selections
+        .iter()
+        .filter(|profile| {
+            profile
+                .package_directory
+                .eq_ignore_ascii_case("XHL-Unlimited-Gifting-Range")
+        })
+        .collect();
+    ensure!(
+        legacy_gifting.len() == 1
+            && !legacy_gifting[0].enabled
+            && legacy_gifting[0].approved
+            && matches!(legacy_gifting[0].target, DllProfileTarget::Client)
+            && legacy_gifting[0].files.is_empty()
+            && legacy_gifting[0]
+                .compatibility_profile
+                .as_deref()
+                .is_none_or(|id| id.is_empty() || id == "none"),
+        "legacy Gifting directory must have one explicit disabled client DLL selection"
+    );
+    Ok(())
+}
+
+fn planning_target(name: &str) -> Result<String> {
+    safe_relative(name)?;
+    Ok(format!("mods/xhl-core/{name}"))
+}
+
+fn write_planning_bytes(root: &Path, target: &str, bytes: &[u8], expected: &Stamp) -> Result<()> {
+    let parent = create_parent_dirs(root, target)?;
+    let leaf = target
+        .rsplit('/')
+        .next()
+        .context("empty planning-view output name")?;
+    let destination = parent.join(leaf);
+    let mut output = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&destination)
+        .with_context(|| format!("create planning-view file {}", destination.display()))?;
+    output.write_all(bytes)?;
+    output.flush()?;
+    drop(output);
+    check_stamp(&stamp(&destination)?, expected, target)
+}
+
+fn copy_open_source_to_planning_view(
+    source_root: &Path,
+    root: &Path,
+    target: &str,
+    input: &sf_xhl_tree_adapter::InputFile,
+    identities: &mut BTreeSet<(u64, [u8; 16])>,
+) -> Result<()> {
+    let source_relative = input
+        .source
+        .as_deref()
+        .context("approved XHL source path is missing")?;
+    safe_relative(source_relative)?;
+    let source = source_root.join(source_relative.replace('/', "\\"));
+    validate_e_path(&source, true, false)?;
+    let mut input_file = File::open(&source)
+        .with_context(|| format!("open approved XHL source {}", source.display()))?;
+    let (volume, id) = sf_xhl_tree_adapter::tree::held_file_identity(&input_file)
+        .with_context(|| format!("read approved XHL file identity {}", source.display()))?;
+    let expected_identity = input
+        .source_identity
+        .as_ref()
+        .context("approved XHL source file identity is missing")?;
+    ensure!(
+        expected_identity.volume == volume && expected_identity.id == id,
+        "approved XHL source identity drifted: {source_relative}"
+    );
+    ensure!(
+        identities.insert((volume, id)),
+        "approved XHL source file identity aliases another input: {source_relative}"
+    );
+    let expected = Stamp {
+        bytes: input.bytes,
+        sha256: input.sha256.clone(),
+    };
+    check_stamp(&stamp_reader(&mut input_file)?, &expected, source_relative)?;
+    input_file.seek_to_start()?;
+    let parent = create_parent_dirs(root, target)?;
+    let leaf = target
+        .rsplit('/')
+        .next()
+        .context("empty planning-view output name")?;
+    let destination = parent.join(leaf);
+    let mut output = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&destination)
+        .with_context(|| format!("create planning-view file {}", destination.display()))?;
+    let copied = std::io::copy(&mut input_file, &mut output)?;
+    output.flush()?;
+    drop(output);
+    ensure!(
+        copied == expected.bytes,
+        "approved XHL source size changed while copying: {source_relative}"
+    );
+    check_stamp(&stamp(&destination)?, &expected, target)
+}
+
+fn materialize_xhl_planning_view(
+    payload_root: &Path,
+    view_root: &Path,
+    plan: &ApprovedPlan,
+    xhl_files: &BTreeMap<String, FileBinding>,
+) -> Result<()> {
+    ensure!(
+        fs::symlink_metadata(view_root)
+            .is_err_and(|error| error.kind() == std::io::ErrorKind::NotFound),
+        "DLL planning view must be fresh"
+    );
+    fs::create_dir(view_root)
+        .with_context(|| format!("create E-only DLL planning view {}", view_root.display()))?;
+    ordinary(view_root, true)?;
+    let source_key = normalize_absolute(&plan.source_root)?;
+    let output_key = normalize_absolute(
+        view_root
+            .parent()
+            .context("DLL planning view has no owned output parent")?,
+    )?;
+    let is_same_or_child = |parent: &str, candidate: &str| {
+        candidate == parent
+            || candidate
+                .strip_prefix(parent)
+                .is_some_and(|suffix| suffix.starts_with('\\'))
+    };
+    ensure!(
+        !is_same_or_child(&source_key, &output_key) && !is_same_or_child(&output_key, &source_key),
+        "approved XHL sources overlap the candidate output tree"
+    );
+    let mut expected = BTreeMap::new();
+    let mut aliases = BTreeSet::new();
+    for (name, value) in inventory(payload_root)? {
+        ensure!(
+            !name.to_ascii_lowercase().starts_with("mods/xhl-core/"),
+            "ordinary payload overlaps the XHL-owned package tree: {name}"
+        );
+        ensure!(
+            aliases.insert(path_key(&name)),
+            "ordinary payload contains a planning-view path alias: {name}"
+        );
+        let file = StagedSource {
+            source: payload_root.join(name.replace('/', "\\")),
+            target: name.clone(),
+            stamp: value.clone(),
+            runtime_binding: false,
+        };
+        write_new_file(view_root, &file)?;
+        expected.insert(name, value);
+    }
+
+    validate_e_path(&plan.source_root, true, true)?;
+    let source_chain = sf_xhl_tree_adapter::tree::pin_directory_chain(&plan.source_root)
+        .context("pin approved XHL source root for planning")?;
+    let source_identity = source_chain
+        .first()
+        .context("approved XHL source root identity is missing")?
+        .identity();
+    ensure!(
+        plan.source_root_identity.volume == source_identity.volume
+            && plan.source_root_identity.id == source_identity.id,
+        "approved XHL source-root identity drifted"
+    );
+    let mut source_identities = BTreeSet::new();
+    for (name, input) in &plan.files {
+        let target = planning_target(name)?;
+        let expected_stamp = Stamp {
+            bytes: input.bytes,
+            sha256: input.sha256.clone(),
+        };
+        let binding = xhl_files
+            .get(&target)
+            .with_context(|| format!("approved XHL target is missing from file map: {target}"))?;
+        ensure!(
+            binding.bytes == expected_stamp.bytes && binding.sha256 == expected_stamp.sha256,
+            "approved XHL target stamp differs from plan: {target}"
+        );
+        ensure!(
+            aliases.insert(path_key(&target)),
+            "approved XHL path conflicts with ordinary payload: {target}"
+        );
+        if name == "dinput8-chain.ini" {
+            ensure!(
+                input.source.is_none() && input.source_identity.is_none(),
+                "disabled XHL chain must be generated from the canonical bytes"
+            );
+            let chain_stamp = Stamp {
+                bytes: sf_xhl_tree_adapter::tree::DISABLED_CHAIN.len() as u64,
+                sha256: digest(sf_xhl_tree_adapter::tree::DISABLED_CHAIN),
+            };
+            check_stamp(&expected_stamp, &chain_stamp, name)?;
+            write_planning_bytes(
+                view_root,
+                &target,
+                sf_xhl_tree_adapter::tree::DISABLED_CHAIN,
+                &chain_stamp,
+            )?;
+        } else {
+            copy_open_source_to_planning_view(
+                &plan.source_root,
+                view_root,
+                &target,
+                input,
+                &mut source_identities,
+            )?;
+        }
+        expected.insert(target, expected_stamp);
+    }
+    ensure!(
+        xhl_files.len() == plan.files.len() && inventory(view_root)? == expected,
+        "DLL planning view membership differs from exact payload plus approved XHL inputs"
+    );
+    Ok(())
+}
+
+fn remove_planning_view(view_root: &Path, output_root: &Path) -> Result<()> {
+    ensure!(
+        view_root.parent() == Some(output_root),
+        "DLL planning view is outside its owned candidate output"
+    );
+    ordinary(view_root, true)?;
+    let _ = inventory(view_root)?;
+    fs::remove_dir_all(view_root)
+        .with_context(|| format!("remove E-only DLL planning view {}", view_root.display()))?;
+    ensure!(
+        fs::symlink_metadata(view_root)
+            .is_err_and(|error| error.kind() == std::io::ErrorKind::NotFound),
+        "DLL planning view remained after cleanup"
+    );
+    Ok(())
+}
+
+fn resolve_xhl_dll_plan(
+    payload_root: &Path,
+    manifest: &InputManifest,
+    plan: &ApprovedPlan,
+    xhl_files: &BTreeMap<String, FileBinding>,
+) -> Result<Value> {
+    ensure!(
+        !manifest
+            .contract_file_paths
+            .iter()
+            .any(|name| name.to_ascii_lowercase().starts_with("mods/xhl-core/")),
+        "XHL file bindings remain deferred until the exact prepared tree receipt"
+    );
+    let output_root = manifest.output_root.as_path();
+    let view_root = output_root.join(".dll-planning-view");
+    let result = (|| {
+        materialize_xhl_planning_view(payload_root, &view_root, plan, xhl_files)?;
+        check_xhl_core_selection(&view_root, manifest, plan)?;
+        let expected_files = inventory(&view_root)?;
+        let mut dll_plan = dll_manager::resolve_load_plan(&view_root, false);
+        ensure!(
+            inventory(&view_root)? == expected_files,
+            "canonical DLL resolver changed the E-only planning view"
+        );
+        ensure!(
+            dll_plan.issues.is_empty(),
+            "native DLL plan has issues: {}",
+            serde_json::to_string(&dll_plan.issues)?
+        );
+        let expected_xhl = xhl_profile_files(plan)?;
+        let mut actual_xhl = BTreeMap::new();
+        let mut identity = dll_manager::load_plan_identity(&dll_plan);
+        let entries = identity
+            .as_array_mut()
+            .context("canonical DLL identity is not an array")?;
+        ensure!(
+            entries.len() == dll_plan.entries.len(),
+            "canonical DLL identity entry count differs"
+        );
+        let payload_inventory = inventory(payload_root)?;
+        for (value, entry) in entries.iter_mut().zip(dll_plan.entries.iter_mut()) {
+            let name = relative_native_path(&entry.path, &view_root).with_context(|| {
+                format!(
+                    "DLL plan escapes E-only planning view: {}",
+                    entry.path.display()
+                )
+            })?;
+            let actual = expected_files
+                .get(&name)
+                .with_context(|| format!("DLL plan target is absent from planning view: {name}"))?;
+            if entry.package_directory.eq_ignore_ascii_case("xhl-core") {
+                let profile_name = name
+                    .strip_prefix("mods/xhl-core/")
+                    .context("XHL resolver path escaped its package directory")?;
+                let expected = expected_xhl
+                    .iter()
+                    .find(|(path, _)| path.eq_ignore_ascii_case(profile_name))
+                    .with_context(|| format!("XHL resolver selected an undeclared DLL: {name}"))?;
+                ensure!(
+                    entry.mode == expected.1,
+                    "XHL DLL mode differs from its selected profile: {name}"
+                );
+                let target = planning_target(profile_name)?;
+                let binding = xhl_files
+                    .get(&target)
+                    .context("XHL resolver selected a DLL without an approved plan input")?;
+                ensure!(
+                    actual.bytes == binding.bytes && actual.sha256 == binding.sha256,
+                    "XHL resolver DLL bytes differ from the approved plan: {name}"
+                );
+                ensure!(
+                    actual_xhl
+                        .insert(profile_name.to_ascii_lowercase(), entry.mode)
+                        .is_none(),
+                    "XHL resolver selected a DLL more than once: {name}"
+                );
+            } else {
+                ensure!(
+                    !name.to_ascii_lowercase().starts_with("mods/xhl-core/")
+                        && payload_inventory.contains_key(&name),
+                    "DLL plan target is outside the selected payload or XHL package: {name}"
+                );
+                let payload_stamp = &payload_inventory[&name];
+                ensure!(
+                    actual == payload_stamp,
+                    "ordinary DLL bytes differ from the exact candidate payload: {name}"
+                );
+            }
+            let rebound = target_path(&manifest.target_root, &name)?;
+            value["path"] = json!(rebound);
+            entry.path = rebound;
+        }
+        let expected_xhl: BTreeMap<_, _> = expected_xhl
+            .into_iter()
+            .map(|(path, mode)| (path.to_ascii_lowercase(), mode))
+            .collect();
+        ensure!(
+            actual_xhl == expected_xhl
+                && actual_xhl
+                    .iter()
+                    .filter(|(path, _)| path.eq_ignore_ascii_case("xhl-core.dll"))
+                    .count()
+                    == 1,
+            "canonical DLL plan does not contain every selected XHL DLL exactly once"
+        );
+        Ok(identity)
+    })();
+    let cleanup = if fs::symlink_metadata(&view_root).is_ok() {
+        remove_planning_view(&view_root, output_root)
+    } else {
+        Ok(())
+    };
+    match (result, cleanup) {
+        (Ok(value), Ok(())) => Ok(value),
+        (Err(error), Ok(())) => Err(error),
+        (Ok(_), Err(cleanup_error)) => Err(cleanup_error),
+        (Err(error), Err(cleanup_error)) => Err(error.context(format!(
+            "DLL planning-view cleanup also failed: {cleanup_error:#}"
+        ))),
+    }
+}
+
 fn runtime_plan(
     root: &Path,
     manifest: &InputManifest,
+    xhl_plan: &ApprovedPlan,
+    xhl_files: &BTreeMap<String, FileBinding>,
 ) -> Result<(Vec<String>, Value, BTreeMap<String, NativeFile>)> {
     let text = root
         .to_str()
@@ -2523,7 +3252,10 @@ fn runtime_plan(
         .components
         .iter()
         .filter(|component| {
-            matches!(component.kind, ComponentKind::AssetProvider | ComponentKind::RuntimeOnly)
+            matches!(
+                component.kind,
+                ComponentKind::AssetProvider | ComponentKind::RuntimeOnly
+            )
         })
         .map(|component| component.id.as_str())
         .collect();
@@ -2548,39 +3280,7 @@ fn runtime_plan(
         "native DLL activation plan has package issues: {}",
         serde_json::to_string(&asset_issues)?
     );
-    let mut dll_plan = dll_manager::resolve_load_plan(root, false);
-    ensure!(
-        dll_plan.issues.is_empty(),
-        "native DLL plan has issues: {}",
-        serde_json::to_string(&dll_plan.issues)?
-    );
-    let mut identity = dll_manager::load_plan_identity(&dll_plan);
-    let entries = identity
-        .as_array_mut()
-        .context("canonical DLL identity is not an array")?;
-    ensure!(
-        entries.len() == dll_plan.entries.len(),
-        "canonical DLL identity entry count differs"
-    );
-    for (value, entry) in entries.iter_mut().zip(dll_plan.entries.iter_mut()) {
-        let relative = entry.path.strip_prefix(root).with_context(|| {
-            format!(
-                "DLL plan escapes candidate payload: {}",
-                entry.path.display()
-            )
-        })?;
-        let name = relative
-            .to_str()
-            .context("non-UTF8 DLL plan path")?
-            .replace('\\', "/");
-        safe_relative(&name)?;
-        ensure!(
-            inventory(root)?.contains_key(&name),
-            "DLL plan target is absent from candidate payload: {name}"
-        );
-        let rebound = target_path(&manifest.target_root, &name)?;
-        value["path"] = json!(rebound);
-    }
+    let identity = resolve_xhl_dll_plan(root, manifest, xhl_plan, xhl_files)?;
     let scripts = effective_scripts(&env, &runtime_ids)?;
     // Force the exact public manager plan to remain the one represented in the contract.
     let _ = asset_plan;
@@ -2629,42 +3329,67 @@ fn validate_preserved_runtime_files(
     preservation: &[PreservationEntry],
     payload_files: &BTreeMap<String, FileBinding>,
 ) -> Result<()> {
-    ensure!(entries.len() <= 1, "only the selected preserved Vein INI is supported");
+    ensure!(
+        entries.len() <= 1,
+        "only the selected preserved Vein INI is supported"
+    );
     for item in entries {
         safe_relative(&item.target)?;
         ensure!(
-            selected_vein_path == Some(item.target.as_str())
-                && item.target.ends_with(".ini"),
+            selected_vein_path == Some(item.target.as_str()) && item.target.ends_with(".ini"),
             "preserved runtime binding is not the selected Vein INI"
         );
         ensure!(
-            !payload_files.keys().any(|path| path.eq_ignore_ascii_case(&item.target)),
+            !payload_files
+                .keys()
+                .any(|path| path.eq_ignore_ascii_case(&item.target)),
             "preserved runtime file must not be in the write payload"
         );
-        ensure!(valid_digest(&item.stamp.sha256), "invalid preserved runtime digest");
-        ensure!(preservation.iter().any(|entry|
-            entry.target == item.target
+        ensure!(
+            valid_digest(&item.stamp.sha256),
+            "invalid preserved runtime digest"
+        );
+        ensure!(
+            preservation.iter().any(|entry| entry.target == item.target
                 && entry.component_id == item.component_id
                 && entry.evidence_sha256 == item.evidence.sha256),
             "preserved runtime input lacks its matching preservation record"
         );
-        let bytes = check_raw_evidence(&item.evidence.path, &item.evidence.sha256, 32 * 1024 * 1024)?;
+        let bytes =
+            check_raw_evidence(&item.evidence.path, &item.evidence.sha256, 32 * 1024 * 1024)?;
         let evidence: Value = serde_json::from_slice(&bytes)?;
-        let evidence_root = evidence.get("sourceRoot").and_then(Value::as_str)
+        let evidence_root = evidence
+            .get("sourceRoot")
+            .and_then(Value::as_str)
             .context("preserved runtime evidence lacks sourceRoot")?;
-        ensure!(same_path(Path::new(evidence_root), target), "preserved runtime evidence targets another installation");
-        let rows = evidence.get("files").and_then(Value::as_array)
+        ensure!(
+            same_path(Path::new(evidence_root), target),
+            "preserved runtime evidence targets another installation"
+        );
+        let rows = evidence
+            .get("files")
+            .and_then(Value::as_array)
             .context("preserved runtime evidence lacks files")?;
-        let matching: Vec<_> = rows.iter().filter(|row| row.get("relativePath")
-            .and_then(Value::as_str).is_some_and(|path| path.eq_ignore_ascii_case(&item.target))).collect();
-        ensure!(matching.len() == 1, "preserved runtime evidence row is missing or ambiguous");
+        let matching: Vec<_> = rows
+            .iter()
+            .filter(|row| {
+                row.get("relativePath")
+                    .and_then(Value::as_str)
+                    .is_some_and(|path| path.eq_ignore_ascii_case(&item.target))
+            })
+            .collect();
+        ensure!(
+            matching.len() == 1,
+            "preserved runtime evidence row is missing or ambiguous"
+        );
         let row = matching[0];
         ensure!(
             row.get("relativePath").and_then(Value::as_str) == Some(item.target.as_str())
                 && row.get("status").and_then(Value::as_str) == Some("PRESENT_PRESERVE_BYTES")
                 && row.get("bytes").and_then(Value::as_u64) == Some(item.stamp.bytes)
                 && row.get("sha256").and_then(Value::as_str) == Some(item.stamp.sha256.as_str())
-                && row.get("postSha256").and_then(Value::as_str) == Some(item.stamp.sha256.as_str()),
+                && row.get("postSha256").and_then(Value::as_str)
+                    == Some(item.stamp.sha256.as_str()),
             "preserved runtime evidence differs from the exact unchanged file stamp"
         );
     }
@@ -2676,10 +3401,14 @@ fn file_map_for_contract(
     payload_files: &BTreeMap<String, FileBinding>,
     dll_identity: &Value,
     runtime_ids: &[String],
+    xhl_files: &BTreeMap<String, FileBinding>,
 ) -> Result<(BTreeMap<String, NativeFile>, Vec<MissingRequirement>)> {
     validate_preserved_runtime_files(
-        &manifest.preserved_runtime_files, &manifest.target_root,
-        manifest.selection.vein_settings_path.as_deref(), &manifest.preservation, payload_files,
+        &manifest.preserved_runtime_files,
+        &manifest.target_root,
+        manifest.selection.vein_settings_path.as_deref(),
+        &manifest.preservation,
+        payload_files,
     )?;
     let mut paths: BTreeSet<String> = manifest.contract_file_paths.iter().cloned().collect();
     for name in [
@@ -2730,6 +3459,9 @@ fn file_map_for_contract(
             .to_str()
             .context("non-UTF8 rebound DLL path")?
             .replace('\\', "/");
+        if xhl_files.contains_key(&name) {
+            continue;
+        }
         paths.insert(name.clone());
         if let Some(parent) = Path::new(&name).parent().and_then(Path::to_str) {
             let declaration = format!("{parent}/native-plugin.ini");
@@ -2746,8 +3478,18 @@ fn file_map_for_contract(
     let mut files = BTreeMap::new();
     for name in paths {
         safe_relative(&name)?;
-        if let Some(preserved) = manifest.preserved_runtime_files.iter().find(|item| item.target == name) {
-            files.insert(name, NativeFile { bytes: preserved.stamp.bytes, sha256: preserved.stamp.sha256.clone() });
+        if let Some(preserved) = manifest
+            .preserved_runtime_files
+            .iter()
+            .find(|item| item.target == name)
+        {
+            files.insert(
+                name,
+                NativeFile {
+                    bytes: preserved.stamp.bytes,
+                    sha256: preserved.stamp.sha256.clone(),
+                },
+            );
             continue;
         }
         let Some(binding) = payload_files.get(&name) else {
@@ -2794,14 +3536,18 @@ fn build_contract(
     request_raw: &[u8],
     receipt_raw: &[u8],
     payload_files: &BTreeMap<String, FileBinding>,
+    xhl_plan: &ApprovedPlan,
+    xhl_files: &BTreeMap<String, FileBinding>,
 ) -> Result<(Option<Contract>, Vec<MissingRequirement>)> {
-    let (runtime_ids, dll_plan, scripts) = runtime_plan(payload_root, manifest)?;
+    let (runtime_ids, dll_plan, scripts) =
+        runtime_plan(payload_root, manifest, xhl_plan, xhl_files)?;
     let (files, mut missing) = file_map_for_contract(
         payload_root,
         manifest,
         payload_files,
         &dll_plan,
         &runtime_ids,
+        xhl_files,
     )?;
     let mut selection = json!({
         "xhl": null,
@@ -3000,13 +3746,11 @@ pub fn prepare_template(manifest_bytes: &[u8], expected_manifest_sha256: &str) -
             &request_bytes,
             &receipt_bytes,
             &payload_files,
+            &plan,
+            &xhl_files,
         )?;
         missing.extend(additional);
-        if missing.is_empty() {
-            contract
-        } else {
-            None
-        }
+        if missing.is_empty() { contract } else { None }
     } else {
         None
     };
@@ -3322,15 +4066,26 @@ pub fn finalize_policy(
             .context("template has no complete runtime contract")?,
     )?;
     validate_preserved_runtime_files(
-        &template.preserved_runtime_files, &template.target_root,
-        template_contract.pointer("/selection/veinSettingsPath").and_then(Value::as_str),
-        &template.preservation, &template.payload_files,
+        &template.preserved_runtime_files,
+        &template.target_root,
+        template_contract
+            .pointer("/selection/veinSettingsPath")
+            .and_then(Value::as_str),
+        &template.preservation,
+        &template.payload_files,
     )?;
     for item in &template.preserved_runtime_files {
-        let bound = template.contract.as_ref().unwrap().files.get(&item.target)
+        let bound = template
+            .contract
+            .as_ref()
+            .unwrap()
+            .files
+            .get(&item.target)
             .context("preserved runtime input is absent from the final contract")?;
-        ensure!(bound.bytes == item.stamp.bytes && bound.sha256 == item.stamp.sha256,
-            "preserved runtime contract stamp differs");
+        ensure!(
+            bound.bytes == item.stamp.bytes && bound.sha256 == item.stamp.sha256,
+            "preserved runtime contract stamp differs"
+        );
     }
     validate_greeneye_template(
         &template,
