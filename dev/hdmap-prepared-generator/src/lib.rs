@@ -24,6 +24,8 @@ pub struct Request {
     pub inputs: BTreeMap<String, Stamp>,
     /// Complete disposable environment, including operation-local schema cache.
     pub environment_files: BTreeMap<String, Stamp>,
+    #[serde(default,skip_serializing_if="Option::is_none")]
+    pub external_registry: Option<shroudforge_api::ExternalRegistryInput>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -40,6 +42,8 @@ pub struct Receipt {
     /// Consumers must recheck this membership before using the staged output.
     pub source_dat_membership: BTreeMap<String, Stamp>,
     pub source_dat_membership_sha256: String,
+    #[serde(default,skip_serializing_if="Option::is_none")]
+    pub external_registry: Option<shroudforge_api::ExternalRegistryInput>,
 }
 
 pub fn ordinary(path: &Path, directory: bool) -> Result<()> {
@@ -132,7 +136,7 @@ fn inventory(base: &Path) -> Result<BTreeMap<String, Stamp>> {
 
 fn qualify(request: &Request) -> Result<(PathBuf, PathBuf, PathBuf, Vec<File>, BTreeMap<String, Stamp>)> {
     source_closure()?;
-    ensure!(request.schema==1,"unsupported prepared identity");
+    ensure!(request.schema==if request.external_registry.is_some(){2}else{1},"unsupported prepared identity");
     let source=root(&request.asset_input_root)?;let environment=root(&request.environment_root)?;let output=root(&request.output_root)?;
     ensure!(root(&request.target_root)?==source,"preparation must read its actual target, not retarget a foreign receipt");
     let development=root(Path::new("E:/"))?;
@@ -233,7 +237,8 @@ fn accept_prepared_stage(
     validate_source_dat_output(source,source_dat_membership,&staged)?;
     let source_dat_membership_sha256=format!("{:x}",Sha256::digest(serde_json::to_vec(source_dat_membership)?));
     Ok(Receipt {
-        schema:2,
+        schema:if request.external_registry.is_some(){3}else{2},
+        external_registry:request.external_registry.clone(),
         source_closure:source_closure()?.into(),
         request_sha256:format!("{:x}",Sha256::digest(serde_json::to_vec(request)?)),
         target_root:source.to_path_buf(),
@@ -246,15 +251,31 @@ fn accept_prepared_stage(
 }
 
 pub fn prepare(request: &Request) -> Result<Receipt> {
+    ensure!(request.schema==if request.external_registry.is_some(){2}else{1},"unsupported prepared identity");
+    // External admission precedes every source/cache access in qualify/session.
+    let external_registry=match &request.external_registry {
+        Some(input)=> {
+            let stamps=request.inputs.iter().filter(|(n,_)|["enshrouded.exe","enshrouded.kfc","enshrouded.kfc_resources"].contains(&n.as_str())).map(|(n,s)|(n.clone(),shroudforge_api::SourceStamp{bytes:s.bytes,sha256:s.sha256.clone()})).collect();
+            Some(shroudforge_api::admit_external_registry(&request.environment_root,input,&stamps)?)
+        }
+        None=>None,
+    };
     let (source,environment,output,_input_handles,source_dat_membership)=qualify(request)?;
     let env=shroudforge_package::ModEnvironment::load(environment.to_str().context("nonUTF8 environment")?).map_err(|e|anyhow::anyhow!("environment: {e}"))?;
     ensure!(root(env.mods_dir().as_std_path())?==environment.join("mods"),"configured mods escape environment");
     ensure!(root(env.cache_dir().as_std_path())?.starts_with(&environment),"configured cache escapes environment");
     let planned:BTreeSet<_>=env.plan(false,shroudforge_api::API_VERSION).iter().filter(|m|m.info().requires_pregame()).map(|m|m.info().id.clone()).collect();
     ensure!(planned==request.selected_ids.iter().cloned().collect(),"planned pregame selection differs");
-    let stage=shroudforge_api::run_prepared_with_local_schema(&env,shroudforge_api::RunArgs {file_name:STEM.into(),options:shroudforge_api::RunOptions {current_asset_mods:Some(request.selected_ids.clone()),defer_current_commit:true,patch:true,skip_cache:true,force_patch:true,is_server:Some(false),phase:shroudforge_api::RuntimePhase::Pregame,..Default::default()}},&source,&output)?;
+    let args=shroudforge_api::RunArgs {file_name:STEM.into(),options:shroudforge_api::RunOptions {current_asset_mods:Some(request.selected_ids.clone()),defer_current_commit:true,patch:true,skip_cache:true,force_patch:true,is_server:Some(false),phase:shroudforge_api::RuntimePhase::Pregame,..Default::default()}};
+    let stage=match external_registry {
+        Some(registry)=>shroudforge_api::run_prepared_with_verified_registry(&env,args,&source,&output,registry)?,
+        None=>shroudforge_api::run_prepared_with_local_schema(&env,args,&source,&output)?,
+    };
     accept_prepared_stage(request,&source,&environment,&output,&stage,&source_dat_membership)
 }
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(all(test,windows))]
+mod external_registry_tests;

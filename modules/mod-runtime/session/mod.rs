@@ -33,6 +33,7 @@ use crate::{
 };
 
 pub struct AppState {
+    _external_registry: Option<crate::reflection::external_registry::VerifiedExternalRegistry>,
     pub(crate) runtime_configured: Cell<bool>,
     runtime_active_mods: RefCell<HashSet<String>>,
     map_lua_owners: RefCell<HashMap<String, u64>>,

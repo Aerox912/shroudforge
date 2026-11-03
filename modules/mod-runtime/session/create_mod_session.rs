@@ -6,7 +6,7 @@ impl AppState {
         args: RunArgs,
         cache_diff: &CacheDiff,
     ) -> Result<Self, ()> {
-        Self::new_with_prepared_roots(env, api, args, cache_diff, None)
+        Self::new_with_prepared_roots(env, api, args, cache_diff, None, None)
     }
 
     pub(crate) fn new_prepared(
@@ -23,7 +23,18 @@ impl AppState {
             args,
             cache_diff,
             Some((asset_input_root, output_root)),
+            None,
         )
+    }
+
+    pub(crate) fn new_prepared_with_registry(
+        env: ModEnvironment, api: Option<ShroudForgeApi>, args: RunArgs,
+        cache_diff: &CacheDiff, asset_input_root: &std::path::Path,
+        output_root: &std::path::Path,
+        registry: crate::reflection::external_registry::VerifiedExternalRegistry,
+    ) -> Result<Self, ()> {
+        Self::new_with_prepared_roots(env, api, args, cache_diff,
+            Some((asset_input_root, output_root)), Some(registry))
     }
 
     fn new_with_prepared_roots(
@@ -32,6 +43,7 @@ impl AppState {
         args: RunArgs,
         cache_diff: &CacheDiff,
         prepared_roots: Option<(&std::path::Path, &std::path::Path)>,
+        external_registry: Option<crate::reflection::external_registry::VerifiedExternalRegistry>,
     ) -> Result<Self, ()> {
         let game_dir = env.game_dir();
         let cache_dir = env.cache_dir();
@@ -169,11 +181,14 @@ impl AppState {
 
         // The prepared caller supplies cache_dir from its disposable mod
         // environment, while asset_game_dir remains the separate read-only input.
-        let (type_registry, is_dirty) = crate::reflection::load_type_registry::load_type_registry(
-            &asset_game_dir,
-            cache_dir,
-            file_name,
-        )?;
+        let (type_registry, is_dirty) = match &external_registry {
+            Some(external) => (external.registry.clone(), false),
+            None => {
+                let (registry, dirty) = crate::reflection::load_type_registry::load_type_registry(
+                    &asset_game_dir, cache_dir, file_name)?;
+                (Rc::new(registry), dirty)
+            }
+        };
         if phase == RuntimePhase::Pregame && !generated_assets {
             crate::lua::definitions::export_lua_definitions::export_to_cache(
                 cache_dir,
@@ -181,7 +196,6 @@ impl AppState {
                 options.skip_cache || is_dirty || cache_diff.build_id_changed(),
             );
         }
-        let type_registry = Rc::new(type_registry);
 
         let kfc_path = asset_game_dir.join(file_name).with_extension("kfc");
         if generated_assets
@@ -205,6 +219,10 @@ impl AppState {
                 crate::game_files::create_reader(&asset_game_dir, file_name)?,
             )
         };
+        if external_registry.is_some() && ref_file.game_version()!=type_registry.version {
+            error!("External registry generation differs from prepared KFC input");
+            return Err(());
+        }
         let api = match api {
             Some(api) => api,
             None => {
@@ -284,6 +302,7 @@ impl AppState {
         };
 
         Ok(Self {
+            _external_registry: external_registry,
             runtime_configured: Cell::new(false),
             runtime_active_mods: RefCell::new(HashSet::new()),
             map_lua_owners: RefCell::new(HashMap::new()),

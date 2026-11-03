@@ -28,7 +28,7 @@ pub fn run_prepared(
     asset_input_root: &Path,
     output_root: &Path,
 ) -> anyhow::Result<PathBuf> {
-    run_prepared_with_api(env, Some(api), args, asset_input_root, output_root)
+    run_prepared_with_api(env, Some(api), args, asset_input_root, output_root, None)
 }
 
 /// Local-schema form of [`run_prepared`].
@@ -38,7 +38,26 @@ pub fn run_prepared_with_local_schema(
     asset_input_root: &Path,
     output_root: &Path,
 ) -> anyhow::Result<PathBuf> {
-    run_prepared_with_api(env, None, args, asset_input_root, output_root)
+    run_prepared_with_api(env, None, args, asset_input_root, output_root, None)
+}
+
+/// Explicit prepared-only admission. Evidence is validated before source/cache/root access.
+pub fn run_prepared_with_external_registry(
+    env: &ModEnvironment, args: RunArgs, asset_input_root: &Path, output_root: &Path,
+    input: &crate::ExternalRegistryInput,
+    source_inputs: &std::collections::BTreeMap<String,crate::SourceStamp>,
+) -> anyhow::Result<PathBuf> {
+    validate_prepared_options(&args)?;
+    let registry=crate::admit_external_registry(env.game_dir().as_std_path(),input,source_inputs)?;
+    run_prepared_with_verified_registry(env,args,asset_input_root,output_root,registry)
+}
+
+/// Consume an opaque verified token; retaining it keeps all evidence leases alive.
+pub fn run_prepared_with_verified_registry(
+    env:&ModEnvironment,args:RunArgs,asset_input_root:&Path,output_root:&Path,
+    registry:crate::VerifiedExternalRegistry,
+)->anyhow::Result<PathBuf> {
+    run_prepared_with_api(env,None,args,asset_input_root,output_root,Some(registry))
 }
 
 fn run_prepared_with_api(
@@ -47,6 +66,7 @@ fn run_prepared_with_api(
     mut args: RunArgs,
     asset_input_root: &Path,
     output_root: &Path,
+    external_registry: Option<crate::reflection::external_registry::VerifiedExternalRegistry>,
 ) -> anyhow::Result<PathBuf> {
     validate_prepared_options(&args)?;
     let stem = args.file_name.clone();
@@ -58,7 +78,7 @@ fn run_prepared_with_api(
             output_root,
             &args.file_name,
         )?;
-    run_with_api_and_output(env, api, args, Some((&asset_input_root, &output_root)))?;
+    run_with_api_and_output(env, api, args, Some((&asset_input_root, &output_root)), external_registry)?;
     Ok(shroudforge_game_assets::transaction::directory(
         &output_root,
         &stem,
@@ -91,7 +111,7 @@ fn run_with_api(
     api: Option<ShroudForgeApi>,
     args: RunArgs,
 ) -> anyhow::Result<()> {
-    run_with_api_and_output(env, api, args, None)
+    run_with_api_and_output(env, api, args, None, None)
 }
 
 fn run_with_api_and_output(
@@ -99,6 +119,7 @@ fn run_with_api_and_output(
     api: Option<ShroudForgeApi>,
     mut args: RunArgs,
     prepared_roots: Option<(&Path, &Path)>,
+    external_registry: Option<crate::reflection::external_registry::VerifiedExternalRegistry>,
 ) -> anyhow::Result<()> {
     debug!("Running lua with options: {:?}", args);
     if prepared_roots.is_some() {
@@ -142,8 +163,10 @@ fn run_with_api_and_output(
 
     // create a new app state
 
-    let created_app_state = match prepared_roots {
-        Some((asset_input_root, output_root)) => AppState::new_prepared(
+    let created_app_state = match (prepared_roots,external_registry) {
+        (Some((asset_input_root, output_root)),Some(registry)) => AppState::new_prepared_with_registry(
+            env.clone(),api,args,&cache_diff,asset_input_root,output_root,registry),
+        (Some((asset_input_root, output_root)),None) => AppState::new_prepared(
             env.clone(),
             api,
             args,
@@ -151,7 +174,8 @@ fn run_with_api_and_output(
             asset_input_root,
             output_root,
         ),
-        None => AppState::new(env.clone(), api, args, &cache_diff),
+        (None,None) => AppState::new(env.clone(), api, args, &cache_diff),
+        (None,Some(_)) => anyhow::bail!("external registry requires prepared roots"),
     };
     let app_state = match created_app_state {
         Ok(context) => context,

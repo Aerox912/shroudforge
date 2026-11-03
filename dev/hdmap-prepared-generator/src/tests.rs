@@ -35,7 +35,7 @@ impl Fixture {
         let environment_files=inventory(&environment).unwrap();
         let mut inputs=inventory(&source).unwrap();inputs.remove("personal-settings.keep");
         inputs.extend(environment_files.iter().filter(|(n,_)|n.starts_with("mods/")).map(|(n,s)|(n.clone(),s.clone())));
-        Self {root,request:Request{schema:1,target_root:source.clone(),asset_input_root:source,environment_root:environment,output_root:output,selected_ids:vec![id.into()],inputs,environment_files},resource,original_content,registry}
+        Self {root,request:Request{schema:1,target_root:source.clone(),asset_input_root:source,environment_root:environment,output_root:output,selected_ids:vec![id.into()],inputs,environment_files,external_registry:None},resource,original_content,registry}
     }
 }
 impl Drop for Fixture {
@@ -181,3 +181,15 @@ fn input_handles_refuse_concurrent_source_writes_and_delete() {
 
 #[path="dat_reservation_tests.rs"]
 mod dat_reservation;
+
+// Catches accidentally ignoring explicit registry evidence or changing legacy request bytes.
+#[test]
+fn external_registry_request_is_explicit_and_legacy_stays_unchanged() {
+    let legacy=serde_json::json!({"schema":1,"target_root":"source","asset_input_root":"source","environment_root":"environment","output_root":"output","selected_ids":["fixture"],"inputs":{},"environment_files":{}});
+    let parsed:Request=serde_json::from_value(legacy.clone()).unwrap();
+    assert_eq!(serde_json::to_value(&parsed).unwrap(),legacy);
+    let mut explicit=legacy;explicit["schema"]=serde_json::json!(2);
+    explicit["external_registry"]=serde_json::json!({"manifest":{"path":"evidence/manifest.json","bytes":1,"sha256":"a".repeat(64)},"producer_use_approval":{"path":"evidence/producer-use.json","bytes":1,"sha256":"b".repeat(64)}});
+    let result=serde_json::from_value::<Request>(explicit);
+    assert!(result.is_ok(),"explicit prepared registry input is not implemented: {:?}",result.err());
+}

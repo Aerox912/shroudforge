@@ -167,3 +167,9 @@ pub use startup::run_startup_mods::{run_prepared, run_prepared_with_local_schema
 
 #[cfg(test)]
 use runtime::Lifecycle;
+
+/// Explicit prepared registry evidence; never used by ordinary cache loading.
+pub use reflection::external_registry::{ExternalRegistryInput, EvidencePin, SourceStamp, VerifiedExternalRegistry, admit_external_registry};
+pub use startup::run_startup_mods::run_prepared_with_external_registry;
+
+pub use startup::run_startup_mods::run_prepared_with_verified_registry;

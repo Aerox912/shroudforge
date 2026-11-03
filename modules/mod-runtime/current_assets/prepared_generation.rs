@@ -8,11 +8,15 @@ struct PreparedRequest {
     schema:u32,target_root:PathBuf,asset_input_root:PathBuf,
     environment_root:PathBuf,output_root:PathBuf,selected_ids:Vec<String>,
     inputs:BTreeMap<String,FileStamp>,environment_files:BTreeMap<String,FileStamp>,
+    #[serde(default,skip_serializing_if="Option::is_none")]
+    external_registry:Option<crate::ExternalRegistryInput>,
 }
 #[derive(Clone,Serialize,Deserialize)]
 #[serde(deny_unknown_fields)]
 struct PreparedReceipt {
     schema:u32,source_closure:String,request_sha256:String,target_root:PathBuf,
+    #[serde(default,skip_serializing_if="Option::is_none")]
+    external_registry:Option<crate::ExternalRegistryInput>,
     output_stage:PathBuf,staged:BTreeMap<String,FileStamp>,prepared_marker:FileStamp,
     #[serde(default,skip_serializing_if="Option::is_none")]
     source_dat_membership:Option<BTreeMap<String,FileStamp>>,
@@ -46,8 +50,11 @@ fn valid_selected_mod_id(id:&str)->bool {
 }
 
 fn validate_receipt_schema<'a>(request:&PreparedRequest,receipt:&'a PreparedReceipt,full:bool)->Result<Option<&'a BTreeMap<String,FileStamp>>> {
-    let expected_schema=if full {2}else{1};
-    ensure!(request.schema==1&&receipt.schema==expected_schema,"prepared request/receipt schema differs");
+    let external=request.external_registry.is_some();
+    ensure!(full||!external,"external registry requires full prepared provenance");
+    ensure!(request.external_registry==receipt.external_registry,"prepared registry provenance differs");
+    let expected_schema=if external {3}else if full {2}else{1};
+    ensure!((request.schema==if external{2}else{1})&&receipt.schema==expected_schema,"prepared request/receipt schema differs");
     if !full {
         ensure!(receipt.source_dat_membership.is_none()&&receipt.source_dat_membership_sha256.is_none(),"legacy prepared receipt contains schema2 DAT membership");
         return Ok(None);
@@ -200,10 +207,10 @@ mod tests {
             if mod_lua!=map_lua {environment_files.insert(map_lua.into(),value(map_lua));}
             let environment_root=root.with_file_name(format!("{}-environment",root.file_name().unwrap().to_string_lossy()));
             let output_root=root.with_file_name(format!("{}-output",root.file_name().unwrap().to_string_lossy()));
-            let request=PreparedRequest {schema:1,target_root:root.clone(),asset_input_root:root.clone(),environment_root,output_root:output_root.clone(),selected_ids:vec![mod_id.into()],inputs,environment_files};
+            let request=PreparedRequest {schema:1,target_root:root.clone(),asset_input_root:root.clone(),environment_root,output_root:output_root.clone(),selected_ids:vec![mod_id.into()],inputs,environment_files,external_registry:None};
             let mut staged:BTreeMap<_,_>=["enshrouded.kfc","enshrouded.kfc_resources","enshrouded_001.dat"].into_iter().map(|n|(n.into(),value(n))).collect();
             staged.insert("generated-inputs.json".into(),FileStamp{bytes:123,sha256:digest(b"synthetic durable generation preimages")});
-            let receipt=PreparedReceipt {schema:1,source_closure:option_env!("HD_PREPARED_SOURCE_CLOSURE").unwrap().into(),request_sha256:digest(&serde_json::to_vec(&request).unwrap()),target_root:root.clone(),output_stage:output_root.join(".enshrouded.shroudforge-stage"),staged,prepared_marker:FileStamp{bytes:100,sha256:digest(b"synthetic prepared marker")},source_dat_membership:None,source_dat_membership_sha256:None};
+            let receipt=PreparedReceipt {schema:1,source_closure:option_env!("HD_PREPARED_SOURCE_CLOSURE").unwrap().into(),request_sha256:digest(&serde_json::to_vec(&request).unwrap()),target_root:root.clone(),output_stage:output_root.join(".enshrouded.shroudforge-stage"),staged,prepared_marker:FileStamp{bytes:100,sha256:digest(b"synthetic prepared marker")},source_dat_membership:None,source_dat_membership_sha256:None,external_registry:None};
             let request_json=serde_json::to_string(&request).unwrap();let receipt_json=serde_json::to_string(&receipt).unwrap();
             let policy=PreparedPolicy {schema_version:5,owner:"hdmap-prepared-generator".into(),root:root.clone(),source_closure:receipt.source_closure.clone(),request_sha256:digest(request_json.as_bytes()),receipt_sha256:digest(receipt_json.as_bytes()),request_json,receipt_json,extended_zoom:false,runtime:None,preserved_loaders:[("winmm.dll".into(),value("winmm.dll").sha256)].into_iter().collect()};
             Self {root,policy}
@@ -406,5 +413,24 @@ mod tests {
             // A rejected preparation leaves no zoom handoff; an absent handoff reads as unavailable.
             assert_eq!(zoom_demand::take(&f.root),2,"case{case}");
         }
+    }
+}
+
+#[cfg(test)]
+mod external_registry_manifest_tests {
+    use super::*;
+    #[test]
+    fn external_registry_prepared_receipt_requires_matching_explicit_provenance() {
+        let pin=crate::EvidencePin{path:"evidence/manifest.json".into(),bytes:7,sha256:"a".repeat(64)};
+        let input=crate::ExternalRegistryInput{manifest:pin.clone(),producer_use_approval:crate::EvidencePin{path:"evidence/producer-use.json".into(),..pin}};
+        let request=PreparedRequest{schema:2,target_root:PathBuf::from("source"),asset_input_root:PathBuf::from("source"),environment_root:PathBuf::from("environment"),output_root:PathBuf::from("output"),selected_ids:vec!["fixture".into()],inputs:BTreeMap::new(),environment_files:BTreeMap::new(),external_registry:Some(input.clone())};
+        let membership=BTreeMap::new();
+        let mut receipt=PreparedReceipt{schema:3,source_closure:"b".repeat(64),request_sha256:"c".repeat(64),target_root:PathBuf::from("source"),output_stage:PathBuf::from("stage"),staged:BTreeMap::new(),prepared_marker:FileStamp{bytes:7,sha256:"d".repeat(64)},source_dat_membership:Some(membership),source_dat_membership_sha256:Some(digest(&serde_json::to_vec(&BTreeMap::<String,FileStamp>::new()).unwrap())),external_registry:Some(input)};
+        assert!(validate_receipt_schema(&request,&receipt,true).is_ok());
+        assert!(validate_receipt_schema(&request,&receipt,false).is_err());
+        receipt.schema=2;assert!(validate_receipt_schema(&request,&receipt,true).is_err());
+        receipt.schema=3;receipt.external_registry.as_mut().unwrap().producer_use_approval.sha256="e".repeat(64);
+        assert!(validate_receipt_schema(&request,&receipt,true).is_err());
+        receipt.external_registry=None;assert!(validate_receipt_schema(&request,&receipt,true).is_err());
     }
 }

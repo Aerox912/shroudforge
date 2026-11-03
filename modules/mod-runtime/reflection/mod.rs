@@ -9,3 +9,5 @@ pub mod functions;
 pub mod types;
 
 pub(crate) mod load_type_registry;
+
+pub(crate) mod external_registry;
