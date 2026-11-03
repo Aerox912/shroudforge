@@ -39,8 +39,8 @@ pub struct AppState {
     runtime_write_fault: RefCell<Option<(u64, String)>>,
     runtime_ownership:
         Rc<RefCell<crate::lua::ingame::overrides::claim_runtime_storage::OwnershipStore>>,
-    native_dlls: RefCell<Vec<NativeDll>>,
-    pending_native_dlls: RefCell<Vec<PendingNativeDll>>,
+    native_dlls: RefCell<Vec<native_plugins::NativeDll>>,
+    pending_native_dlls: RefCell<Vec<native_plugins::PendingNativeDll>>,
     native_plugin_services:
         RefCell<std::sync::Arc<dyn native_plugin_abi::NativePluginServiceLifetime>>,
     env: ModEnvironment,
