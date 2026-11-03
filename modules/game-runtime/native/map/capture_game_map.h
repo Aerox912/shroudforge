@@ -1,6 +1,8 @@
 #pragma once
 #include "map/read_map_frame.h"
 #include <string_view>
+// Exact definition is supplied by Main's shared held_entry_preparation.h.
+namespace EngineHooks {class HeldEntryToken;}
 
 namespace MapRuntime {
 inline constexpr char CurrentClientSha256[] = "d64966e23b1a458ee6f147bcbceac0b577fa7e39a212f371287d8cc119817882";
@@ -30,9 +32,17 @@ bool ReadPingEvents(std::uintptr_t list, std::uint32_t excluded_sender, std::uin
 // identity/capability first; these are not an unrestricted public mod API.
 std::int32_t EnableCapture(std::uint64_t package_owner, bool capability_allowed);
 void DisableCapture(std::uint64_t package_owner);
+// Root metadata selection precedes this genuine held-entry boundary.
+// READY(0) means guarded inactive preparation, never a live world/session.
+std::int32_t PrepareCapture(const EngineHooks::HeldEntryToken&) noexcept;
+// Logical retirement only. Forwarding bridges/ownership remain process resident.
+void StopCapture() noexcept;
+bool ReadOwnedCameraEntryReplacement(std::span<const std::uint8_t> original,
+    std::span<std::uint8_t> replacement) noexcept;
 void UpdateCaptureSession(std::uint64_t native_session, bool gameplay, bool menu, bool focused);
 SnapshotStore& CapturedFrames();
 bool RendererAdmitted();
+bool PreparedRendererAdmitted() noexcept;
 bool InstallSharedCall(std::size_t rva,std::size_t target,void* callback);
 bool SharedCallOwned(std::size_t rva,std::size_t target,void* callback);
 bool InstallSharedEntry(std::size_t rva,std::span<const std::uint8_t> expected,void* callback);

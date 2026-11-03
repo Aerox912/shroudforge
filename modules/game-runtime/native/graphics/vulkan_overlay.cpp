@@ -8,6 +8,7 @@
 #include "graphics/present_transaction.h"
 #include "graphics/shaders/embedded_shaders.h"
 #include "map/capture_game_map.h"
+#include "map/current_client_map_contract.h"
 #include "map/hud_visibility.h"
 #include <windows.h>
 #include <algorithm>
@@ -623,7 +624,10 @@ bool PrepareGraphicsBoot(bool demand) {
     if(!demand){BootUnavailable(SF_OVERLAY_REASON_BOOT_NOT_ARMED,"native overlay was not requested at startup; enable its package/service and restart");return true;}
     namespace Profile=KfcRuntimeCompatibility::EnshroudedClient;
     auto* image=reinterpret_cast<std::uint8_t*>(GetModuleHandleW(nullptr));
-    if(!MapRuntime::InspectMapImage({image,Profile::image_size},Profile::image_sha256,true).renderer) {
+    const bool renderer_admitted=MapRuntime::Current0403981f::Selected(Profile::image_sha256)
+        ? MapRuntime::PreparedRendererAdmitted()
+        : MapRuntime::InspectMapImage({image,Profile::image_size},Profile::image_sha256,true).renderer;
+    if(!renderer_admitted) {
         BootUnavailable(SF_OVERLAY_REASON_BOOT_NOT_ARMED,"exact executable/renderer admission unavailable; boot resolver interception refused");return false;
     }
     auto* cell=EngineHooks::FindNamedImport({image,Profile::image_size},"KERNEL32.dll","GetProcAddress");

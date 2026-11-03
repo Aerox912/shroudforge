@@ -1,10 +1,19 @@
 #pragma once
-// Narrow content sampling for exact public Creative146 v2.1.4 and v3.0.0 images.
+// Narrow content sampling for exact supported public Creative146 v3.0.1 and
+// v3.1.0 and v3.1.1 images.
 // No Creative function is called and no foreign pointer survives a sample.
 #include <windows.h>
 #include <psapi.h>
 #include <bcrypt.h>
+// SF uses the exact reader with product aggregate timing disabled by default.
+#ifndef ESM_AGGREGATE_TIMING_DIAGNOSTICS
+#define ESM_AGGREGATE_TIMING_DIAGNOSTICS 0
+#endif
+#if ESM_AGGREGATE_TIMING_DIAGNOSTICS
+#include "aggregate_timing.h"
+#endif
 #include <array>
+#include <atomic>
 #include <climits>
 #include <cstdint>
 #include <cstring>
@@ -13,12 +22,42 @@
 #include <memory>
 #include <string>
 #pragma comment(lib, "bcrypt.lib")
+#if ESM_AGGREGATE_TIMING_DIAGNOSTICS
+#define MINIMAP_PCC_AGG_COUNT(collector, metric) (collector).Count((metric))
+#define MINIMAP_PCC_AGG_RECORD(collector, metric, ticks, units) (collector).Record((metric), (ticks), (units))
+#define MINIMAP_PCC_AGG_TIMING_FAILURE(collector, metric) (collector).RecordTimingFailure((metric))
+#else
+#define MINIMAP_PCC_AGG_COUNT(collector, metric) ((void)0)
+#define MINIMAP_PCC_AGG_RECORD(collector, metric, ticks, units) ((void)0)
+#define MINIMAP_PCC_AGG_TIMING_FAILURE(collector, metric) ((void)0)
+#endif
 
 namespace PublicCreativeCompat
 {
     using Digest = std::array<unsigned char, 32>;
     enum class ProofOrigin : std::uint8_t { CallbackPre, CallbackPost, AdmissionUpdate, Other };
 
+#if ESM_AGGREGATE_TIMING_DIAGNOSTICS
+    inline MinimapAggregateTiming::Metric ProofMetric(ProofOrigin origin) noexcept
+    {
+        using MinimapAggregateTiming::Metric;
+        switch (origin)
+        {
+        case ProofOrigin::CallbackPre: return Metric::CreativeProofCallbackPre;
+        case ProofOrigin::CallbackPost: return Metric::CreativeProofCallbackPost;
+        case ProofOrigin::AdmissionUpdate: return Metric::CreativeProofAdmissionUpdate;
+        default: return Metric::CreativeProofOther;
+        }
+    }
+
+    inline bool ReadProofQpc(std::uint64_t& ticks) noexcept
+    {
+        LARGE_INTEGER value{};
+        if (!QueryPerformanceCounter(&value) || value.QuadPart < 0) return false;
+        ticks = static_cast<std::uint64_t>(value.QuadPart);
+        return true;
+    }
+#endif
     struct Profile
     {
         std::size_t imageSize, fileSize;
@@ -40,8 +79,57 @@ namespace PublicCreativeCompat
         "c860dae6b1b44728dff09771ab5b60fc16ade7f7075d9f6411cd24b56fdc88f8",
         "d6cc956a4deea1bbd9f8f32485eb4abcd0da500e4da53bbd0455b1f3acbfb42f",
         {0xe9,0x79,0x24,0x1d,0}};
+    constexpr Profile Creative301{
+        0x5ea000, 6122496, 0x503d, 0x1d8a90, 0x454890, 0x597490, 0x103, 0x160,
+        "d769e38379d5224ef6d4dffa478b99af4ff3fe5a14733cd12849a08c7435eefe",
+        "67d6b9f7150e911f2a17b02ae45a585bc43b3e48eaea255d86b6d4b32b4d369e",
+        {0xe9,0x4e,0x3a,0x1d,0x00}};
+    constexpr Profile Creative310{
+        0x5cb000, 6000640, 0x4e76, 0x1cca80, 0x43bff0, 0x57a208, 0x103, 0x160,
+        "a98c933f23333b585e2e5eebcc9fe01bd977f3a5ddab35300082b683632e1684",
+        "839568cbf396daa1490afcd262159044615fd68b56f1ba0bfbdcc9207cac6520",
+        {0xe9,0x05,0x7c,0x1c,0x00}};
+    constexpr Profile Creative311{
+        0x5cd000,6006272,0x4e67,0x1cdbd0,0x43d080,0x57c208,0x103,0x160,
+        "c4f5966a62763de379262f93a3e2bd10cf0065b4dd510780ad9eadf390b423b0",
+        "9bd210d8b2de6e7a775340ccb3b4060f199eb9c7361fb5ebfafdb9db9ba1e714",
+        {0xe9,0x64,0x8d,0x1c,0x00}};
+    // Original Find 1.1.2, supplied through the existing Greeneye loader.
+    // Only its reached HUD callback and original-renderer continuation are used.
+    constexpr Profile Find112{
+        0x106000, 472576, 0xaf40, 0xaf40, 0, 0x6f680, 0x5e, 0,
+        "82ba715080195ac8aeceac80f341cb4466991278e21b8a24ebb836a3f2be18c5",
+        "f21f58b078a534fd0488d4386293329754d9175345505866829d6c3fd78cb028",
+        {}};
+    constexpr Profile Find125{
+        0x113000,519680,0xe260,0xe260,0,0x7b680,0x5e,0,
+        "0c25d97f36fb35b711e5e5240f53ea745c6077d2adf04420055dba049b03b299",
+        "583914c3b1886f689113d197e062e80dc9babd2392dd5d8c7b6b477b2f75503f",{}};
+    constexpr Profile Teleport116{
+        0x73000,442368,0x2650,0x2650,0,0x694b8,0x58,0,
+        "4c44b427737f75644223b00adbcf64c7dde51b542d5d40a830190dbd728c0b27",
+        "295f683531243215b4c6a6245b08f433c2007481a32c98c1670b195aa59e12e4",{}};
+    constexpr Profile Teleport117{
+        0x74000,444928,0x2650,0x2650,0,0x6a4b8,0x58,0,
+        "9138d31acab0623a63824390ab0418fb18183709df9758f7f4c89670cc836c78",
+        "c9c9fb1776b54ba436a3a4b16071658b7d1598e5e52bba3102ffa63809d2b0ac",{}};
+    static_assert(Find112.bodySize<=0x5e && Find125.bodySize<=0x5e &&
+        Teleport116.bodySize<=0x5e && Teleport117.bodySize<=0x5e);
     constexpr std::size_t BodySize = 0x13e, BlockSize = 0x187;
-    static_assert(Creative214.bodySize <= BodySize && Creative300.bodySize <= BodySize);
+    static_assert(Creative214.bodySize <= BodySize && Creative300.bodySize <= BodySize &&
+        Creative301.bodySize <= BodySize && Creative310.bodySize <= BodySize && Creative311.bodySize <= BodySize);
+    inline constexpr bool SupportsFiniteCreativeProfile(const Profile* profile) noexcept
+    { return profile==&Creative310 || profile==&Creative311; }
+    inline constexpr const Profile* SelectCreativeProfile(std::uintptr_t base,
+        std::uintptr_t callback) noexcept
+    {
+        if(callback<base)return nullptr;
+        const auto rva=callback-base;
+        if(rva==Creative301.callback)return &Creative301;
+        if(rva==Creative310.callback)return &Creative310;
+        if(rva==Creative311.callback)return &Creative311;
+        return nullptr;
+    }
     constexpr char TemplateHash[] = "194e3705b88d175140ae903807da6a5955b43c0ced7388172ab7d6e0be06c69c";
     constexpr unsigned char Original[18] = {0x4c,0x8b,0xdc,0x55,0x49,0x8d,0xab,0xe8,0xfd,0xff,0xff,0x48,0x81,0xec,0x10,0x03,0,0};
 
@@ -123,7 +211,7 @@ namespace PublicCreativeCompat
     class Sha256Provider final
     {
         std::mutex mutex;
-        BCRYPT_ALG_HANDLE algorithm = nullptr;
+        std::atomic<BCRYPT_ALG_HANDLE> algorithm{nullptr};
     public:
         Sha256Provider() = default;
         Sha256Provider(const Sha256Provider&) = delete;
@@ -132,17 +220,20 @@ namespace PublicCreativeCompat
         ~Sha256Provider()
         {
             std::lock_guard<std::mutex> lock(mutex);
-            if (algorithm)
-                BCryptCloseAlgorithmProvider(algorithm, 0);
+            if (const auto value=algorithm.exchange(nullptr))
+                BCryptCloseAlgorithmProvider(value, 0);
         }
 
         bool CreateHash(BCRYPT_HASH_HANDLE* hash)
         {
             if (!hash) return false;
             *hash = nullptr;
-            std::lock_guard<std::mutex> lock(mutex);
-            if (!algorithm)
+            auto active=algorithm.load(std::memory_order_acquire);
+            if (!active)
             {
+                std::lock_guard<std::mutex> lock(mutex);
+                active=algorithm.load(std::memory_order_acquire);
+                if (!active) {
                 BCRYPT_ALG_HANDLE candidate = nullptr;
                 const NTSTATUS opened = BCryptOpenAlgorithmProvider(
                     &candidate, BCRYPT_SHA256_ALGORITHM, nullptr, 0);
@@ -152,10 +243,12 @@ namespace PublicCreativeCompat
                         BCryptCloseAlgorithmProvider(candidate, 0);
                     return false; // A later call may retry a transient open failure.
                 }
-                algorithm = candidate;
+                active=candidate;
+                algorithm.store(active,std::memory_order_release);
+                }
             }
 
-            const NTSTATUS created = BCryptCreateHash(algorithm, hash, nullptr, 0, nullptr, 0, 0);
+            const NTSTATUS created = BCryptCreateHash(active, hash, nullptr, 0, nullptr, 0, 0);
             if (created < 0 || !*hash)
             {
                 if (*hash)
@@ -212,84 +305,7 @@ namespace PublicCreativeCompat
     inline bool HasHash(const void* bytes, std::size_t size, const char* expected)
     { Digest digest{}; Hash hash; return hash.Add(bytes, size) && hash.Finish(digest) && HexEquals(digest, expected); }
 
-    // Cache only owned file metadata/path and an opaque digest of the image
-    // identity. No HMODULE, callable, object, allocation or raw foreign address
-    // is retained. File bytes are hashed on identity change, never per frame.
-    struct FileCache
-    {
-        std::mutex mutex;
-        std::wstring path;
-        BY_HANDLE_FILE_INFORMATION info{};
-        Digest imageIdentity{};
-        bool trusted = false;
-        const Profile* profile = nullptr; // points only to an owned constexpr descriptor
-    };
-    inline FileCache fileCache;
-    inline void ForgetIdentity()
-    {
-        std::lock_guard<std::mutex> lock(fileCache.mutex);
-        fileCache.trusted = false; fileCache.profile = nullptr; fileCache.path.clear(); fileCache.imageIdentity = {};
-    }
-    inline bool SameFile(const BY_HANDLE_FILE_INFORMATION& a, const BY_HANDLE_FILE_INFORMATION& b)
-    {
-        return a.dwVolumeSerialNumber == b.dwVolumeSerialNumber && a.nFileIndexHigh == b.nFileIndexHigh &&
-            a.nFileIndexLow == b.nFileIndexLow && a.nFileSizeHigh == b.nFileSizeHigh &&
-            a.nFileSizeLow == b.nFileSizeLow && a.ftLastWriteTime.dwHighDateTime == b.ftLastWriteTime.dwHighDateTime &&
-            a.ftLastWriteTime.dwLowDateTime == b.ftLastWriteTime.dwLowDateTime;
-    }
-    inline bool FileIdentity(HMODULE module, Digest& imageIdentity, const Profile*& profile)
-    {
-        profile = nullptr;
-        // This local address is hashed only as an opaque cache discriminator.
-        const auto base = reinterpret_cast<std::uintptr_t>(module);
-        Hash identity;
-        if (!identity.Add(&base, sizeof(base)) || !identity.Finish(imageIdentity)) return false;
-        wchar_t path[32768]{};
-        const DWORD length = GetModuleFileNameW(module, path, static_cast<DWORD>(std::size(path)));
-        if (!length || length >= std::size(path)) return false;
-        std::lock_guard<std::mutex> lock(fileCache.mutex);
-        // Reuse only this observed image identity/path. Image loss, a different
-        // reached image or session invalidation forces cold verification. The
-        // mapped content is independently checked on EVERY sample. Unobserved
-        // same-base unload/reload ABA is outside the stable-startup contract.
-        if (fileCache.trusted && fileCache.path == path && fileCache.imageIdentity == imageIdentity)
-        {
-            profile = fileCache.profile;
-            return profile != nullptr;
-        }
-        fileCache.trusted = false; fileCache.profile = nullptr;
-        const HANDLE file = CreateFileW(path, GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_DELETE,
-            nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
-        if (file == INVALID_HANDLE_VALUE)
-        {
-            return false;
-        }
-        struct FileReference { HANDLE value; ~FileReference() { CloseHandle(value); } } reference{file};
-        BY_HANDLE_FILE_INFORMATION before{}, after{};
-        if (!GetFileInformationByHandle(file, &before) || before.nFileSizeHigh) return false;
-        // Size chooses only a bounded read budget. The full digest below is
-        // mandatory before this descriptor is published to the caller/cache.
-        const Profile* candidate = before.nFileSizeLow == Creative214.fileSize ? &Creative214 :
-            before.nFileSizeLow == Creative300.fileSize ? &Creative300 : nullptr;
-        if (!candidate) return false;
-        const auto fileSize = candidate->fileSize;
-        Hash hash;
-        std::array<unsigned char, 65536> bytes{};
-        std::size_t total = 0;
-        while (total < fileSize) {
-            DWORD read = 0;
-            const DWORD count = static_cast<DWORD>((fileSize - total < bytes.size()) ? fileSize - total : bytes.size());
-            const BOOL readOk = ReadFile(file, bytes.data(), count, &read, nullptr);
-            if (!readOk || read != count || !hash.Add(bytes.data(), read)) return false;
-            total += read;
-        }
-        Digest digest{};
-        if (!hash.Finish(digest) || !HexEquals(digest, candidate->fileHash) ||
-            !GetFileInformationByHandle(file, &after) || !SameFile(before, after)) return false;
-        fileCache.path = path; fileCache.info = after; fileCache.imageIdentity = imageIdentity;
-        fileCache.profile = candidate; fileCache.trusted = true; profile = candidate;
-        return true;
-    }
+    #include "public_owner_identity.h"
     template<class T> inline T Word(const unsigned char* bytes, std::size_t offset)
     { T value{}; std::memcpy(&value, bytes + offset, sizeof(value)); return value; }
     inline bool Relative(std::uintptr_t at, std::int32_t displacement, std::uintptr_t& result)
@@ -299,6 +315,7 @@ namespace PublicCreativeCompat
         if (value < 0x10000 || value > 0x00007fffffffffff) return false;
         result = static_cast<std::uintptr_t>(value); return true;
     }
+    #include "public_greeneye_compat.h"
     struct Chain
     {
         std::uintptr_t target = 0, block = 0, trampoline = 0, callback = 0;
@@ -309,6 +326,9 @@ namespace PublicCreativeCompat
         std::array<unsigned char,BlockSize> blockBytes{};
         std::array<unsigned char,0xd8> model{};
         std::uintptr_t object = 0;
+        bool findOwned = false;
+        Digest underlyingDigest{};
+        KnownProviderSnapshot providers{};
     };
     namespace Detail
     {
@@ -320,15 +340,25 @@ namespace PublicCreativeCompat
             if (value.entry[0] == 0xe9) {
                 std::uintptr_t relay = 0;
                 if (!Relative(entry, Word<std::int32_t>(value.entry.data(), 1), relay) || relay < 0x10010) return false;
-                value.kind = 1; value.stolen = 11; value.length = 30; value.trampoline = relay - 16;
+                // Creative steals the complete first instruction of the renderer
+                // it encounters. Find's MOV RAX,imm64 is ten bytes; the original
+                // renderer's first complete stolen sequence is eleven bytes.
+                const bool overFind = value.entry[10] == 0xff && value.entry[11] == 0xe0;
+                value.kind = 1; value.stolen = overFind ? 10 : 11;
+                value.length = value.stolen + 19;
+                if (relay < value.stolen + 5) return false;
+                value.trampoline = relay - (value.stolen + 5);
                 if (!Copy(value.trampoline, value.trampolineBytes.data(), value.length, true)) return false;
-                value.block = Word<std::uintptr_t>(value.trampolineBytes.data(), 22);
-                for (std::size_t i = 5; i < 11; ++i) if (value.entry[i] != 0x90) return false;
-                if (std::memcmp(value.entry.data() + 11, Original + 11, 7) ||
-                    std::memcmp(value.trampolineBytes.data() + 16, indirect, 6)) return false;
+                value.block = Word<std::uintptr_t>(value.trampolineBytes.data(), value.stolen + 11);
+                for (std::size_t i = 5; i < value.stolen; ++i) if (value.entry[i] != 0x90) return false;
+                if (overFind) {
+                    for (std::size_t i = 12; i < 18; ++i) if (value.entry[i] != 0x90) return false;
+                } else if (std::memcmp(value.entry.data() + 11, Original + 11, 7)) return false;
+                if (std::memcmp(value.trampolineBytes.data() + value.stolen + 5, indirect, 6)) return false;
                 std::uintptr_t resume = 0;
-                if (value.trampolineBytes[11] != 0xe9 || !Relative(value.trampoline + 11,
-                    Word<std::int32_t>(value.trampolineBytes.data(), 12), resume) || resume != entry + 11) return false;
+                if (value.trampolineBytes[value.stolen] != 0xe9 || !Relative(value.trampoline + value.stolen,
+                    Word<std::int32_t>(value.trampolineBytes.data(), value.stolen + 1), resume) ||
+                    resume != entry + value.stolen) return false;
             } else if (!std::memcmp(value.entry.data(), indirect, 6)) {
                 value.kind = 2; value.stolen = 18; value.length = 32;
                 value.block = Word<std::uintptr_t>(value.entry.data(), 6);
@@ -340,9 +370,45 @@ namespace PublicCreativeCompat
                     Word<std::uintptr_t>(value.trampolineBytes.data(), 24) != entry + 18) return false;
             } else return false;
             if (!Copy(value.block, value.blockBytes.data(), BlockSize, true) ||
-                Word<std::uintptr_t>(value.blockBytes.data(), 0x17f) != value.trampoline ||
-                std::memcmp(value.trampolineBytes.data(), Original, value.stolen)) return false;
+                Word<std::uintptr_t>(value.blockBytes.data(), 0x17f) != value.trampoline) return false;
+            // Ten-byte continuations are admitted only by the separate complete
+            // Find proof below. All existing raw forms retain their exact prefix.
+            if (value.stolen != 10 && std::memcmp(value.trampolineBytes.data(), Original, value.stolen)) return false;
             value.callback = Word<std::uintptr_t>(value.blockBytes.data(), 0x177);
+            return true;
+        }
+    }
+    namespace Detail
+    {
+        // Reached prior destination, not a fabricated prior renderer entry.
+        // Preserve all common model/template/file/image checks below.
+        inline bool ReadInnerChain(std::uintptr_t prior,std::uintptr_t renderer,unsigned mode,Chain& value)
+        {
+            value={};value.target=renderer;
+            if(!Copy(renderer,value.entry.data(),value.entry.size(),true))return false;
+            constexpr unsigned char indirect[6]={0xff,0x25,0,0,0,0};
+            if(mode==1) {
+                if(prior<0x10010)return false;
+                value.kind=1;value.stolen=11;value.length=30;value.trampoline=prior-16;
+                if(std::memcmp(value.entry.data()+11,Original+11,7) ||
+                    !Copy(value.trampoline,value.trampolineBytes.data(),value.length,true) ||
+                    std::memcmp(value.trampolineBytes.data()+16,indirect,6))return false;
+                value.block=Word<std::uintptr_t>(value.trampolineBytes.data(),22);
+                std::uintptr_t resume=0;
+                if(value.trampolineBytes[11]!=0xe9 || !Relative(value.trampoline+11,
+                    Word<std::int32_t>(value.trampolineBytes.data(),12),resume) || resume!=renderer+11)return false;
+            } else if(mode==2) {
+                value.kind=2;value.stolen=18;value.length=32;value.block=prior;
+                if(!Copy(value.block,value.blockBytes.data(),BlockSize,true))return false;
+                value.trampoline=Word<std::uintptr_t>(value.blockBytes.data(),0x17f);
+                if(!Copy(value.trampoline,value.trampolineBytes.data(),32,true) ||
+                    std::memcmp(value.trampolineBytes.data()+18,indirect,6) ||
+                    Word<std::uintptr_t>(value.trampolineBytes.data(),24)!=renderer+18)return false;
+            } else return false;
+            if(!Copy(value.block,value.blockBytes.data(),BlockSize,true) ||
+                Word<std::uintptr_t>(value.blockBytes.data(),0x17f)!=value.trampoline ||
+                std::memcmp(value.trampolineBytes.data(),Original,value.stolen))return false;
+            value.callback=Word<std::uintptr_t>(value.blockBytes.data(),0x177);
             return true;
         }
     }
@@ -353,7 +419,13 @@ namespace PublicCreativeCompat
         std::memset(normalized.data() + 0x177, 0, 16);
         return HasHash(normalized.data(), normalized.size(), TemplateHash);
     }
-    inline bool ReadModel(std::uintptr_t module, Chain& value, const Profile& profile)
+    inline bool VerifyFindPrefix(const unsigned char (&prefix)[18], std::uintptr_t renderer, Digest& proof)
+    {
+        proof={};KnownProviderSnapshot snapshot{};
+        if(!ReadKnownProviders(prefix,renderer,snapshot))return false;
+        Hash hash;return hash.Add(snapshot.bytes.data(),snapshot.size) && hash.Finish(proof);
+    }
+    inline bool ReadModel(std::uintptr_t module, Chain& value, const Profile& profile, bool nativeOnly=false)
     {
         if (!Range(module, profile.imageSize) || !Copy(module + profile.slot, &value.object, sizeof(value.object)) ||
             (value.object & 7) || !Range(value.object, profile.objectSize) ||
@@ -369,13 +441,20 @@ namespace PublicCreativeCompat
             !Range(get(0xb0), 1) || !Range(get(0xb8), 1) || get(0xc0) != value.block ||
             get(0xc8) != BlockSize || get(0xd0) != value.callback ||
             !Copy(backup, value.backup.data(), value.stolen)) return false;
+        if (std::memcmp(value.trampolineBytes.data(),value.backup.data(),value.stolen)) return false;
         unsigned char full[18]{};
         std::memcpy(full, value.backup.data(), value.stolen);
         if (value.stolen < 18) std::memcpy(full + value.stolen, value.entry.data() + value.stolen, 18 - value.stolen);
-        return !std::memcmp(full, Original, 18);
+        value.findOwned = false; value.underlyingDigest = {};
+        if (!std::memcmp(full, Original, 18)) return true;
+        if (nativeOnly || !ReadKnownProviders(full,value.target,value.providers)) return false;
+        value.findOwned = true;
+        return true;
     }
     struct ImageContent
     {
+        IMAGE_DOS_HEADER dos{};
+        IMAGE_NT_HEADERS64 nt{};
         std::array<unsigned char,BlockSize> pattern{};
         std::array<unsigned char,BodySize> body{};
         std::array<unsigned char,5> thunk{};
@@ -385,7 +464,7 @@ namespace PublicCreativeCompat
         inline bool ReadImageSnapshot(std::uintptr_t base, std::uintptr_t callback,
             ImageContent& value, const Profile& profile)
         {
-            IMAGE_DOS_HEADER dos{}; IMAGE_NT_HEADERS64 nt{};
+            auto& dos=value.dos; auto& nt=value.nt;
             if (!Range(base, profile.imageSize) || callback != base + profile.callback ||
                 !Copy(base, &dos, sizeof(dos)) || dos.e_magic != IMAGE_DOS_SIGNATURE ||
                 dos.e_lfanew <= 0 || static_cast<std::size_t>(dos.e_lfanew) > 4096 - sizeof(nt) ||
@@ -407,36 +486,86 @@ namespace PublicCreativeCompat
             HasHash(value.body.data(), profile.bodySize, profile.bodyHash);
     }
     struct Proof { Digest digest{}; unsigned kind = 0; };
-    inline bool Inspect(std::uintptr_t entry, Proof& proof, ProofOrigin origin = ProofOrigin::Other)
+    inline bool VerifyCreativeChain(std::uintptr_t entry,Chain& first,Proof& proof,
+        const IdentityStamp& stamp,unsigned innerMode=0,std::uintptr_t prior=0)
     {
-        (void)origin;
-        proof = {};
-        try {
-            Chain first{}, last{};
-            if (!ReadChain(entry, first)) return false;
+        Chain last{};
             HMODULE module = nullptr;
             if (!GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS,
                 reinterpret_cast<LPCWSTR>(first.callback), &module)) { ForgetIdentity(); return false; }
             struct ModuleReference { HMODULE value; ~ModuleReference() { FreeLibrary(value); } } reference{module};
             const auto base = reinterpret_cast<std::uintptr_t>(module);
-            Digest identity{}; ImageContent imageBefore{}, imageAfter{};
+            Digest identity{}; ImageContent imageBefore{}, imageAfter{};TrustedImageBytes expected{};
             const Profile* profile = nullptr;
-            if (!FileIdentity(module, identity, profile) || !profile || !ReadImage(base, first.callback, imageBefore, *profile) ||
-                !ReadModel(base, first, *profile) || !Detail::ReadChainSnapshot(entry, last) ||
-                !ReadModel(base, last, *profile) || !Detail::ReadImageSnapshot(base, last.callback, imageAfter, *profile) ||
+            const Profile* required=SelectCreativeProfile(base,first.callback);
+            if(innerMode && !SupportsFiniteCreativeProfile(required))return false;
+            bool deferred=false;
+            if(!FileIdentity(module,identity,profile,fileCache,required,&expected,true,&deferred) && !deferred)return false;
+            if(deferred)profile=required;
+            if(!profile)return false;
+            if(!Detail::ReadImageSnapshot(base,first.callback,imageBefore,*profile)){ForgetIdentity();return false;}
+            auto normalized=first.blockBytes;
+            std::memset(normalized.data()+0x177,0,16);
+            const auto matchesApproved=[&]{return normalized==expected.pattern && imageBefore.pattern==expected.pattern && imageBefore.body==expected.body &&
+                imageBefore.thunk==expected.thunk && !std::memcmp(&imageBefore.dos,&expected.dos,sizeof(expected.dos)) &&
+                !std::memcmp(&imageBefore.nt,&expected.nt,sizeof(expected.nt));};
+            if(!deferred && !matchesApproved()){ForgetIdentity();return false;}
+            if(!ReadModel(base,first,*profile,innerMode!=0))return false;
+            // Unknown/duplicate/cyclic providers reject before Creative itself
+            // can spend a cold attempt. Each model still takes one snapshot.
+            if(deferred && !FileIdentity(module,identity,profile,fileCache,required,&expected))return false;
+            if(!matchesApproved())
+            {ForgetIdentity();return false;}
+            if(!(innerMode?Detail::ReadInnerChain(prior,entry,innerMode,last):Detail::ReadChainSnapshot(entry,last)) || !ReadModel(base,last,*profile,innerMode!=0))return false;
+            if(!Detail::ReadImageSnapshot(base,last.callback,imageAfter,*profile)){ForgetIdentity();return false;}
+            if(std::memcmp(&imageBefore.dos,&imageAfter.dos,sizeof(imageBefore.dos)) ||
+                std::memcmp(&imageBefore.nt,&imageAfter.nt,sizeof(imageBefore.nt)) ||
+                imageBefore.pattern!=imageAfter.pattern || imageBefore.body!=imageAfter.body || imageBefore.thunk!=imageAfter.thunk)
+            {ForgetIdentity();return false;}
+            if (
                 first.kind != last.kind || first.object != last.object || first.block != last.block ||
                 first.trampoline != last.trampoline || first.callback != last.callback ||
                 first.entry != last.entry || first.backup != last.backup || first.model != last.model ||
                 first.trampolineBytes != last.trampolineBytes || first.blockBytes != last.blockBytes ||
-                imageBefore.pattern != imageAfter.pattern || imageBefore.body != imageAfter.body ||
-                imageBefore.thunk != imageAfter.thunk) return false;
-            Hash hash;
+                first.findOwned != last.findOwned || first.underlyingDigest != last.underlyingDigest ||
+                (first.findOwned && !SameKnownProviders(first.providers,last.providers)) || !IdentityStampValid(stamp)) return false;
+            Hash hash;Digest digest{};
             if (!hash.Add(identity.data(), identity.size()) || !hash.Add(&first.object, sizeof(first.object)) ||
                 !hash.Add(first.entry.data(), first.entry.size()) || !hash.Add(first.model.data(), first.model.size()) ||
                 !hash.Add(first.backup.data(), first.backup.size()) ||
                 !hash.Add(first.trampolineBytes.data(), first.trampolineBytes.size()) ||
-                !hash.Add(first.blockBytes.data(), first.blockBytes.size()) || !hash.Finish(proof.digest)) return false;
-            proof.kind = first.kind; return true;
+                !hash.Add(first.blockBytes.data(), first.blockBytes.size()) ||
+                (first.findOwned && !hash.Add(first.providers.bytes.data(),first.providers.size)) ||
+                !hash.Finish(digest) || !IdentityStampValid(stamp)) return false;
+            proof.digest=digest;proof.kind = first.kind; return true;
+    }
+    inline bool ReadInnerCreative(std::uintptr_t prior,std::uintptr_t renderer,unsigned entryMode,Digest& digest)
+    {
+        Chain first{};Proof proof{};
+        if(!Detail::ReadInnerChain(prior,renderer,entryMode,first) ||
+            !VerifyCreativeChain(renderer,first,proof,CurrentIdentityStamp(),entryMode,prior))return false;
+        digest=proof.digest;return true;
+    }
+    #include "public_owner_topology.h"
+    inline bool Inspect(std::uintptr_t entry, Proof& proof, ProofOrigin origin = ProofOrigin::Other,
+        FiniteGraph::ApprovedProviderLeases* leases=nullptr,bool acquireLeases=false)
+    {
+        IdentityOriginScope originScope(origin);
+#ifdef MM_PUBLIC_OWNER_SAMPLE_PHASE
+        struct OwnerPhase { OwnerPhase(){MM_PUBLIC_OWNER_SAMPLE_PHASE(true);} ~OwnerPhase(){MM_PUBLIC_OWNER_SAMPLE_PHASE(false);} } ownerPhase;
+#endif
+#if ESM_AGGREGATE_TIMING_DIAGNOSTICS
+        MinimapAggregateTiming::ScopedTimer proofTimer(
+            MinimapAggregateTiming::DiagnosticCollector(), ProofMetric(origin));
+#else
+        (void)origin;
+#endif
+        proof = {};
+        try {
+            return FiniteGraph::Inspect(entry,proof,{},nullptr,leases,acquireLeases);
         } catch (...) { proof = {}; return false; }
     }
+#undef MINIMAP_PCC_AGG_COUNT
+#undef MINIMAP_PCC_AGG_RECORD
+#undef MINIMAP_PCC_AGG_TIMING_FAILURE
 }
