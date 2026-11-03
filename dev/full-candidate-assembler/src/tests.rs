@@ -186,6 +186,19 @@ impl Fixture {
             let extension_rel = format!("mods/{directory}/extended.mod.json");
             environment_files.insert(extension_rel.clone(), extension_stamp.clone());
             input_files.insert(extension_rel, extension_stamp.clone());
+            let config_bytes = match *id {
+                "xhl-rested-enhanced" => Some(b"Enabled=true\r\n".as_slice()),
+                "xhl-workshop-speed-20x" => Some(b"Enabled=true\r\nMultiplier=20\r\n".as_slice()),
+                _ => None,
+            };
+            let config_stamp = config_bytes.map(|bytes| {
+                fs::write(package_root.join("config.txt"), bytes).unwrap();
+                let value = stamp(&package_root.join("config.txt")).unwrap();
+                let relative = format!("mods/{directory}/config.txt");
+                environment_files.insert(relative.clone(), value.clone());
+                input_files.insert(relative, value.clone());
+                value
+            });
             components.push(SelectedComponent {
                 feature_rows: feature_rows.clone(),
                 dependencies: vec!["sf-host-runtime".into()],
@@ -199,17 +212,21 @@ impl Fixture {
                 requires_greeneye: false,
                 target: "client".into(),
             });
+            let mut source_files: BTreeMap<String, Stamp> = [
+                ("mod.json".into(), value),
+                ("extended.mod.json".into(), extension_stamp),
+            ]
+            .into_iter()
+            .collect();
+            if let Some(config_stamp) = config_stamp {
+                source_files.insert("config.txt".into(), config_stamp);
+            }
             packages.push(PackageInput {
                 component_id: (*id).into(),
                 package_directory: directory,
                 origin: PackageOrigin::AssetEnvironment,
                 source_root: None,
-                source_files: [
-                    ("mod.json".into(), value),
-                    ("extended.mod.json".into(), extension_stamp),
-                ]
-                .into_iter()
-                .collect(),
+                source_files,
                 overlays: Vec::new(),
             });
         }
@@ -346,6 +363,103 @@ impl Fixture {
         fs::write(&selected_source, selected_matrix.as_bytes()).unwrap();
 
         let target_root = request.target_root.clone();
+        let mut patch_qualification_rows = Vec::new();
+        let mut patch_bindings = Vec::new();
+        for (provider_id, effective_values, observed_bytes, id_byte) in [
+            (
+                "xhl-rested-enhanced",
+                PreservedPatchEffectiveValues::Rested(RestedPatchEffectiveValues { enabled: true }),
+                b"inert existing Rested target bytes".as_slice(),
+                0xa1,
+            ),
+            (
+                "xhl-workshop-speed-20x",
+                PreservedPatchEffectiveValues::Workshop(WorkshopPatchEffectiveValues {
+                    enabled: true,
+                    multiplier: 20,
+                }),
+                b"inert existing Workshop target bytes".as_slice(),
+                0xb2,
+            ),
+        ] {
+            let package = packages
+                .iter()
+                .find(|package| package.component_id == provider_id)
+                .unwrap();
+            let target = format!("mods/{}/config.txt", package.package_directory);
+            let source_stamp = package.source_files.get("config.txt").unwrap().clone();
+            let observed_target_before = PatchFilePin {
+                bytes: observed_bytes.len() as u64,
+                sha256: digest(observed_bytes),
+                identity: PatchFileIdentity {
+                    volume: 7,
+                    id: [id_byte; 16],
+                },
+            };
+            patch_qualification_rows.push(PatchConfigQualificationRow {
+                component_id: provider_id.into(),
+                relative_path: target.clone(),
+                source: PatchConfigSourceProjection {
+                    stamp: source_stamp.clone(),
+                    effective_values: effective_values.clone(),
+                },
+                selected: PatchConfigValueProjection {
+                    effective_values: effective_values.clone(),
+                },
+                target: PatchConfigTargetProjection {
+                    observed_before: observed_target_before.clone(),
+                    effective_values: effective_values.clone(),
+                },
+            });
+            patch_bindings.push((
+                provider_id.to_owned(),
+                target,
+                source_stamp,
+                effective_values,
+                observed_target_before,
+            ));
+        }
+        let patch_qualification_path = base.join("patch-config-qualification.json");
+        let patch_qualification = PatchConfigQualification {
+            schema_version: 1,
+            target_root: target_root.clone(),
+            rows: patch_qualification_rows,
+        };
+        let patch_qualification_bytes = serde_json::to_vec_pretty(&patch_qualification).unwrap();
+        fs::write(&patch_qualification_path, &patch_qualification_bytes).unwrap();
+        let patch_evidence = EvidencePin {
+            path: patch_qualification_path,
+            sha256: digest(&patch_qualification_bytes),
+        };
+        let preserved_patch_configs: Vec<_> = patch_bindings
+            .into_iter()
+            .map(
+                |(component_id, target, source_stamp, effective_values, observed_target_before)| {
+                    PreservedPatchConfig {
+                        component_id,
+                        target,
+                        source_stamp,
+                        effective_values,
+                        required_poststate: observed_target_before.clone(),
+                        observed_target_before,
+                        evidence: patch_evidence.clone(),
+                    }
+                },
+            )
+            .collect();
+        let patch_preservation = preserved_patch_configs
+            .iter()
+            .map(|entry| PreservationEntry {
+                component_id: entry.component_id.clone(),
+                target: entry.target.clone(),
+                evidence_sha256: patch_evidence.sha256.clone(),
+                fields: PRESERVED_PATCH_CONFIG_FIELDS
+                    .iter()
+                    .map(|field| (*field).to_owned())
+                    .collect(),
+                disposition: PRESERVED_PATCH_CONFIG_DISPOSITION.to_owned(),
+            })
+            .collect();
         let target_parent = target_root.join("mods");
         let mut xhl_inputs = BTreeMap::new();
         let mut add_source = |name: String, source: String| {
@@ -558,9 +672,10 @@ impl Fixture {
                 path: plan_path.clone(),
                 sha256: digest(&plan_bytes),
             },
-            preservation_evidence: Vec::new(),
-            preservation: Vec::new(),
+            preservation_evidence: vec![patch_evidence],
+            preservation: patch_preservation,
             preserved_runtime_files: Vec::new(),
+            preserved_patch_configs,
             missing_requirements: Vec::new(),
         };
         let receipt = synthetic_xhl_receipt(&plan, &plan_bytes);
@@ -886,6 +1001,188 @@ fn preserved_runtime_ini_rejects_wrong_evidence_copy_and_contract_drift() {
             &fixture.receipt_sha256
         )
         .is_err()
+    );
+}
+
+#[test]
+fn patch_config_sources_are_inventory_checked_but_never_staged_or_runtime_bound() {
+    let fixture = Fixture::new(true);
+    let template = fixture.prepare();
+    assert_eq!(template.preserved_patch_configs.len(), 2);
+    let contract = template.contract.as_ref().unwrap();
+    for entry in &template.preserved_patch_configs {
+        assert!(
+            !template
+                .payload_files
+                .keys()
+                .any(|path| path.eq_ignore_ascii_case(&entry.target))
+        );
+        assert!(
+            !template
+                .payload_root
+                .join(entry.target.replace('/', "\\"))
+                .exists()
+        );
+        assert!(
+            !contract
+                .files
+                .keys()
+                .any(|path| path.eq_ignore_ascii_case(&entry.target))
+        );
+        assert!(
+            !template
+                .contract_file_paths
+                .iter()
+                .any(|path| path.eq_ignore_ascii_case(&entry.target))
+        );
+        let request: AssetRequest = serde_json::from_str(&template.request_json).unwrap();
+        let source_stamp = request
+            .environment_files
+            .iter()
+            .find(|(path, _)| path.eq_ignore_ascii_case(&entry.target))
+            .map(|(_, stamp)| stamp)
+            .unwrap();
+        assert_eq!(source_stamp, &entry.source_stamp);
+        assert!(
+            fixture
+                .manifest
+                .packages
+                .iter()
+                .find(|package| package.component_id == entry.component_id)
+                .unwrap()
+                .source_files
+                .contains_key("config.txt")
+        );
+    }
+
+    let template_path = fixture.output_root.join("template.json");
+    let hash = digest(&fs::read(&template_path).unwrap());
+    let result = finalize_policy(
+        &template_path,
+        &hash,
+        &fixture.xhl_plan_path,
+        &fixture.xhl_receipt_path,
+        &fixture.receipt_sha256,
+    )
+    .unwrap();
+    assert!(!result.install_performed);
+    let policy: Value = serde_json::from_slice(
+        &fs::read(
+            template
+                .payload_root
+                .join("shroudforge/config/current-assets.json"),
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    let runtime_files = policy["runtime"]["files"].as_object().unwrap();
+    for entry in &template.preserved_patch_configs {
+        assert!(
+            !runtime_files
+                .keys()
+                .any(|path| path.eq_ignore_ascii_case(&entry.target))
+        );
+    }
+}
+
+#[test]
+fn patch_config_inputs_reject_missing_rows_unknown_fields_and_value_or_pin_drift() {
+    let fixture = Fixture::new(true);
+    let mut missing = fixture.manifest.clone();
+    missing.preserved_patch_configs.pop();
+    let bytes = serde_json::to_vec(&missing).unwrap();
+    assert!(prepare_template(&bytes, &digest(&bytes)).is_err());
+
+    let mut unknown = serde_json::to_value(&fixture.manifest).unwrap();
+    unknown["preservedPatchConfigs"][0]["providerId"] = json!("xhl-rested-enhanced");
+    let bytes = serde_json::to_vec(&unknown).unwrap();
+    assert!(prepare_template(&bytes, &digest(&bytes)).is_err());
+
+    let mut wrong_values = fixture.manifest.clone();
+    wrong_values.preserved_patch_configs[1].effective_values =
+        PreservedPatchEffectiveValues::Workshop(WorkshopPatchEffectiveValues {
+            enabled: true,
+            multiplier: 10,
+        });
+    let bytes = serde_json::to_vec(&wrong_values).unwrap();
+    assert!(prepare_template(&bytes, &digest(&bytes)).is_err());
+
+    let mut wrong_poststate = fixture.manifest.clone();
+    wrong_poststate.preserved_patch_configs[0]
+        .required_poststate
+        .sha256 = "d".repeat(64);
+    let bytes = serde_json::to_vec(&wrong_poststate).unwrap();
+    assert!(prepare_template(&bytes, &digest(&bytes)).is_err());
+
+    let mut contract_collision = fixture.manifest.clone();
+    contract_collision
+        .contract_file_paths
+        .push(contract_collision.preserved_patch_configs[0].target.clone());
+    let bytes = serde_json::to_vec(&contract_collision).unwrap();
+    assert!(prepare_template(&bytes, &digest(&bytes)).is_err());
+
+    let mut overlay_collision = fixture.manifest.clone();
+    let target_component = overlay_collision.preserved_patch_configs[0]
+        .component_id
+        .clone();
+    overlay_collision
+        .packages
+        .iter_mut()
+        .find(|package| package.component_id == target_component)
+        .unwrap()
+        .overlays
+        .push(IntendedOverlay {
+            path: "config.txt".into(),
+            source: fixture.base.join("unused-overlay"),
+            stamp: Stamp {
+                bytes: 1,
+                sha256: "e".repeat(64),
+            },
+            replaces: true,
+            evidence: Vec::new(),
+            fields: vec!["enabled".into()],
+            disposition: "fixture collision".into(),
+        });
+    let bytes = serde_json::to_vec(&overlay_collision).unwrap();
+    assert!(prepare_template(&bytes, &digest(&bytes)).is_err());
+}
+
+#[test]
+fn finalizer_rejects_patch_config_contract_and_payload_collisions() {
+    let fixture = Fixture::new(true);
+    let mut template = fixture.prepare();
+    let target = template.preserved_patch_configs[0].target.clone();
+    template.payload_files.insert(
+        target.clone(),
+        FileBinding {
+            bytes: 1,
+            sha256: "f".repeat(64),
+        },
+    );
+    let path = fixture.output_root.join("tampered-patch-template.json");
+    write_json(&path, &template);
+    let hash = digest(&fs::read(&path).unwrap());
+    assert!(
+        finalize_policy(
+            &path,
+            &hash,
+            &fixture.xhl_plan_path,
+            &fixture.xhl_receipt_path,
+            &fixture.receipt_sha256
+        )
+        .is_err()
+    );
+    assert!(
+        !template
+            .payload_root
+            .join(target.replace('/', "\\"))
+            .exists()
+    );
+    assert!(
+        !template
+            .payload_root
+            .join("shroudforge/config/current-assets.json")
+            .exists()
     );
 }
 
