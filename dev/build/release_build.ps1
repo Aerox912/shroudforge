@@ -17,10 +17,10 @@ $version = (Get-Content -LiteralPath (Join-Path $repositoryRoot 'VERSION') -Raw)
 if ($version -notmatch '^\d+\.\d+\.\d+$') { throw "VERSION must use MAJOR.MINOR.PATCH: $version" }
 & (Join-Path $actions 'build_modloader_frontend.ps1') -UseInstalledDependencies:$UseInstalledDependencies -SkipUiBuild:$SkipUiBuild
 & (Join-Path $actions 'build_kfc_runtime.ps1')
+& (Join-Path $actions 'build_windows_bootstrap.ps1')
 & (Join-Path $actions 'build_windows_proxies.ps1') -CargoTargetDir $cargoTargetPath
 if (-not $SkipTests) {
     & (Join-Path $repositoryRoot 'dev\tests\run_workspace_tests.ps1')
 }
 & (Join-Path $actions 'build_modloader.ps1') -CargoTargetDir $cargoTargetPath -UseInstalledDependencies -SkipUiBuild
-& (Join-Path $actions 'build_windows_bootstrap.ps1')
 & (Join-Path $actions 'package_release.ps1') -BuildNumber $BuildNumber -Version $version -WithoutUpdater:$WithoutUpdater

@@ -4,7 +4,11 @@ param()
 $ErrorActionPreference = 'Stop'
 $repositoryRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\..'))
 $parserRoot = Join-Path $repositoryRoot 'kfc-parser'
-$expectedRevision = 'c7c9b72a60ac43d5c5fc4b1ace6e9a2fdaf20934'
+$gitlink = & git -C $repositoryRoot ls-tree HEAD -- kfc-parser
+if ($LASTEXITCODE -ne 0 -or $gitlink -notmatch '^160000 commit ([0-9a-f]{40})\s+kfc-parser$') {
+    throw "Could not resolve the current parent revision's pinned parser gitlink."
+}
+$expectedRevision = $Matches[1]
 
 if (-not (Test-Path -LiteralPath (Join-Path $parserRoot '.git'))) {
     throw "Initialize the kfc-parser submodule at the repository's pinned gitlink ($($expectedRevision.Substring(0, 8))) before building."

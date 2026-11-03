@@ -79,6 +79,10 @@ $version = (Get-Content -LiteralPath (Join-Path $repositoryRoot 'VERSION') -Raw)
 if ($version -notmatch '^\d+\.\d+\.\d+$') { throw "VERSION must use MAJOR.MINOR.PATCH: $version" }
 
 $parallelTasksStopwatch = [Diagnostics.Stopwatch]::StartNew()
+# SF proxies have a real static import and must link the just-built host library.
+Invoke-BuildPhase -Name 'windows-bootstrap' -Action {
+    & (Join-Path $actions 'build_windows_bootstrap.ps1')
+}
 $parallelTasks = @(
     (Start-BuildPhaseJob -Name 'modloader-frontend' -ScriptPath (Join-Path $actions 'build_modloader_frontend.ps1') -Parameters @{
         UseInstalledDependencies = $UseInstalledDependencies.IsPresent
@@ -103,9 +107,6 @@ if (-not $SkipTests) {
 }
 Invoke-BuildPhase -Name 'modloader-workspace-build' -Action {
     & (Join-Path $actions 'build_modloader.ps1') -CargoTargetDir $cargoTargetPath -UseInstalledDependencies -SkipUiBuild
-}
-Invoke-BuildPhase -Name 'windows-bootstrap' -Action {
-    & (Join-Path $actions 'build_windows_bootstrap.ps1')
 }
 Invoke-BuildPhase -Name 'package-release' -Action {
     & (Join-Path $actions 'package_release.ps1') -BuildNumber $BuildNumber -Version $version
