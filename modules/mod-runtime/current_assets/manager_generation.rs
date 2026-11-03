@@ -2,6 +2,9 @@
 //! No Lua runner, asset writer, baseline restore, or publication call is reachable.
 use super::*;
 use std::collections::BTreeSet;
+#[path="prepared_generation.rs"]
+mod prepared_generation;
+pub(super) fn verify_prepared(root:&Path)->Result<()> {prepared_generation::verify(root)}
 #[path="hd_forward/mod.rs"]
 mod hd_forward;
 pub(super) fn reject_forward_hold(root:&Path)->Result<()> {hd_forward::reject_hold(root)}
