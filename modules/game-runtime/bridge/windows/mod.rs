@@ -1,4 +1,6 @@
 mod native_abi;
+mod flight;
+pub use flight::*;
 
 pub use native_abi::{
     Component, GridSpec, GridSpecResult, PropRecipe, PropRecord, RuntimeResourceId,

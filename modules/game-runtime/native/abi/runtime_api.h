@@ -28,6 +28,18 @@ extern "C" {
 #define KFC_RUNTIME_FIRST_PERSON_OWNER_CONFLICT 3u
 #define KFC_RUNTIME_FIRST_PERSON_FAILED 4u
 KFC_RUNTIME_API uint32_t KFC_RUNTIME_CALL KfcRuntimeAbi(void);
+/* Optional ABI12 Flight. Trusted Rust allocates token from mod identity and
+ * generation; Lua never supplies it. Flags: scalar ready=1, provider ready=2,
+ * local On intent=4. No server ACK or SP/listen qualification is implied. */
+typedef struct KfcFlightClientStatusV1 {
+    uint32_t struct_bytes, version, flags, mode;
+    uint64_t local_reset_serial;
+    uint32_t reserved0, reserved1;
+} KfcFlightClientStatusV1;
+KFC_RUNTIME_API int32_t KFC_RUNTIME_CALL KfcRuntimeFlightClientSetEnabledV1(uint64_t, uint32_t);
+KFC_RUNTIME_API int32_t KFC_RUNTIME_CALL KfcRuntimeFlightClientResetV1(uint64_t);
+KFC_RUNTIME_API int32_t KFC_RUNTIME_CALL KfcRuntimeFlightClientRetireV1(uint64_t);
+KFC_RUNTIME_API int32_t KFC_RUNTIME_CALL KfcRuntimeFlightClientStatusV1(uint64_t, KfcFlightClientStatusV1*);
 KFC_RUNTIME_API bool KFC_RUNTIME_CALL KfcRuntimeInitialize(void);
 /* Optional ABI12 pre-entry cache: required hook publication only. No World,
  * player, prop/cursor or feature-service readiness is implied. */

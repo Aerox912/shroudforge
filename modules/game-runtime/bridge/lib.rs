@@ -2,6 +2,8 @@
 const KFC_RUNTIME_ABI_VERSION: u32 = 12;
 
 mod runtime_records;
+mod flight_records;
+pub use flight_records::FlightClientStatus;
 
 #[cfg(windows)]
 mod windows;

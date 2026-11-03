@@ -1,0 +1,32 @@
+// SPDX-License-Identifier: MIT
+// Complete current-build code, call/layout, .pdata and unwind signatures.
+#pragma once
+#include "vein/ikea_client/profile.hpp"
+namespace vein::ikea_client {
+inline constexpr std::array native_reset_guards{
+ Guard{0x108ef30,0xed,"900107e82008b98f77a10738b8cfa06d08cbd41d3e8ca581d986cba8d8de21d9"},
+ Guard{0x1f984fc,0x1c,"d86c5ab4a0090565a699f54fe76dbbeb7da876613745dc787daed53c0f7e8de5",false},
+ Guard{0x290780c,0xc,"c50cc2c7b45a4b8ccab68cc70343ca63e5885a9964f3b9bb841b29916054197a",false},
+ Guard{0x1090210,0x298,"df43dc430fd96a90296ef07cb8cc06b915e5db3dd05ead60fc3ed553ec0dfa7d"},
+ Guard{0x1f98120,0x18,"c442fe78d37511abffc6bee61c46edac8018ff525dce0065d8904b9e4184e9ac",false},
+ Guard{0x290792c,0xc,"35a9bc90ebfdec5f83d4fc06e5f7ef515a0355d90d6525168151504c26f6f81a",false},
+ Guard{0x10950d0,0x98,"8bb9294b0835ba5be371ed6479135e7b331a03c1e2fb7b083c4650e9eb567d4d"},
+ Guard{0x1f98518,0x8,"17eb4f7668b4b4636dab37fccb2427ee3b39d25c7dcc374469199e4e7258b68f",false},
+ Guard{0x2907da0,0xc,"c03d607ade4e3edf445a2d73515b27fad41be292896e1a69dcf45af7f47be68f",false},
+ Guard{0x1092330,0x142,"800def5ac1895245e40995e903cb9187aeec985e7847c1981df87e0e41200fa7"},
+ Guard{0x1f98110,0x10,"b34b72318db0d92291d35ff08d272abfdaf15100effa126d7c30817c5d544177",false},
+ Guard{0x2907b30,0xc,"c7b6d6cc43c44376dcbce2375009bf9a3e62e2bd486d3950ea36d810d2dfd8b1",false},
+ Guard{0x1092510,0x114,"befd188adf7d7b4259052dcd1e0b9fe5cce4b6ada7dfbad83ad082ac0c72bdc3"},
+ Guard{0x1f98544,0xc,"1350caf856496351c3ae1c2754e229a8697026acfbc308701c522aaa206ba033",false},
+ Guard{0x2907b48,0xc,"9d5780597c2cd23e92ccbb87e8bab64a719b351be38eaa83cb14da62a98e4528",false},
+ Guard{0x10920d0,0xad,"193f25c42e20fadf350cf5cfc6d2d0fca83ea2bff4a56dae9b8c90915c92ffcd"},
+ Guard{0x1f980d4,0x14,"9d869acd70a4c5916954ef355369e50f4aa6bd725802a233b3eea0641eb68d20",false},
+ Guard{0x2907b18,0xc,"89d09d34af1f1c1e94b0f031ed4e9f65d77b06aba71c1e9a800071fa3533f942",false},
+ Guard{0x1095a50,0x452,"134daf0d238f21811d3e1afed1de1651b0762396fe3fe412b624e20af5b32cf4"},
+ Guard{0x1f98734,0x14,"d8563973f6607db05050026eac46a77e7fea45982b07b986f6601948b6cc6c43",false},
+ Guard{0x2907e3c,0xc,"aa90dc78f080c6b476f39a0526363d20e43400374cb4283fd6156a36bd071e14",false},
+ Guard{0x109dba0,0x4a5,"954efaf56d541dc3ca7824a702a1f159ad4b8357723491c7dc5779b607fd552e"},
+ Guard{0x1f994c4,0x14,"c709cb9a5882d15c09d4071020340f663f5333339274f055bc715cdd238b32fb",false},
+ Guard{0x29085e0,0xc,"836c87fdabd5ecde9d5d7f9cc2b4ace2b8d5b2adce240c00f69ce4c1d0b3d9bc",false},
+};
+}

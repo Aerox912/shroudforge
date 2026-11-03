@@ -21,6 +21,7 @@ use crate::env::{loader, registration, registry, runtime_ownership, runtime_valu
 pub(crate) use crate::runtime_provider;
 
 mod check_ingame_access;
+mod flight;
 use check_ingame_access::*;
 pub(crate) use check_ingame_access::{available, runtime_denial_reason};
 mod first_person;
@@ -50,6 +51,7 @@ pub fn create(lua: &mlua::Lua, r#mod: Mod) -> mlua::Result<mlua::Table> {
     let table = lua.create_table()?;
     table.raw_set("phase", app_state.phase().as_str())?;
     table.raw_set("schema_version", 1)?;
+    table.raw_set("flight", flight::create(lua, &r#mod)?)?;
     table.raw_set("is_client", app_state.is_client())?;
     table.raw_set("is_server", app_state.is_server())?;
     add_function_with_mod(lua, &table, "has", &r#mod, lua_has)?;
