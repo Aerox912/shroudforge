@@ -1,0 +1,45 @@
+{
+  "$schema": "https://bonsaibauer.github.io/shroudforge/schemas/extended.mod.schema.json",
+  "schemaVersion": 1,
+  "enabled": true,
+  "targets": [
+    "client"
+  ],
+  "links": {
+    "source-github": "https://github.com/bonsaibauer/shroudforge",
+    "issues": "https://github.com/bonsaibauer/shroudforge/issues/new?template=bug_report.yml"
+  },
+  "changelog": [
+    "Adds a loader-owned Home toggle for the camera and stamina gauge.",
+    "Keeps the upstream -0.15 camera distance default and admits only the exact supported client image."
+  ],
+  "settings": {
+    "toggleFirstPerson": {
+      "value": "SDL:74",
+      "label": "Toggle First Person",
+      "description": "Press Home to toggle the first-person camera and corrected stamina gauge together.",
+      "control": "keybind",
+      "applyAt": "live"
+    },
+    "cameraDistance": {
+      "value": -0.15,
+      "label": "Camera Distance",
+      "description": "Camera offset used while first person is enabled.",
+      "control": "slider",
+      "min": -0.5,
+      "max": 0.5,
+      "step": 0.01,
+      "applyAt": "live"
+    }
+  },
+  "groups": [
+    {
+      "label": "First Person",
+      "description": "The view starts in third person each time this runtime loads.",
+      "settings": [
+        "toggleFirstPerson",
+        "cameraDistance"
+      ]
+    }
+  ]
+}
