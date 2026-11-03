@@ -1,6 +1,7 @@
 #include "bootstrap_state.h"
 #include "startup_zoom.h"
 #include "startup_admission.h"
+#include "greeneye_entry.h"
 
 using namespace BootstrapImplementation;
 
@@ -104,7 +105,10 @@ DWORD WINAPI run(void*) {
     const auto take_full=reinterpret_cast<FullTake>(GetProcAddress(runtime,"shroudforge_take_full_startup_v2"));
     const auto release_ini=reinterpret_cast<FullCommit>(GetProcAddress(runtime,"shroudforge_release_vein_ini_v2"));
     const auto commit_full=reinterpret_cast<FullCommit>(GetProcAddress(runtime,"shroudforge_commit_full_startup_v2"));
-    if(full_runtime&&(!prepare_full||!take_full||!release_ini||!commit_full)) {
+    const auto take_entry=reinterpret_cast<GreeneyeEntry::Take>(GetProcAddress(runtime,"shroudforge_take_entry_v1"));
+    const auto load_entry=reinterpret_cast<GreeneyeEntry::Load>(GetProcAddress(runtime,"shroudforge_load_entry_v1"));
+    const auto confirm_entry=reinterpret_cast<GreeneyeEntry::Confirm>(GetProcAddress(runtime,"shroudforge_confirm_entry_v1"));
+    if(full_runtime&&(!prepare_full||!take_full||!release_ini||!commit_full||!take_entry||!load_entry||!confirm_entry)) {
         startup_failed(root,"full-startup-contract","Full runtime/bootstrap handshake exports are incomplete");return 1;
     }
     if (!prepare_startup || (!assets_only && (!create || !update || !destroy))) {
@@ -229,10 +233,37 @@ DWORD WINAPI run(void*) {
             EcsRuntime::Shutdown();full_zoom_cap.Rollback();
             startup_failed(root,"full-startup-contract","Full runtime commit refused");return 1;
         }
-        full_zoom_cap.Commit();
     }
+    bool entry_continuation_armed=false;
+    if(full_runtime) {
+        GreeneyeEntry::TicketV1 ticket;
+        const auto pending=take_entry(root.c_str(),&ticket,sizeof(ticket));
+        if(pending<0||pending>1||(pending==1&&!GreeneyeEntry::Valid(ticket))) {
+            EcsRuntime::Shutdown();startup_failed(root,"entry-continuation","Original post-restore work could not be taken");return 1;
+        }
+        if(pending==1) {
+            // PIN is conservative process residency, including rejected arming.
+            HMODULE retained{};
+            if(!GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS|GET_MODULE_HANDLE_EX_FLAG_PIN,
+                    reinterpret_cast<LPCWSTR>(runtime),&retained)||retained!=runtime) {
+                EcsRuntime::Shutdown();startup_failed(root,"entry-continuation","Runtime callback ownership could not be retained");return 1;
+            }
+            GreeneyeEntry::Context* context{};
+            try {context=new GreeneyeEntry::Context{root.wstring(),ticket,load_entry,confirm_entry};}
+            catch(...) {EcsRuntime::Shutdown();startup_failed(root,"entry-continuation","Retained continuation allocation failed");return 1;}
+            if(!StartupGate::ArmPostRestore(held_proof.parked_thread_id,&GreeneyeEntry::Continue,context)) {
+                delete context; // Never published; runtime PIN intentionally remains.
+                EcsRuntime::Shutdown();startup_failed(root,"entry-continuation","Original held gate could not arm its continuation");return 1;
+            }
+            entry_continuation_armed=true; // Context/events/modules remain resident.
+        }
+    }
+    if(full_runtime)full_zoom_cap.Commit();
     log("Startup assets and native-provider setup complete. Releasing the game entrypoint");
-    startup.release();
+    if(!startup.release())return 1;
+    if(entry_continuation_armed&&!StartupGate::AwaitPostRestore()) {
+        EcsRuntime::Shutdown();startup_failed(root,"entry-continuation","Greeneye load or exact entry hook witness failed");return 1;
+    }
     startup_stage(root, "runtime-create");
     std::mutex create_watchdog_mutex;
     std::condition_variable create_watchdog_condition;

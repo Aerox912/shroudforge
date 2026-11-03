@@ -57,6 +57,7 @@
     <ClInclude Include="runtime_bridge.h" />
     <ClInclude Include="logging_config.h" />
     <ClInclude Include="startup_gate.h" />
+    <ClInclude Include="greeneye_entry.h" />
     <ClInclude Include="startup_admission.h" />
     <ClInclude Include="static_start.h" />
     <ClInclude Include="startup_zoom.h" />

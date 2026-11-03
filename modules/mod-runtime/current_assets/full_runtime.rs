@@ -9,6 +9,9 @@ pub mod selected_services;
 pub(crate) mod xhl_selection;
 #[path="xhl_tree.rs"]
 mod xhl_tree;
+#[path="greeneye_entry.rs"]
+mod greeneye_entry;
+pub use greeneye_entry::EntryTicketV1;
 pub use selected_services::{SelectedBootPlanV2,SelectedDemand};
 #[derive(Clone,Serialize,Deserialize)]
 #[serde(rename_all="camelCase",deny_unknown_fields)]
@@ -36,12 +39,12 @@ pub struct Contract {
     pub greeneye_paths:Vec<String>,
 }
 #[derive(Clone,Copy,Debug,PartialEq,Eq)]
-enum Phase {Verified,Preparing,Prepared,Taken,NativePrepared,Committed,Running,Failed}
+enum Phase {Verified,Preparing,Prepared,Taken,NativePrepared,EntryPending,EntryTaken,EntryLoading,EntryLoaded,Committed,Running,Failed}
 #[derive(Clone)]
 struct PackageBinding {directory:PathBuf,metadata:Value}
 struct Admission {root:PathBuf,contract:Contract,phase:Phase,packages:BTreeMap<String,PackageBinding>,
     #[cfg(windows)] _xhl:Option<(Vec<fs::File>,xhl_tree::TreeLease)>,
-    intended_native:Option<crate::native_dlls::IntendedNativePlan>,_files:Vec<(String,fs::File)>}
+    intended_native:Option<crate::native_dlls::IntendedNativePlan>,greeneye:Option<greeneye_entry::Work>,entry_taken:bool,_files:Vec<(String,fs::File)>}
 static ADMISSION:OnceLock<Mutex<Option<Admission>>>=OnceLock::new();
 fn state()->&'static Mutex<Option<Admission>> {ADMISSION.get_or_init(||Mutex::new(None))}
 fn lock()->std::sync::MutexGuard<'static,Option<Admission>> {state().lock().unwrap_or_else(|e|e.into_inner())}
@@ -283,8 +286,9 @@ pub(super) fn verify_and_stage(root:&Path,c:Contract,request:&str,receipt:&str,p
         ensure!(files.iter().filter(|(name,_)|name.eq_ignore_ascii_case(selected_services::VEIN_INI)).all(|(name,_)|name==selected_services::VEIN_INI),"Vein INI alias refused");
         selected_services::validate_ini_handles(&files)?;
     }
+    let greeneye=greeneye_entry::capture(root,&c,&intended_native)?;
     let mut slot=lock();ensure!(slot.is_none(),"full runtime startup already attempted");
-    *slot=Some(Admission{root:root.into(),contract:c,phase:Phase::Verified,packages,intended_native:Some(intended_native),_files:files,#[cfg(windows)] _xhl:xhl});Ok(())
+    *slot=Some(Admission{root:root.into(),contract:c,phase:Phase::Verified,packages,intended_native:Some(intended_native),greeneye,entry_taken:false,_files:files,#[cfg(windows)] _xhl:xhl});Ok(())
 }
 fn transition(root:&Path,from:Phase,to:Phase)->Result<Contract> {
     let root=fs::canonicalize(root)?;let mut slot=lock();let a=slot.as_mut().context("full runtime admission missing")?;
@@ -339,7 +343,59 @@ pub fn commit_v2(root:&Path,plan:&SelectedBootPlanV2,completed:u32)->bool {
 fn complete_selected(a:&mut Admission,root:&Path,plan:&SelectedBootPlanV2,completed:u32)->bool {
     if root!=a.root.as_path()||a.phase!=Phase::NativePrepared||
         selected_services::plan(&a.contract).ok().as_ref()!=Some(plan)||completed!=plan.services {a.phase=Phase::Failed;return false;}
-    a.phase=Phase::Committed;true
+    if a.greeneye.as_ref().is_some_and(|g|!g.queued){a.phase=Phase::Failed;return false;}
+    a.phase=if a.greeneye.is_some(){Phase::EntryPending}else{Phase::Committed};true
+}
+// Native queue observes and consumes only the original verified host entry.
+pub(crate) fn defer_greeneye(root:&Path,entry:&mod_loader::dll_manager::DllLoadEntry)->Result<bool> {
+    let mut slot=lock();let Some(a)=slot.as_mut()else{return Ok(false);};
+    let Some(g)=a.greeneye.as_mut()else{return Ok(false);};
+    if g.entry.path!=entry.path{return Ok(false);}
+    if a.root!=fs::canonicalize(root)?||a.phase!=Phase::Preparing||g.queued||!g.matches(entry){a.phase=Phase::Failed;anyhow::bail!("Greeneye queue cannot adopt or repeat original work");}
+    g.queued=true;Ok(true)
+}
+pub(crate) fn greeneye_status()->Option<crate::native_dlls::NativeDllStatus> {
+    let slot=lock();let a=slot.as_ref()?;let g=a.greeneye.as_ref()?;if !g.queued{return None;}
+    Some(crate::native_dlls::NativeDllStatus{id:g.entry.status_id.clone(),source:g.entry.source.clone(),
+        state:if a.phase==Phase::Failed{"error"}else if g.confirmed{"loaded-entrypoint-hooked-scan-pending"}else{"deferred-entrypoint"},
+        detail:"Qualified host entrypoint continuation; plugin scan/Start/gameplay are not witnessed".into()})
+}
+fn take_entry(a:&mut Admission,root:&Path)->Result<Option<EntryTicketV1>> {
+    if a.root!=root||a.entry_taken||!matches!(a.phase,Phase::Committed|Phase::EntryPending){a.phase=Phase::Failed;anyhow::bail!("entry continuation take is out of sequence");}
+    a.entry_taken=true;
+    if let Some(g)=a.greeneye.as_ref(){ensure!(g.queued,"Greeneye original queue missing");a.phase=Phase::EntryTaken;Ok(Some(g.ticket))}else{Ok(None)}
+}
+pub fn take_entry_v1(root:&Path)->Result<Option<EntryTicketV1>> {
+    let root=fs::canonicalize(root)?;let mut slot=lock();take_entry(slot.as_mut().context("full admission missing")?,&root)
+}
+fn begin_entry_load(a:&mut Admission,root:&Path,ticket:&EntryTicketV1)->Result<mod_loader::dll_manager::DllLoadEntry> {
+    if a.root!=root||a.phase!=Phase::EntryTaken||a.greeneye.as_ref().is_none_or(|g|g.check(ticket).is_err()){a.phase=Phase::Failed;anyhow::bail!("original entry load operation differs");}
+    a.phase=Phase::EntryLoading;Ok(a.greeneye.as_ref().unwrap().entry.clone())
+}
+fn finish_entry_load(a:&mut Admission,ticket:&EntryTicketV1,handle:Option<isize>,result:Result<()>)->Result<usize> {
+    if let Some(g)=a.greeneye.as_mut(){g.handle=handle;} // Retain even after refusal.
+    if a.phase!=Phase::EntryLoading||a.greeneye.as_ref().is_none_or(|g|g.check(ticket).is_err()){a.phase=Phase::Failed;anyhow::bail!("entry load was cancelled or repeated");}
+    match result.and_then(|()|handle.filter(|h|*h!=0).context("entry load has no module")) {
+        Ok(h)=>{a.phase=Phase::EntryLoaded;Ok(h as usize)},
+        Err(e)=>{a.phase=Phase::Failed;Err(e)}
+    }
+}
+pub fn load_entry_v1(root:&Path,ticket:&EntryTicketV1)->Result<usize> {
+    load_entry_using(root,ticket,greeneye_entry::load)
+}
+fn load_entry_using(root:&Path,ticket:&EntryTicketV1,load:impl FnOnce(&Path,&mod_loader::dll_manager::DllLoadEntry)->(Option<isize>,Result<()>))->Result<usize> {
+    let root=fs::canonicalize(root)?;
+    let entry={let mut slot=lock();begin_entry_load(slot.as_mut().context("full admission missing")?,&root,ticket)?};
+    // The native loader executes DllMain. No admission/executor mutex is held.
+    let(handle,result)=load(&root,&entry);
+    let mut slot=lock();finish_entry_load(slot.as_mut().context("full admission missing")?,ticket,handle,result)
+}
+fn confirm_entry(a:&mut Admission,root:&Path,ticket:&EntryTicketV1,handle:usize,witness:bool)->bool {
+    if a.root!=root||a.phase!=Phase::EntryLoaded||!witness||a.greeneye.as_ref().is_none_or(|g|g.check(ticket).is_err()||g.handle!=Some(handle as isize)||handle==0){a.phase=Phase::Failed;return false;}
+    a.greeneye.as_mut().unwrap().confirmed=true;a.phase=Phase::Committed;true
+}
+pub fn confirm_entry_v1(root:&Path,ticket:&EntryTicketV1,handle:usize,witness:bool)->bool {
+    let Ok(root)=fs::canonicalize(root)else{return false;};let mut slot=lock();let Some(a)=slot.as_mut()else{return false;};confirm_entry(a,&root,ticket,handle,witness)
 }
 pub fn before_create(root:&Path)->Result<()> {
     // A deleted/changed policy cannot turn an existing full attempt into legacy.
@@ -362,7 +418,8 @@ pub fn after_create(root:&Path)->Result<()> {
 }
 fn retain_create_leases(a:&mut Admission) {
     a._files.retain(|(name,_)|name.to_ascii_lowercase().ends_with(".dll")||
-        (a.contract.selection.xhl.is_some()&&name==xhl_selection::CHAIN));
+        (a.contract.selection.xhl.is_some()&&name==xhl_selection::CHAIN)||
+        a.greeneye.as_ref().is_some_and(|g|g.retains(name)));
 }
 pub fn abort(_: &Path) {if let Some(a)=lock().as_mut(){a.phase=Phase::Failed;}}
 #[cfg(test)]
@@ -378,6 +435,48 @@ mod tests {
         let mut c=contract();c.runtime_source_closure="0".repeat(64);
         assert!(validate_contract(&c,&"d".repeat(64),&"b".repeat(64),&"c".repeat(64)).is_err());
     }
+    #[test] fn greeneye_entry_original_queue_restore_load_confirm_and_failure_paths() {
+        use mod_loader::dll_manager::{DllLoadEntry,DllLoadMode};
+        let fixture=PathBuf::from("E:/Build/sf177-release-rebase-20261103/greeneye-entry-r1/fixtures").join(format!("rust-{}",std::process::id()));
+        fs::create_dir_all(fixture.join("mods/qualified-host")).unwrap();
+        let root=fs::canonicalize(&fixture).unwrap();
+        let path=root.join("mods/qualified-host/dbgcore.dll");fs::write(&path,b"inert fixture, never loaded").unwrap();
+        let entry=DllLoadEntry{status_id:"fixture-greeneye".into(),mod_id:None,package_directory:"qualified-host".into(),path:path.canonicalize().unwrap(),mode:DllLoadMode::Library,source:"profile".into()};
+        let reset=||{*lock()=Some(Admission{root:root.clone(),contract:contract(),phase:Phase::Preparing,packages:BTreeMap::new(),intended_native:None,greeneye:Some(greeneye_entry::fixture(entry.clone())),entry_taken:false,_files:vec![],#[cfg(windows)] _xhl:None});};
+        // Run the real DLL Manager queue entry, not a second queue implementation.
+        let cfg=root.join("shroudforge/config");fs::create_dir_all(&cfg).unwrap();
+        let mut config=shroudforge_loader_config::config::read_loader_defaults().unwrap();
+        config["modules"]["dllManager"]["enabled"]=true.into();
+        config["modules"]["dllManager"]["profiles"]=serde_json::json!([{"id":"host","packageDirectory":"qualified-host","name":"Inert host","enabled":true,"approved":true,"target":"client","files":[{"path":"dbgcore.dll","mode":"library"}]}]);
+        fs::write(cfg.join("modloader-config.json"),serde_json::to_vec(&config).unwrap()).unwrap();
+        reset();crate::native_dlls::queue(&root,entry.clone()).unwrap();
+        assert_eq!(crate::native_dlls::statuses().iter().find(|s|s.id==entry.status_id).unwrap().state,"deferred-entrypoint");
+        {let mut slot=lock();let a=slot.as_mut().unwrap();a.phase=Phase::NativePrepared;let plan=selected_services::plan(&a.contract).unwrap();assert!(complete_selected(a,&root,&plan,plan.services));assert_eq!(a.phase,Phase::EntryPending);}
+        assert!(before_create(&root).is_err()); // Early create permanently refuses.
+        reset();assert!(defer_greeneye(&root,&entry).unwrap());lock().as_mut().unwrap().phase=Phase::EntryPending;
+        let ticket=take_entry_v1(&root).unwrap().unwrap();
+        let module=load_entry_using(&root,&ticket,|original_root,original_entry|{
+            assert_eq!(original_root,root);assert_eq!(original_entry.path,entry.path);
+            assert_eq!(greeneye_status().unwrap().state,"deferred-entrypoint"); // Reentrant read proves mutex is not held.
+            (Some(1234),Ok(()))
+        }).unwrap();
+        assert!(confirm_entry_v1(&root,&ticket,module,true));assert_eq!(lock().as_ref().unwrap().phase,Phase::Committed);
+        assert_eq!(greeneye_status().unwrap().state,"loaded-entrypoint-hooked-scan-pending");
+        assert!(!confirm_entry_v1(&root,&ticket,module,true)); // Exactly once.
+        reset();defer_greeneye(&root,&entry).unwrap();assert!(defer_greeneye(&root,&entry).is_err());
+        reset();defer_greeneye(&root,&entry).unwrap();lock().as_mut().unwrap().phase=Phase::EntryPending;
+        let ticket=take_entry_v1(&root).unwrap().unwrap();let mut wrong=ticket;wrong.binding[0]^=1;
+        assert!(load_entry_using(&root,&wrong,|_,_|panic!("mismatched ticket must not load")).is_err());
+        reset();defer_greeneye(&root,&entry).unwrap();lock().as_mut().unwrap().phase=Phase::EntryPending;
+        let ticket=take_entry_v1(&root).unwrap().unwrap();load_entry_using(&root,&ticket,|_,_|(Some(1234),Ok(()))).unwrap();
+        assert!(!confirm_entry_v1(&root,&ticket,1234,false));assert_eq!(lock().as_ref().unwrap().greeneye.as_ref().unwrap().handle,Some(1234));
+        reset();defer_greeneye(&root,&entry).unwrap();lock().as_mut().unwrap().phase=Phase::EntryPending;
+        let ticket=take_entry_v1(&root).unwrap().unwrap();
+        assert!(load_entry_using(&root,&ticket,|_,_|{abort(&root);(Some(5678),Ok(()))}).is_err());
+        assert_eq!(lock().as_ref().unwrap().greeneye.as_ref().unwrap().handle,Some(5678)); // No revival after reentry/cancellation.
+        *lock()=None;
+        // Fixture files are deliberately retained under the task evidence path.
+    }
     #[test] fn exact_new_contract_accepts_only_supported_boot_requirements_and_new_pair() {
         let c=contract();let producer="e".repeat(64);
         let verify=|c:&Contract|validate_contract_pair(c,&producer,&"b".repeat(64),&"c".repeat(64),&"a".repeat(64),Some(&"f".repeat(64)));
@@ -387,7 +486,7 @@ mod tests {
     }
     #[test] fn full_sequence_is_one_shot_and_wrong_root_cannot_refresh_it() {
         let root=PathBuf::from("E:/owned/synthetic-root");
-        let mut a=Admission{root:root.clone(),contract:contract(),phase:Phase::Verified,packages:BTreeMap::new(),intended_native:None,_files:vec![],#[cfg(windows)] _xhl:None};
+        let mut a=Admission{root:root.clone(),contract:contract(),phase:Phase::Verified,packages:BTreeMap::new(),intended_native:None,greeneye:None,entry_taken:false,_files:vec![],#[cfg(windows)] _xhl:None};
         for (from,to) in [(Phase::Verified,Phase::Preparing),(Phase::Preparing,Phase::Prepared),(Phase::Prepared,Phase::Taken),(Phase::Taken,Phase::NativePrepared),(Phase::NativePrepared,Phase::Committed),(Phase::Committed,Phase::Running)] {move_to(&mut a,&root,from,to).unwrap();}
         assert!(move_to(&mut a,&root,Phase::Committed,Phase::Running).is_err());assert_eq!(a.phase,Phase::Failed);
         a.phase=Phase::Prepared;assert!(move_to(&mut a,&root.join("other"),Phase::Prepared,Phase::Taken).is_err());assert_eq!(a.phase,Phase::Failed);
@@ -417,7 +516,7 @@ mod tests {
         f.c.selection.vein_settings_path=Some(selected_services::VEIN_INI.into());
         let plan=selected_services::plan(&f.c).unwrap();
         let other="shroudforge/config/modloader-config.json";
-        let mut a=Admission{root:f.root.clone(),contract:f.c.clone(),phase:Phase::Taken,packages:BTreeMap::new(),intended_native:None,
+        let mut a=Admission{root:f.root.clone(),contract:f.c.clone(),phase:Phase::Taken,packages:BTreeMap::new(),intended_native:None,greeneye:None,entry_taken:false,
             #[cfg(windows)] _xhl:None,
             _files:vec![(selected_services::VEIN_INI.into(),keep_readonly(&ini).unwrap()),
                 (selected_services::VEIN_INI.into(),keep_readonly(&ini).unwrap()),(other.into(),keep_readonly(&f.root.join(other)).unwrap())]};
@@ -438,7 +537,7 @@ mod tests {
         assert!(!release_ini(&mut a,&f.root,&plan,plan.prepared_services()));
         assert_eq!(a.phase,Phase::Failed);
         let c=contract();let p=selected_services::plan(&c).unwrap();
-        let mut unselected=Admission{root:f.root.clone(),contract:c,phase:Phase::Taken,packages:BTreeMap::new(),intended_native:None,
+        let mut unselected=Admission{root:f.root.clone(),contract:c,phase:Phase::Taken,packages:BTreeMap::new(),intended_native:None,greeneye:None,entry_taken:false,
             #[cfg(windows)] _xhl:None,
             _files:vec![(selected_services::VEIN_INI.into(),keep_readonly(&ini).unwrap())]};
         assert!(release_ini(&mut unselected,&f.root,&p,p.prepared_services()));
@@ -448,7 +547,7 @@ mod tests {
         let mut f=Fixture::new(&[]);let chain=f.root.join(xhl_selection::CHAIN);fs::create_dir_all(chain.parent().unwrap()).unwrap();fs::write(&chain,xhl_tree::DISABLED_CHAIN).unwrap();
         let alias=f.root.join("mods/alias.ini");fs::hard_link(&chain,&alias).unwrap();
         f.c.selection.xhl=Some(xhl_selection::tests::fixture());
-        let mut a=Admission{root:f.root.clone(),contract:f.c.clone(),phase:Phase::Running,packages:BTreeMap::new(),intended_native:None,
+        let mut a=Admission{root:f.root.clone(),contract:f.c.clone(),phase:Phase::Running,packages:BTreeMap::new(),intended_native:None,greeneye:None,entry_taken:false,
             #[cfg(windows)] _xhl:None,
             _files:vec![(xhl_selection::CHAIN.into(),keep_readonly(&chain).unwrap()),("mods/alias.ini".into(),keep_readonly(&alias).unwrap()),
                 ("shroudforge/config/modloader-config.json".into(),keep_readonly(&f.root.join("shroudforge/config/modloader-config.json")).unwrap())]};
