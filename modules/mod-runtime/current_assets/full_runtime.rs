@@ -84,6 +84,31 @@ fn projected_runtime_plan<'a>(env:&'a mod_loader::ModEnvironment,c:&Contract)->R
     ensure!(candidates.iter().map(|m|&m.info().id).eq(c.runtime_mods.iter()),"ordered prepared runtime plan differs; prepare and restart");
     Ok(candidates)
 }
+fn exact_metadata_binding<'a,T>(files:&'a BTreeMap<String,T>,name:&str)->Result<Option<&'a T>> {
+    let mut binding=None;
+    for (path,value) in files {
+        if path.eq_ignore_ascii_case(name) {
+            ensure!(path==name,"aliased runtime package metadata path: {name}");
+            ensure!(binding.is_none(),"duplicate runtime package metadata path: {name}");
+            binding=Some(value);
+        }
+    }
+    Ok(binding)
+}
+fn runtime_metadata_file(directory:&Path,name:&str,required:bool)->Result<Option<PathBuf>> {
+    let mut found=None;
+    for entry in fs::read_dir(directory)? {
+        let entry=entry?;let file_name=entry.file_name();
+        if file_name.to_string_lossy().eq_ignore_ascii_case(name) {
+            ensure!(file_name==std::ffi::OsStr::new(name),"aliased runtime package metadata file: {name}");
+            ensure!(found.is_none(),"duplicate runtime package metadata file: {name}");
+            let path=entry.path();ensure!(plain(&path)?.is_file(),"runtime package metadata is not a regular file: {name}");
+            found=Some(path);
+        }
+    }
+    ensure!(!required||found.is_some(),"runtime package metadata is missing: {name}");
+    Ok(found)
+}
 fn bind_runtime_packages(root:&Path,c:&Contract,environment:&BTreeMap<String,Stamp>)->Result<BTreeMap<String,PackageBinding>> {
     let env=mod_loader::ModEnvironment::load(root.to_str().context("nonUTF8 runtime root")?).map_err(|e|anyhow::anyhow!("{e:?}"))?;
     let plan=projected_runtime_plan(&env,c)?;let mut bindings=BTreeMap::new();
@@ -91,8 +116,30 @@ fn bind_runtime_packages(root:&Path,c:&Contract,environment:&BTreeMap<String,Sta
         let directory=fs::canonicalize(package.fs().root().as_std_path())?;
         ensure!(plain(&directory)?.is_dir(),"schema6 runtime package requires a bound directory");
         let relative=directory.strip_prefix(root).context("runtime package escapes prepared root")?.to_str().context("nonUTF8 runtime package")?.replace('\\',"/");
-        ensure!(environment.contains_key(&format!("{relative}/mod.json")),"runtime package metadata is not in prepared environment");
-        if directory.join("extended.mod.json").exists(){ensure!(environment.contains_key(&format!("{relative}/extended.mod.json")),"runtime settings are not in prepared environment");}
+        ensure!(relative.starts_with("mods/")&&Path::new(&relative).components().all(|part|matches!(part,Component::Normal(_))),"runtime package path is not canonical");
+        let mut fully_prepared_bound=true;let mut fully_contract_bound=true;
+        for (file,required) in [("mod.json",true),("extended.mod.json",false)] {
+            let name=format!("{relative}/{file}");
+            let path=runtime_metadata_file(&directory,file,required)?;
+            let prepared=exact_metadata_binding(environment,&name)?;
+            let contract=exact_metadata_binding(&c.files,&name)?;
+            if let Some(path)=path {
+                let actual=stamp(&path)?;
+                if let Some(expected)=prepared {ensure!(*expected==actual,"prepared runtime metadata drift: {name}");}
+                if let Some(expected)=contract {ensure!((expected.bytes,expected.sha256.clone())==actual,"runtime contract metadata drift: {name}");}
+                if let (Some(prepared),Some(contract))=(prepared,contract) {
+                    ensure!(prepared.0==contract.bytes&&prepared.1==contract.sha256,"runtime contract conflicts with prepared metadata: {name}");
+                }
+                fully_prepared_bound&=prepared.is_some();fully_contract_bound&=contract.is_some();
+            } else {
+                ensure!(prepared.is_none()&&contract.is_none(),"runtime metadata binding names a missing file: {name}");
+            }
+        }
+        // Partial generator coverage cannot authorize metadata-only runtime admission.
+        if !fully_prepared_bound {
+            ensure!(fully_contract_bound,"runtime-only package metadata is not fully bound by the contract");
+            ensure!(!package.info().capabilities.iter().any(|capability|capability.requires_pregame()),"runtime-only package has a pregame capability");
+        }
         ensure!(c.scripts.contains_key(&format!("{}:src/mod.lua",package.info().id)),"runtime entrypoint source is not bound");
         bindings.insert(package.info().id.clone(),PackageBinding{directory,metadata:serde_json::to_value(package.info())?});
     }
@@ -430,6 +477,26 @@ mod tests {
             Self{root,c}
         }
     }
+    fn runtime_package(f:&mut Fixture,capabilities:&[&str])->(PathBuf,BTreeMap<String,Stamp>) {
+        let package=f.root.join("mods/fixture-runtime");fs::create_dir_all(package.join("src")).unwrap();
+        let manifest=serde_json::json!({"id":"fixture-runtime","name":"Fixture","version":"1.0.0","capabilities":capabilities});
+        fs::write(package.join("mod.json"),serde_json::to_vec(&manifest).unwrap()).unwrap();
+        fs::write(package.join("extended.mod.json"),br#"{"schemaVersion":1,"enabled":true,"targets":["client"]}"#).unwrap();
+        fs::write(package.join("src/mod.lua"),b"return {}\n").unwrap();
+        let environment=["mod.json","extended.mod.json"].into_iter().map(|file|{
+            (format!("mods/fixture-runtime/{file}"),stamp(&package.join(file)).unwrap())
+        }).collect();
+        let(bytes,sha256)=stamp(&package.join("src/mod.lua")).unwrap();
+        f.c.runtime_mods=vec!["fixture-runtime".into()];
+        f.c.scripts.insert("fixture-runtime:src/mod.lua".into(),NativeFile{bytes,sha256});
+        (package,environment)
+    }
+    fn contract_package_metadata(f:&mut Fixture,package:&Path,files:&[&str]) {
+        for file in files {
+            let(bytes,sha256)=stamp(&package.join(file)).unwrap();
+            f.c.files.insert(format!("mods/fixture-runtime/{file}"),NativeFile{bytes,sha256});
+        }
+    }
     impl Drop for Fixture {fn drop(&mut self){if self.root.starts_with(std::env::temp_dir())&&self.root.file_name().unwrap().to_string_lossy().starts_with("sf-full-route-"){let _=fs::remove_dir_all(&self.root);}}}
     #[test] fn approved_plan_accepts_without_loading_and_disabled_or_changed_plan_refuses() {
         let f=Fixture::new(&["plugin.dll"]);assert_eq!(f.c.dll_plan.as_array().unwrap().len(),1);validate_plan(&f.root,&f.c).unwrap();
@@ -475,5 +542,58 @@ mod tests {
         fs::write(package.join("extended.mod.json"),br#"{"schemaVersion":1,"enabled":false,"targets":["client"]}"#).unwrap();
         let env=mod_loader::ModEnvironment::load(f.root.to_str().unwrap()).unwrap();let mut none=f.c.clone();none.runtime_mods.clear();none.scripts.clear();
         assert!(projected_runtime_plan(&env,&none).unwrap().is_empty());
+    }
+    #[test] fn runtime_package_binding_accepts_exact_contract_files_without_environment_metadata() {
+        let mut f=Fixture::new(&[]);let(package,_)=runtime_package(&mut f,&["runtime"]);
+        contract_package_metadata(&mut f,&package,&["mod.json","extended.mod.json"]);
+        let leases=verify_files(&f.root,&f.c).unwrap();
+        let bindings=bind_runtime_packages(&f.root,&f.c,&BTreeMap::new()).unwrap();
+        assert_eq!(bindings["fixture-runtime"].directory,fs::canonicalize(&package).unwrap());
+        check_script(&f.c,&bindings,"fixture-runtime",&package,"src/mod.lua",b"return {}\n").unwrap();
+        drop(leases);
+    }
+    #[test] fn runtime_package_binding_rejects_missing_metadata_and_source_drift() {
+        let mut missing=Fixture::new(&[]);let(package,environment)=runtime_package(&mut missing,&["runtime"]);
+        contract_package_metadata(&mut missing,&package,&["mod.json"]);
+        assert!(bind_runtime_packages(&missing.root,&missing.c,&BTreeMap::new()).is_err());
+        assert!(bind_runtime_packages(&missing.root,&missing.c,&environment).is_ok());
+
+        let mut drift=Fixture::new(&[]);let(package,_)=runtime_package(&mut drift,&["runtime"]);
+        contract_package_metadata(&mut drift,&package,&["mod.json","extended.mod.json"]);
+        fs::write(package.join("extended.mod.json"),br#"{"schemaVersion":1,"enabled":false,"targets":["client"]}"#).unwrap();
+        assert!(verify_files(&drift.root,&drift.c).is_err());
+        assert!(bind_runtime_packages(&drift.root,&drift.c,&BTreeMap::new()).is_err());
+    }
+    #[test] fn runtime_package_binding_rejects_aliases_conflicts_and_unlisted_packages() {
+        let mut aliased=Fixture::new(&[]);let(package,_)=runtime_package(&mut aliased,&["runtime"]);
+        contract_package_metadata(&mut aliased,&package,&["mod.json","extended.mod.json"]);
+        let value=aliased.c.files.remove("mods/fixture-runtime/mod.json").unwrap();
+        aliased.c.files.insert("mods/fixture-runtime/MOD.JSON".into(),value);
+        assert!(bind_runtime_packages(&aliased.root,&aliased.c,&BTreeMap::new()).is_err());
+
+        let mut prepared_alias=Fixture::new(&[]);let(package,mut environment)=runtime_package(&mut prepared_alias,&["runtime"]);
+        contract_package_metadata(&mut prepared_alias,&package,&["mod.json","extended.mod.json"]);
+        let value=environment.remove("mods/fixture-runtime/mod.json").unwrap();
+        environment.insert("mods/fixture-runtime/MOD.JSON".into(),value);
+        assert!(bind_runtime_packages(&prepared_alias.root,&prepared_alias.c,&environment).is_err());
+
+        let mut conflict=Fixture::new(&[]);let(package,environment)=runtime_package(&mut conflict,&["runtime"]);
+        contract_package_metadata(&mut conflict,&package,&["mod.json","extended.mod.json"]);
+        let mut conflicting=environment.clone();let value=conflicting.get_mut("mods/fixture-runtime/mod.json").unwrap();
+        value.0+=1;assert!(bind_runtime_packages(&conflict.root,&conflict.c,&conflicting).is_err());
+
+        let mut unlisted=Fixture::new(&[]);let(_,environment)=runtime_package(&mut unlisted,&["runtime"]);
+        unlisted.c.runtime_mods.clear();
+        assert!(bind_runtime_packages(&unlisted.root,&unlisted.c,&environment).is_err());
+    }
+    #[test] fn runtime_package_binding_keeps_pregame_mixed_packages_generator_bound() {
+        for capability in ["patch","export"] {
+            let mut runtime_only=Fixture::new(&[]);let(package,_)=runtime_package(&mut runtime_only,&["runtime",capability]);
+            contract_package_metadata(&mut runtime_only,&package,&["mod.json","extended.mod.json"]);
+            assert!(bind_runtime_packages(&runtime_only.root,&runtime_only.c,&BTreeMap::new()).is_err());
+        }
+
+        let mut prepared=Fixture::new(&[]);let(_package,environment)=runtime_package(&mut prepared,&["runtime","patch"]);
+        assert!(bind_runtime_packages(&prepared.root,&prepared.c,&environment).is_ok());
     }
 }
