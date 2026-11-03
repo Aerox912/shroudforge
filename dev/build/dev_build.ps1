@@ -97,6 +97,12 @@ $version = (Get-Content -LiteralPath (Join-Path $repositoryRoot 'VERSION') -Raw)
 if ($version -notmatch '^\d+\.\d+\.\d+$') { throw "VERSION must use MAJOR.MINOR.PATCH: $version" }
 
 $parallelTasksStopwatch = [Diagnostics.Stopwatch]::StartNew()
+# SF proxies have a real static import and must link the just-built host library.
+if (-not $SkipProxies) {
+    Invoke-BuildPhase -Name 'windows-bootstrap' -Action {
+        & (Join-Path $actions 'build_windows_bootstrap.ps1')
+    }
+}
 $parallelTasks = @(
     (Start-BuildPhaseJob -Name 'modloader-frontend' -ScriptPath (Join-Path $actions 'build_modloader_frontend.ps1') -Parameters @{
         UseInstalledDependencies = $UseInstalledDependencies.IsPresent
@@ -109,7 +115,6 @@ $parallelTasks = @(
     }
     if (-not $RustOnly) {
         (Start-BuildPhaseJob -Name 'kfc-runtime' -ScriptPath (Join-Path $actions 'build_kfc_runtime.ps1'))
-        (Start-BuildPhaseJob -Name 'windows-bootstrap' -ScriptPath (Join-Path $actions 'build_windows_bootstrap.ps1'))
     }
 )
 try {

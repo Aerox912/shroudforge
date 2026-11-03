@@ -8,6 +8,10 @@ $dev = Join-Path $vs 'Common7/Tools/Launch-VsDevShell.ps1'
 & $dev -Arch amd64 -HostArch amd64 -SkipAutomaticLocation | Out-Null
 Push-Location $output
 try {
+    & cl /nologo /std:c++20 /EHsc /MT (Join-Path $PSScriptRoot 'static_start_tests.cpp') /link /OUT:static_start_tests.exe
+    if ($LASTEXITCODE) { throw 'Static start fixture build failed' }
+    & (Join-Path $output 'static_start_tests.exe')
+    if ($LASTEXITCODE) { throw 'Static start fixture failed' }
     & cl /nologo /std:c++20 /EHsc /MT /LD (Join-Path $PSScriptRoot 'startup_gate_dll.cpp') /link /OUT:startup_gate_test.dll /IMPLIB:startup_gate_test.lib
     if ($LASTEXITCODE) { throw 'Gate DLL build failed' }
     & cl /nologo /std:c++20 /EHsc /MT (Join-Path $PSScriptRoot 'startup_gate_exe.cpp') startup_gate_test.lib /link /OUT:startup_gate_test.exe

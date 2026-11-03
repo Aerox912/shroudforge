@@ -95,7 +95,7 @@ DWORD WINAPI run(void*) {
         std::error_code host_error;
         if(!StartupGate::direct_static_attachment||!size||size>=32768||
             !std::filesystem::equivalent(std::filesystem::path(module_path),root/L"winmm.dll",host_error)) {
-            startup_failed(root,"full-startup-host","Full runtime requires the directly static-loaded SF winmm host");return 1;
+            startup_failed(root,"full-startup-host","Full runtime requires the statically attached SF winmm host started by its selected proxy");return 1;
         }
     }
     const auto prepare_full=reinterpret_cast<PrepareStartup>(GetProcAddress(runtime,"shroudforge_prepare_full_startup"));

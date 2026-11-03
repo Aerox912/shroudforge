@@ -1,7 +1,8 @@
 param(
     [string]$CargoTargetDir = 'target',
     [string]$ComponentCacheDirectory = $env:SHROUDFORGE_PROXY_CACHE_DIR,
-    [string]$CacheKey = $env:SHROUDFORGE_PROXY_CACHE_KEY
+    [string]$CacheKey = $env:SHROUDFORGE_PROXY_CACHE_KEY,
+    [switch]$StandaloneEml
 )
 $ErrorActionPreference = 'Stop'
 $root = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\..'))
@@ -10,6 +11,8 @@ New-Item -ItemType Directory -Force -Path $output | Out-Null
 $cargoTargetPath = if ([IO.Path]::IsPathRooted($CargoTargetDir)) { [IO.Path]::GetFullPath($CargoTargetDir) } else { [IO.Path]::GetFullPath((Join-Path $root $CargoTargetDir)) }
 $cachePath = $null
 $fileNames = @('dbghelp.dll', 'dinput8.dll')
+$proxyTarget = 'x86_64-pc-windows-msvc'
+$staticFeatures = 'dbghelp-proxy/sf-static-startup,dinput8-proxy/sf-static-startup'
 $stopwatch = [Diagnostics.Stopwatch]::StartNew()
 function Copy-VerifiedProxy([string]$Source, [string]$Destination, [string]$ExpectedHash) {
     Copy-Item -LiteralPath $Source -Destination $Destination -Force
@@ -18,13 +21,37 @@ function Copy-VerifiedProxy([string]$Source, [string]$Destination, [string]$Expe
     }
 }
 try {
+    $staticImportLibrarySha256 = $null
+    if (-not $StandaloneEml) {
+        $staticImportLibrary = Join-Path $output 'ShroudForgeWinmm.lib'
+        if (-not (Test-Path -LiteralPath $staticImportLibrary -PathType Leaf)) {
+            throw 'Build the SF winmm bootstrap first (ShroudForgeWinmm.lib is required).'
+        }
+        if ((Get-Item -LiteralPath $staticImportLibrary).Length -le 0) {
+            throw 'The SF winmm import library is empty.'
+        }
+        $staticImportLibrarySha256 = (Get-FileHash -LiteralPath $staticImportLibrary -Algorithm SHA256).Hash.ToLowerInvariant()
+        if ($staticImportLibrarySha256 -cnotmatch '^[a-f0-9]{64}$') {
+            throw 'The SF winmm import library hash is invalid.'
+        }
+    }
+
     if ($ComponentCacheDirectory) {
-        $actualKey = & (Join-Path $PSScriptRoot 'get_component_cache_context.ps1') -Component proxies -NoExport
-        if ($CacheKey -and ($CacheKey -cnotmatch '^[a-f0-9]{64}$' -or $CacheKey -cne $actualKey)) {
+        # CacheKey from the build environment is the upstream source/toolchain
+        # key. Validate it before deriving a mode-specific cache directory.
+        $providedBaseKey = $CacheKey
+        $actualBaseKey = & (Join-Path $PSScriptRoot 'get_component_cache_context.ps1') -Component proxies -NoExport
+        if ($providedBaseKey -and ($providedBaseKey -cnotmatch '^[a-f0-9]{64}$' -or $providedBaseKey -cne $actualBaseKey)) {
             Write-Warning 'The proxy component cache key does not match the current sources and toolchain. Building from source without reading or publishing this cache.'
             $ComponentCacheDirectory = ''
         }
-        $CacheKey = $actualKey
+        $CacheKey = $actualBaseKey
+        if (-not $StandaloneEml) {
+            # Static ShroudForge outputs additionally bind the build mode,
+            # explicit target, feature set, and exact bootstrap import-library bytes.
+            $cacheKeyMaterial = "format=1`nbaseKey=$actualBaseKey`nmode=shroudforge-static-startup`ntarget=$proxyTarget`nimportLibrarySha256=$staticImportLibrarySha256`nfeatures=$staticFeatures"
+            $CacheKey = [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData([Text.Encoding]::UTF8.GetBytes($cacheKeyMaterial))).ToLowerInvariant()
+        }
     }
     if ($ComponentCacheDirectory) {
         $cacheRoot = if ([IO.Path]::IsPathRooted($ComponentCacheDirectory)) { [IO.Path]::GetFullPath($ComponentCacheDirectory) } else { [IO.Path]::GetFullPath((Join-Path $root $ComponentCacheDirectory)) }
@@ -68,10 +95,41 @@ try {
         Write-Host "[component-cache] proxies build key=$CacheKey"
     }
 
-    & cargo build --locked --manifest-path (Join-Path $root 'kfc-parser\Cargo.toml') --release -p dbghelp-proxy -p dinput8-proxy --target-dir $cargoTargetPath --timings
-    if ($LASTEXITCODE -ne 0) { throw 'EML-compatible Windows proxy build failed.' }
+    $priorImportDirectory = $env:SF_BOOTSTRAP_IMPORT_DIR
+    try {
+        $buildArguments = @(
+            'build'
+            '--locked'
+            '--manifest-path'
+            (Join-Path $root 'kfc-parser\Cargo.toml')
+            '--release'
+            '-p'
+            'dbghelp-proxy'
+            '-p'
+            'dinput8-proxy'
+            '--target-dir'
+            $cargoTargetPath
+            '--timings'
+        )
+        if (-not $StandaloneEml) {
+            $env:SF_BOOTSTRAP_IMPORT_DIR = $output
+            $buildArguments += @('--target', $proxyTarget, '--features', $staticFeatures)
+        }
+        & cargo @buildArguments
+        if ($LASTEXITCODE -ne 0) {
+            throw 'Windows proxy build failed.'
+        }
+    } finally {
+        $env:SF_BOOTSTRAP_IMPORT_DIR = $priorImportDirectory
+    }
+
+    $releaseOutput = if ($StandaloneEml) {
+        Join-Path $cargoTargetPath 'release'
+    } else {
+        Join-Path $cargoTargetPath "$proxyTarget/release"
+    }
     foreach ($name in $fileNames) {
-        $binary = Join-Path $cargoTargetPath "release/$name"
+        $binary = Join-Path $releaseOutput $name
         if (-not (Test-Path -LiteralPath $binary -PathType Leaf)) { throw "Windows proxy build output is missing: $binary" }
         Copy-VerifiedProxy -Source $binary -Destination (Join-Path $output $name) -ExpectedHash (Get-FileHash -LiteralPath $binary -Algorithm SHA256).Hash.ToLowerInvariant()
     }
@@ -79,7 +137,7 @@ try {
     if ($cachePath) {
         New-Item -ItemType Directory -Force -Path $cachePath | Out-Null
         $files = foreach ($name in $fileNames) {
-            $binary = Join-Path $cargoTargetPath "release/$name"
+            $binary = Join-Path $releaseOutput $name
             $binaryHash = (Get-FileHash -LiteralPath $binary -Algorithm SHA256).Hash.ToLowerInvariant()
             $cachedBinary = Join-Path $cachePath $name
             Copy-VerifiedProxy -Source $binary -Destination $cachedBinary -ExpectedHash $binaryHash
