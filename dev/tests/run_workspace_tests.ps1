@@ -24,6 +24,14 @@ if (-not $RustOnly) {
 }
 
 if ($TestGroup -in @('All', 'Main')) {
+    $preparedGenerator = Join-Path $root 'dev/hdmap-prepared-generator/Cargo.toml'
+    $preparedClosure = [Environment]::GetEnvironmentVariable('HD_PREPARED_SOURCE_CLOSURE')
+    if ($preparedClosure -cnotmatch '^[0-9a-f]{64}$') {
+        throw 'Set HD_PREPARED_SOURCE_CLOSURE to the Delivery-computed committed source closure before running prepared-generator tests.'
+    }
+    & cargo test --manifest-path $preparedGenerator --locked --release --target-dir $cargoTargetPath --timings
+    if ($LASTEXITCODE -ne 0) { throw 'Prepared generator caller tests failed.' }
+
     & cargo test --manifest-path (Join-Path $root 'Cargo.toml') --locked --release --workspace --exclude shroudforge-runtime-diagnostics --target-dir $cargoTargetPath --timings
     if ($LASTEXITCODE -ne 0) { throw 'ShroudForge workspace tests failed.' }
 }

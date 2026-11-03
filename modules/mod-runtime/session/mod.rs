@@ -17,6 +17,7 @@ use kfc::{
 };
 use mod_loader::{Mod, ModEnvironment};
 use once_cell::unsync::OnceCell;
+use std::path::PathBuf as NativePathBuf;
 
 use crate::{
     RunArgs, RuntimePhase, ShroudForgeApi,
@@ -59,6 +60,9 @@ pub struct AppState {
     asset_transaction: Cell<bool>,
     generated_asset_transaction: bool,
     defer_current_commit: bool,
+    prepared_asset_output: bool,
+    asset_input_root: NativePathBuf,
+    asset_output_root: NativePathBuf,
     asset_stem: String,
 
     // NOTE: the `Vec<u8>` must always be treated as immutable
@@ -205,7 +209,7 @@ impl AppState {
 
 impl Drop for AppState {
     fn drop(&mut self) {
-        if self.asset_transaction.get() {
+        if self.asset_transaction.get() && !self.prepared_asset_output {
             if let Err(error) = shroudforge_game_assets::transaction::abort(
                 self.env.game_dir().as_std_path(),
                 &self.asset_stem,
