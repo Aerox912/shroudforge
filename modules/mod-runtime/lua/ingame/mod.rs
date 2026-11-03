@@ -23,6 +23,7 @@ pub(crate) use crate::runtime_provider;
 mod check_ingame_access;
 use check_ingame_access::*;
 pub(crate) use check_ingame_access::{available, runtime_denial_reason};
+mod first_person;
 pub(crate) mod access_named_service;
 pub(crate) mod ecs;
 pub(crate) mod functions;
@@ -62,6 +63,7 @@ pub fn create(lua: &mlua::Lua, r#mod: Mod) -> mlua::Result<mlua::Table> {
     add_function_with_mod(lua, &player, "name", &r#mod, lua_player_name)?;
     table.raw_set("player", player)?;
     table.raw_set("map", map_overlay::create(lua, &r#mod)?)?;
+    table.raw_set("first_person", first_person::create(lua, &r#mod)?)?;
     table.raw_set("ecs", create_ecs(lua, &r#mod)?)?;
     table.raw_set("impact", impact::create(lua, &r#mod)?)?;
     table.raw_set(

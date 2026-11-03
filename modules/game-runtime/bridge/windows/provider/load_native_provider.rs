@@ -62,6 +62,34 @@ pub(in crate::windows) fn provider() -> Option<&'static Provider> {
                             "KfcRuntimeDrainMapOverlayServices",
                             DrainMapOverlayServices
                         ),
+                        first_person_available: optional_symbol!(
+                            "KfcRuntimeFirstPersonAvailable",
+                            FirstPersonAvailable
+                        ),
+                        first_person_detail: optional_symbol!(
+                            "KfcRuntimeFirstPersonDetail",
+                            FirstPersonDetail
+                        ),
+                        first_person_configure: optional_symbol!(
+                            "KfcRuntimeFirstPersonConfigure",
+                            FirstPersonConfigure
+                        ),
+                        first_person_set_mode: optional_symbol!(
+                            "KfcRuntimeFirstPersonSetMode",
+                            FirstPersonSetMode
+                        ),
+                        first_person_release_owner: optional_symbol!(
+                            "KfcRuntimeFirstPersonReleaseOwner",
+                            FirstPersonReleaseOwner
+                        ),
+                        // This marker means the provider exposes the private
+                        // held-entry route. It does not establish that startup
+                        // preparation ran or completed successfully.
+                        first_person_held_entry_prepare: !GetProcAddress(
+                            module,
+                            c"KfcRuntimePrepareHeldEntry".as_ptr(),
+                        )
+                        .is_null(),
                         configure: symbol!("KfcRuntimeEcsConfigure", Configure),
                         ready: symbol!("KfcRuntimeEcsReady", Ready),
                         prop_query_ready: optional_symbol!("KfcRuntimeEcsPropQueryReady", Ready),

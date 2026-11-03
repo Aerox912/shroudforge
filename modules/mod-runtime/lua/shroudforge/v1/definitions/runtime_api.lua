@@ -9,6 +9,7 @@
 --- @field is_client boolean True when this mod runs in a player client process.
 --- @field is_server boolean True when this mod runs in a Dedicated Server process.
 --- @field player RuntimePlayerApi Cached local character selection from the main menu.
+--- @field first_person RuntimeFirstPersonApi Owner-scoped client first-person camera control.
 --- @field map RuntimeMapApi Bounded client map snapshots from the shared native owner.
 --- @field network RuntimeNetworkApi Steam Networking Messages P2P channel on the current client or dedicated-server process.
 --- @field services RuntimeServicesApi Reflected views of original named engine DI services with independently validated plain-data storage contracts.
@@ -1009,3 +1010,14 @@ function RuntimeMapApi.get_fog(offset, count, generation, revision) end
 ---@return table? status
 ---@return string? reason
 function RuntimeMapApi.get_status() end
+
+---@class RuntimeFirstPersonApi
+local RuntimeFirstPersonApi = {}
+---Set this mod owner's first-person camera mode on an admitted client build.
+---cameraDistance must be finite and between -0.5 and 0.5. The native provider
+---validates the exact camera and gauge controls for the current client image.
+---@param enabled boolean
+---@param cameraDistance number Camera offset in the admitted native range [-0.5, 0.5].
+---@return boolean ok
+---@return string? reason
+function RuntimeFirstPersonApi.set_mode(enabled, cameraDistance) end

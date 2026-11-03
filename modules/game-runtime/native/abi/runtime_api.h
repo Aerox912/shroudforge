@@ -22,6 +22,11 @@ extern "C" {
 
 /* Stable C ABI for native modloader hosts. Query KfcRuntimeAbi before use. */
 #define KFC_RUNTIME_ABI_VERSION 12u
+#define KFC_RUNTIME_FIRST_PERSON_READY 0u
+#define KFC_RUNTIME_FIRST_PERSON_UNSUPPORTED_BUILD 1u
+#define KFC_RUNTIME_FIRST_PERSON_INVALID_ARGUMENT 2u
+#define KFC_RUNTIME_FIRST_PERSON_OWNER_CONFLICT 3u
+#define KFC_RUNTIME_FIRST_PERSON_FAILED 4u
 KFC_RUNTIME_API uint32_t KFC_RUNTIME_CALL KfcRuntimeAbi(void);
 KFC_RUNTIME_API bool KFC_RUNTIME_CALL KfcRuntimeInitialize(void);
 /* Optional ABI12 pre-entry cache: required hook publication only. No World,
@@ -356,6 +361,18 @@ KFC_RUNTIME_API bool KFC_RUNTIME_CALL KfcRuntimeWorldEntityFinishBuilding(
 KFC_RUNTIME_API bool KFC_RUNTIME_CALL KfcRuntimePatchAvailable(const char* name);
 KFC_RUNTIME_API bool KFC_RUNTIME_CALL KfcRuntimePatchSetEnabled(
     const char* name, bool enabled, uint32_t* outcome);
+
+/* Optional ABI-12 owner-scoped First Person controls. These five exports do not
+   change the base ABI. Access requires the private held-entry startup route and
+   exact-build profile admission; release remains idempotent after admission changes. */
+KFC_RUNTIME_API bool KFC_RUNTIME_CALL KfcRuntimeFirstPersonAvailable(void);
+KFC_RUNTIME_API size_t KFC_RUNTIME_CALL KfcRuntimeFirstPersonDetail(char* buffer, size_t capacity);
+KFC_RUNTIME_API uint32_t KFC_RUNTIME_CALL KfcRuntimeFirstPersonConfigure(
+    uint64_t owner_token, double camera_distance);
+KFC_RUNTIME_API uint32_t KFC_RUNTIME_CALL KfcRuntimeFirstPersonSetMode(
+    uint64_t owner_token, bool enabled);
+KFC_RUNTIME_API uint32_t KFC_RUNTIME_CALL KfcRuntimeFirstPersonReleaseOwner(
+    uint64_t owner_token);
 
 #if defined(__cplusplus)
 }

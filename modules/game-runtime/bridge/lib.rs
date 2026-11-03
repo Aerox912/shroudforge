@@ -15,5 +15,9 @@ pub use unsupported_platform::*;
 #[path = "building_input.rs"]
 pub mod player_input;
 
+pub const fn first_person_operation_name() -> &'static str {
+    "runtime.first_person.set_mode"
+}
+
 mod map_views;
 pub use map_views::{map_summary,map_markers,map_fog,map_overlay_status};

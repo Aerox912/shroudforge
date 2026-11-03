@@ -216,3 +216,33 @@ pub fn drain_map_overlay_services(_:&str,_:u64,_:u32)->i32 {0}
 #[derive(Debug,Clone,Copy,Default)]
 pub struct InputKeyState {pub virtual_key:u32,pub flags:u32,pub sequence:u64,pub sampled_at_ms:u64}
 pub fn read_input_keys(_:&[u32])->Result<Vec<InputKeyState>,i32> {Err(3)}
+
+pub fn first_person_available() -> bool {
+    false
+}
+
+pub fn first_person_detail() -> String {
+    "native first-person control is available on Windows only".into()
+}
+
+pub fn first_person_set_mode(_: u64, _: bool, _: f64) -> Result<(), String> {
+    Err(first_person_detail())
+}
+
+/// No native first-person owner can exist on a platform without the provider.
+pub fn first_person_release_owner(_: u64) -> Result<(), String> {
+    Ok(())
+}
+
+#[cfg(test)]
+mod first_person_tests {
+    use super::*;
+
+    #[test]
+    fn unsupported_platform_fails_closed_and_owner_release_is_idempotent() {
+        assert!(!first_person_available());
+        assert!(first_person_detail().contains("Windows only"));
+        assert!(first_person_set_mode(1, true, 0.0).is_err());
+        assert!(first_person_release_owner(1).is_ok());
+    }
+}
