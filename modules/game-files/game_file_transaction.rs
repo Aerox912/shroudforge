@@ -64,6 +64,9 @@ fn replace(source: &Path, target: &Path) -> io::Result<()> {
 
 pub fn recover(root: &Path, stem: &str) -> io::Result<()> {
     let stage = directory(root, stem);
+    if stage.join(PREPARED_MARKER).exists() {
+        return Err(non_publishable_prepared());
+    }
     if stage.join("generated-pending.json").exists() {
         return recover_generated(root, stem);
     }
@@ -97,6 +100,16 @@ type Stamp = (u64, String);
 type GeneratedRecord = (String, Option<Stamp>, Stamp);
 type GeneratedJournal = (u32, String, Vec<GeneratedRecord>);
 type GeneratedInputs = (u32, String, Stamp, Stamp);
+type PreparedMarker = (u32, String, String);
+
+const PREPARED_MARKER: &str = "prepared-only.json";
+
+fn non_publishable_prepared() -> io::Error {
+    io::Error::new(
+        io::ErrorKind::PermissionDenied,
+        "prepared generated assets cannot be published or recovered",
+    )
+}
 
 fn regular_file(path: &Path) -> io::Result<bool> {
     match fs::symlink_metadata(path) {
@@ -176,14 +189,22 @@ fn generated_inventory(stage: &Path, stem: &str) -> io::Result<Vec<String>> {
         if !valid_name(stem, &name)
             && !matches!(
                 name.as_str(),
-                "generated-inputs.json" | "generated-pending.json" | "generated-journal.tmp"
+                "generated-inputs.json"
+                    | "generated-pending.json"
+                    | "generated-journal.tmp"
+                    | PREPARED_MARKER
             )
         {
             return Err(invalid());
         }
         names.push(name);
     }
-    if names.len() > 515 {
+    let limit = if names.iter().any(|name| name == PREPARED_MARKER) {
+        516
+    } else {
+        515
+    };
+    if names.len() > limit {
         return Err(invalid());
     }
     Ok(names)
@@ -215,6 +236,92 @@ pub fn begin_generated(root: &Path, stem: &str) -> io::Result<PathBuf> {
     Ok(stage)
 }
 
+/// Validate a separate prepared-output directory without creating or recovering
+/// a transaction. Prepared runs never use the source-root recovery path.
+pub fn validate_prepared_output(
+    source_root: &Path,
+    output_root: &Path,
+    stem: &str,
+) -> io::Result<PathBuf> {
+    let source = PathBuf::from(generated_root(source_root, stem)?);
+    let output = PathBuf::from(generated_root(output_root, stem)?);
+    if source.starts_with(&output) || output.starts_with(&source) {
+        return Err(invalid());
+    }
+
+    let stage = directory(&output, stem);
+    match fs::symlink_metadata(&stage) {
+        Ok(_) => {
+            return Err(io::Error::new(
+                io::ErrorKind::AlreadyExists,
+                "prepared generated-output stage already exists",
+            ));
+        }
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+        Err(error) => return Err(error),
+    }
+    Ok(output)
+}
+
+/// Validate the staged mod/config environment, asset input, and generated
+/// output roots. Canonical paths must be pairwise disjoint.
+pub fn validate_prepared_roots(
+    environment_root: &Path,
+    source_root: &Path,
+    output_root: &Path,
+    stem: &str,
+) -> io::Result<(PathBuf, PathBuf)> {
+    let environment = PathBuf::from(generated_root(environment_root, stem)?);
+    let source = PathBuf::from(generated_root(source_root, stem)?);
+    let output = PathBuf::from(generated_root(output_root, stem)?);
+    let roots = [&environment, &source, &output];
+    for left in 0..roots.len() {
+        for right in left + 1..roots.len() {
+            if roots[left].starts_with(roots[right]) || roots[right].starts_with(roots[left]) {
+                return Err(invalid());
+            }
+        }
+    }
+    validate_prepared_output(&source, &output, stem)?;
+    Ok((source, output))
+}
+
+/// Begin a private prepared stage under a separate output root. This records
+/// source preimages and never recovers, publishes, or cleans the source root.
+pub fn begin_generated_prepared(
+    source_root: &Path,
+    output_root: &Path,
+    stem: &str,
+) -> io::Result<PathBuf> {
+    let output = validate_prepared_output(source_root, output_root, stem)?;
+    let source_identity = generated_root(source_root, stem)?;
+    let output_identity = generated_root(&output, stem)?;
+    let source = PathBuf::from(&source_identity);
+    let inputs: GeneratedInputs = (
+        1,
+        source_identity.clone(),
+        stamp(&source.join(format!("{stem}.kfc")))?,
+        stamp(&source.join(format!("{stem}.kfc_resources")))?,
+    );
+
+    let stage = directory(&output, stem);
+    fs::create_dir(&stage)?;
+    let marker = stage.join(PREPARED_MARKER);
+    let marker_contents: PreparedMarker = (1, source_identity, output_identity);
+    fs::write(
+        &marker,
+        serde_json::to_vec(&marker_contents).map_err(|_| invalid())?,
+    )?;
+    sync(&marker)?;
+    let inputs_path = stage.join("generated-inputs.json");
+    fs::write(
+        &inputs_path,
+        serde_json::to_vec(&inputs).map_err(|_| invalid())?,
+    )?;
+    sync(&inputs_path)?;
+    Ok(stage)
+}
+
 fn preserves_prefix(original: &Path, generated: &Path) -> io::Result<bool> {
     use std::io::Read;
     let mut original = fs::File::open(original)?;
@@ -232,13 +339,32 @@ fn preserves_prefix(original: &Path, generated: &Path) -> io::Result<bool> {
     }
 }
 
-fn prepare_generated(root: &Path, stem: &str) -> io::Result<()> {
-    let identity = generated_root(root, stem)?;
-    let stage = directory(root, stem);
-    let mut names = generated_inventory(&stage, stem)?;
+fn validate_generated_stage(
+    source_root: &Path,
+    stage: &Path,
+    stem: &str,
+    prepared_output_root: Option<&Path>,
+) -> io::Result<(String, Vec<String>, Stamp, Stamp)> {
+    let identity = generated_root(source_root, stem)?;
+    if let Some(output_root) = prepared_output_root {
+        let output_identity = generated_root(output_root, stem)?;
+        let source = PathBuf::from(&identity);
+        let output = PathBuf::from(&output_identity);
+        if source.starts_with(&output) || output.starts_with(&source) {
+            return Err(invalid());
+        }
+        let marker: PreparedMarker = read_generated_json(&stage.join(PREPARED_MARKER))?;
+        if marker != (1, identity.clone(), output_identity) {
+            return Err(invalid());
+        }
+    } else if stage.join(PREPARED_MARKER).exists() {
+        return Err(non_publishable_prepared());
+    }
+
+    let mut names = generated_inventory(stage, stem)?;
     if names
         .iter()
-        .any(|n| n == "generated-pending.json" || n == "generated-journal.tmp")
+        .any(|name| name == "generated-pending.json" || name == "generated-journal.tmp")
     {
         return Err(invalid());
     }
@@ -247,12 +373,53 @@ fn prepare_generated(root: &Path, stem: &str) -> io::Result<()> {
     if version != 1 || identity != expected_root {
         return Err(invalid());
     }
+    if stamp(&source_root.join(format!("{stem}.kfc")))? != index
+        || stamp(&source_root.join(format!("{stem}.kfc_resources")))? != resources
+    {
+        return Err(invalid());
+    }
     names.retain(|name| valid_name(stem, name));
     let index_name = format!("{stem}.kfc");
     let resources_name = format!("{stem}.kfc_resources");
     if !names.contains(&index_name) || !names.contains(&resources_name) {
         return Err(invalid());
     }
+    if !preserves_prefix(
+        &source_root.join(&resources_name),
+        &stage.join(&resources_name),
+    )? {
+        return Err(invalid());
+    }
+    for name in &names {
+        stamp(&stage.join(name))?;
+    }
+    Ok((identity, names, index, resources))
+}
+
+/// Validate prepared output against the source preimages and retained resource
+/// prefix. This reads both roots and does not publish or recover either root.
+pub fn validate_generated_prepared(
+    source_root: &Path,
+    output_root: &Path,
+    stem: &str,
+) -> io::Result<()> {
+    let source_identity = generated_root(source_root, stem)?;
+    let output_identity = generated_root(output_root, stem)?;
+    let source = PathBuf::from(source_identity);
+    let output = PathBuf::from(output_identity);
+    if source.starts_with(&output) || output.starts_with(&source) {
+        return Err(invalid());
+    }
+    validate_generated_stage(&source, &directory(&output, stem), stem, Some(&output))?;
+    Ok(())
+}
+
+fn prepare_generated(root: &Path, stem: &str) -> io::Result<()> {
+    let stage = directory(root, stem);
+    let (identity, mut names, index, resources) =
+        validate_generated_stage(root, &stage, stem, None)?;
+    let index_name = format!("{stem}.kfc");
+    let resources_name = format!("{stem}.kfc_resources");
     names.sort_by_key(|name| (name == &index_name, name.clone()));
     let mut records = Vec::new();
     for name in names {
@@ -297,6 +464,9 @@ fn prepare_generated(root: &Path, stem: &str) -> io::Result<()> {
 fn recover_generated(root: &Path, stem: &str) -> io::Result<()> {
     let identity = generated_root(root, stem)?;
     let stage = directory(root, stem);
+    if stage.join(PREPARED_MARKER).exists() {
+        return Err(non_publishable_prepared());
+    }
     let names = generated_inventory(&stage, stem)?;
     let (version, expected_root, records): GeneratedJournal =
         read_generated_json(&stage.join("generated-pending.json"))?;
@@ -661,5 +831,70 @@ mod tests {
         fs::write(stage.join("generated-pending.json"), journal).unwrap();
         recover(&root, "game").unwrap();
         remove_fixture(&root);
+    }
+
+    #[test]
+    fn prepared_generation_uses_separate_unpublishable_output_stage() {
+        let source = fixture();
+        let output = source.with_file_name(format!("game-output-{}", uuid::Uuid::new_v4()));
+        fs::create_dir(&output).unwrap();
+        let before_index = fs::read(source.join("game.kfc")).unwrap();
+        let before_resources = fs::read(source.join("game.kfc_resources")).unwrap();
+
+        let stage = begin_generated_prepared(&source, &output, "game").unwrap();
+        assert!(stage.join(PREPARED_MARKER).is_file());
+        assert!(recover(&output, "game").is_err());
+        assert!(commit(&output, "game").is_err());
+        assert!(commit_generated(&output, "game").is_err());
+        assert!(abort(&output, "game").is_err());
+        assert_eq!(fs::read(source.join("game.kfc")).unwrap(), before_index);
+        assert_eq!(
+            fs::read(source.join("game.kfc_resources")).unwrap(),
+            before_resources
+        );
+        assert!(stage.join(PREPARED_MARKER).is_file());
+
+        fs::remove_dir_all(&stage).unwrap();
+        fs::remove_dir(&output).unwrap();
+        remove_fixture(&source);
+    }
+
+    #[test]
+    fn prepared_generation_rejects_nested_roots_and_existing_stage() {
+        let source = fixture();
+        let nested_output = source.join("prepared-output");
+        fs::create_dir(&nested_output).unwrap();
+        assert!(validate_prepared_output(&source, &nested_output, "game").is_err());
+        fs::remove_dir(&nested_output).unwrap();
+
+        let output = source.with_file_name(format!("game-output-{}", uuid::Uuid::new_v4()));
+        fs::create_dir(&output).unwrap();
+        let stage = begin_generated_prepared(&source, &output, "game").unwrap();
+        assert!(begin_generated_prepared(&source, &output, "game").is_err());
+        fs::remove_dir_all(stage).unwrap();
+        fs::remove_dir(output).unwrap();
+        remove_fixture(&source);
+    }
+
+    #[test]
+    fn prepared_validation_checks_source_preimages_and_resource_prefix() {
+        let source = fixture();
+        let output = source.with_file_name(format!("game-output-{}", uuid::Uuid::new_v4()));
+        fs::create_dir(&output).unwrap();
+        let stage = begin_generated_prepared(&source, &output, "game").unwrap();
+        fs::write(stage.join("game.kfc"), b"new-index").unwrap();
+        fs::write(stage.join("game.kfc_resources"), b"old-data-appended").unwrap();
+        validate_generated_prepared(&source, &output, "game").unwrap();
+
+        fs::write(source.join("game.kfc"), b"changed-index").unwrap();
+        assert!(validate_generated_prepared(&source, &output, "game").is_err());
+        assert_eq!(
+            fs::read(stage.join("game.kfc_resources")).unwrap(),
+            b"old-data-appended"
+        );
+
+        fs::remove_dir_all(&stage).unwrap();
+        fs::remove_dir(&output).unwrap();
+        remove_fixture(&source);
     }
 }
