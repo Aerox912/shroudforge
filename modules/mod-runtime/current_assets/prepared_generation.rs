@@ -1,0 +1,174 @@
+//! Admission for the exact isolated preparation worker, not a new writer.
+//! Original schema3/4 receipts and their producer identities remain unchanged.
+use super::*;
+
+#[derive(Clone,Serialize,Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PreparedRequest {
+    schema:u32,target_root:PathBuf,asset_input_root:PathBuf,
+    environment_root:PathBuf,output_root:PathBuf,selected_ids:Vec<String>,
+    inputs:BTreeMap<String,FileStamp>,environment_files:BTreeMap<String,FileStamp>,
+}
+#[derive(Clone,Serialize,Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PreparedReceipt {
+    schema:u32,source_closure:String,request_sha256:String,target_root:PathBuf,
+    output_stage:PathBuf,staged:BTreeMap<String,FileStamp>,prepared_marker:FileStamp,
+}
+#[derive(Clone,Serialize,Deserialize)]
+#[serde(rename_all="camelCase",deny_unknown_fields)]
+struct PreparedPolicy {
+    schema_version:u32,owner:String,root:PathBuf,source_closure:String,
+    request_json:String,request_sha256:String,receipt_json:String,receipt_sha256:String,
+    extended_zoom:bool,preserved_loaders:BTreeMap<String,String>,
+}
+
+fn path_key(path:&Path)->Result<String> {
+    use std::path::Component;
+    ensure!(path.is_absolute()&&!path.components().any(|c|matches!(c,Component::CurDir|Component::ParentDir)),"noncanonical prepared provenance path");
+    let text=path.to_str().context("nonUTF8 preparation path")?;
+    let text=text.strip_prefix("\\\\?\\").unwrap_or(text).replace('\\',"/").to_ascii_lowercase();
+    ensure!(text.len()>=3&&text.as_bytes()[0].is_ascii_alphabetic()&&&text[1..3]==":/","native drive path required");
+    Ok(text.trim_end_matches('/').into())
+}
+fn overlaps(a:&str,b:&str)->bool {a==b||a.starts_with(&format!("{b}/"))||b.starts_with(&format!("{a}/"))}
+fn same(a:&FileStamp,b:&FileStamp)->bool {a.bytes==b.bytes&&a.sha256==b.sha256}
+
+pub(super) fn verify(root:&Path)->Result<()> {
+    // Optional at compile time; absence leaves only this new mode closed.
+    let producer=option_env!("HD_PREPARED_SOURCE_CLOSURE").context("prepared producer not compiled into runtime")?;
+    ensure!(valid_digest(producer),"invalid compiled preparation identity");
+    for parent in root.ancestors(){ensure!(plain(parent)?.is_dir(),"invalid prepared target root");}
+    let root=fs::canonicalize(root)?;
+    let _outer=manager_lease(&root)?;let _startup=lease(&root)?;
+    ensure!(!transaction::directory(&root,STEM).exists(),"asset publication remains pending");
+    for name in [STATE,PENDING] {ensure!(!joined(&root,name)?.exists(),"conflicting native asset owner");}
+    let policy:PreparedPolicy=read_json(&joined(&root,POLICY)?)?;
+    ensure!(policy.schema_version==5&&policy.owner=="hdmap-prepared-generator"&&policy.source_closure==producer&&fs::canonicalize(&policy.root)?==root,"prepared startup owner differs");
+    ensure!(valid_digest(&policy.request_sha256)&&digest(policy.request_json.as_bytes())==policy.request_sha256&&valid_digest(&policy.receipt_sha256)&&digest(policy.receipt_json.as_bytes())==policy.receipt_sha256,"prepared evidence digest differs");
+    let request:PreparedRequest=serde_json::from_str(&policy.request_json)?;
+    let receipt:PreparedReceipt=serde_json::from_str(&policy.receipt_json)?;
+    ensure!(request.schema==1&&receipt.schema==1&&receipt.source_closure==producer&&receipt.request_sha256==digest(&serde_json::to_vec(&request)?),"prepared receipt producer/request differs");
+    ensure!(fs::canonicalize(&request.target_root)?==root&&fs::canonicalize(&request.asset_input_root)?==root&&receipt.target_root==root,"prepared receipt retargeting rejected");
+    let source=path_key(&root)?;let environment=path_key(&request.environment_root)?;let output=path_key(&request.output_root)?;
+    ensure!(environment.starts_with("e:/")&&output.starts_with("e:/")&&!overlaps(&source,&environment)&&!overlaps(&source,&output)&&!overlaps(&environment,&output),"prepared root ownership differs");
+    ensure!(path_key(&receipt.output_stage)?==format!("{output}/.enshrouded.shroudforge-stage"),"prepared stage binding differs");
+    ensure!(valid_digest(&receipt.prepared_marker.sha256)&&receipt.prepared_marker.bytes>0,"prepared marker identity missing");
+    ensure!(!request.inputs.is_empty()&&request.inputs.len()<=10000&&request.environment_files.len()<=10000&&receipt.staged.len()<=512,"oversized prepared composition");
+    let ids:BTreeSet<_>=request.selected_ids.iter().cloned().collect();
+    ensure!(!ids.is_empty()&&ids.len()==request.selected_ids.len(),"invalid prepared selection");
+    for id in &ids {ensure!(!id.is_empty()&&id.len()<=128&&id.bytes().all(|c|c.is_ascii_alphanumeric()||b"_-".contains(&c))&&!id.to_ascii_lowercase().replace(['-','_'],"").contains("autoloot"),"unqualified prepared selection");}
+    for name in ["enshrouded.exe","enshrouded.kfc","enshrouded.kfc_resources"] {ensure!(request.inputs.contains_key(name),"incomplete prepared baseline");}
+    for name in ["enshrouded.kfc","enshrouded.kfc_resources","generated-inputs.json"] {ensure!(receipt.staged.contains_key(name),"incomplete prepared output");}
+    let mut aliases=BTreeSet::new();
+    for (name,value) in &request.environment_files {
+        checked(&root,name)?;
+        ensure!(aliases.insert(name.to_ascii_lowercase())&&valid_digest(&value.sha256),"invalid prepared environment identity");
+        if name.starts_with("mods/") {ensure!(request.inputs.get(name).is_some_and(|v|same(v,value)),"unbound prepared package");}
+    }
+    aliases.clear();
+    for (name,value) in &request.inputs {
+        ensure!(aliases.insert(name.to_ascii_lowercase())&&valid_digest(&value.sha256),"invalid prepared input");
+        if !(asset(name)||name=="enshrouded.exe") {ensure!(name.starts_with("mods/")&&request.environment_files.get(name).is_some_and(|v|same(v,value)),"prepared package input differs");}
+        let path=checked(&root,name)?;
+        if asset(name)&&name.ends_with(".dat") {ensure!(plain(&path)?.is_file()&&fs::metadata(path)?.len()==value.bytes,"baseline DAT membership/size differs");}
+        else if !receipt.staged.contains_key(name) {exact(&root,name,value)?;}
+    }
+    aliases.clear();
+    for (name,value) in &receipt.staged {
+        ensure!(aliases.insert(name.to_ascii_lowercase())&&valid_digest(&value.sha256)&&(asset(name)||name=="generated-inputs.json"),"invalid prepared output member");
+        if asset(name) {
+            if name.ends_with(".dat") {ensure!(!request.inputs.contains_key(name),"prepared DAT overlaps baseline");}
+            exact(&root,name,value)?;
+        }
+    }
+    let expected:BTreeSet<_>=request.inputs.keys().chain(receipt.staged.keys()).filter(|n|asset(n)).cloned().collect();
+    let mut actual=BTreeSet::new();
+    for entry in fs::read_dir(&root)? {let name=entry?.file_name().into_string().map_err(|_|anyhow::anyhow!("nonUTF8 target asset"))?;if asset(&name.to_ascii_lowercase()){ensure!(name==name.to_ascii_lowercase(),"target asset alias");actual.insert(name);}}
+    ensure!(actual==expected,"prepared asset membership differs");
+    ensure!(policy.preserved_loaders.keys().all(|n|matches!(n.as_str(),"winmm.dll"|"dbgcore.dll")),"prepared loader contract differs");
+    for (name,hash) in &policy.preserved_loaders {ensure!(valid_digest(hash)&&stamp(&checked(&root,name)?)?.1==*hash,"prepared loader drift");}
+    if ids.contains("esm-real-map") {
+        ensure!(policy.preserved_loaders.contains_key("winmm.dll")&&request.inputs.contains_key(MAP_EXTENSION),"prepared HD dependency missing");
+        let extension:serde_json::Value=read_json(&checked(&root,MAP_EXTENSION)?)?;
+        let configured=extension.pointer("/settings/ExtendedZoom/value").and_then(serde_json::Value::as_bool).or_else(||extension.pointer("/settings/ExtendedZoom").and_then(serde_json::Value::as_bool)).context("missing prepared ExtendedZoom setting")?;
+        ensure!(extension["enabled"].as_bool()==Some(true)&&configured==policy.extended_zoom,"prepared HD settings differ");
+    } else {ensure!(!policy.extended_zoom,"prepared zoom requires HD selection");}
+    zoom_demand::publish(&root,policy.extended_zoom,&request.inputs["enshrouded.exe"].sha256);
+    let mask=u32::from(policy.preserved_loaders.contains_key("winmm.dll"))|(u32::from(policy.preserved_loaders.contains_key("dbgcore.dll"))<<1);
+    LOADERS.with(|slot|*slot.borrow_mut()=Some((root,mask)));
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    struct Fixture {root:PathBuf,policy:PreparedPolicy}
+    impl Fixture {
+        fn new()->Self {
+            let parent=PathBuf::from("E:/Scratch/hdmap-prepared-admission-tests");fs::create_dir_all(&parent).unwrap();
+            let root=parent.join(format!("case-{}-{}",std::process::id(),std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
+            for name in [".EnshroudedClientMods","shroudforge/config","mods/esm-real-map"] {fs::create_dir_all(root.join(name)).unwrap();}
+            let root=fs::canonicalize(root).unwrap();
+            for name in ["enshrouded.exe","enshrouded.kfc","enshrouded.kfc_resources","enshrouded_000.dat","enshrouded_001.dat","winmm.dll",".EnshroudedClientMods/operation.lock","mods/esm-real-map/mod.lua"] {fs::write(root.join(name),format!("synthetic-{name}")).unwrap();}
+            fs::write(root.join(MAP_EXTENSION),br#"{"schemaVersion":1,"enabled":true,"settings":{"ExtendedZoom":{"value":false}}}"#).unwrap();
+            let value=|name:&str|{let (bytes,sha256)=stamp(&root.join(name)).unwrap();FileStamp{bytes,sha256}};
+            let inputs=["enshrouded.exe","enshrouded.kfc","enshrouded.kfc_resources","enshrouded_000.dat",MAP_EXTENSION,"mods/esm-real-map/mod.lua"].into_iter().map(|n|(n.into(),value(n))).collect();
+            let environment_files=[MAP_EXTENSION,"mods/esm-real-map/mod.lua"].into_iter().map(|n|(n.into(),value(n))).collect();
+            let environment_root=root.with_file_name(format!("{}-environment",root.file_name().unwrap().to_string_lossy()));
+            let output_root=root.with_file_name(format!("{}-output",root.file_name().unwrap().to_string_lossy()));
+            let request=PreparedRequest {schema:1,target_root:root.clone(),asset_input_root:root.clone(),environment_root,output_root:output_root.clone(),selected_ids:vec!["esm-real-map".into()],inputs,environment_files};
+            let mut staged:BTreeMap<_,_>=["enshrouded.kfc","enshrouded.kfc_resources","enshrouded_001.dat"].into_iter().map(|n|(n.into(),value(n))).collect();
+            staged.insert("generated-inputs.json".into(),FileStamp{bytes:123,sha256:digest(b"synthetic durable generation preimages")});
+            let receipt=PreparedReceipt {schema:1,source_closure:option_env!("HD_PREPARED_SOURCE_CLOSURE").unwrap().into(),request_sha256:digest(&serde_json::to_vec(&request).unwrap()),target_root:root.clone(),output_stage:output_root.join(".enshrouded.shroudforge-stage"),staged,prepared_marker:FileStamp{bytes:100,sha256:digest(b"synthetic prepared marker")}};
+            let request_json=serde_json::to_string(&request).unwrap();let receipt_json=serde_json::to_string(&receipt).unwrap();
+            let policy=PreparedPolicy {schema_version:5,owner:"hdmap-prepared-generator".into(),root:root.clone(),source_closure:receipt.source_closure.clone(),request_sha256:digest(request_json.as_bytes()),receipt_sha256:digest(receipt_json.as_bytes()),request_json,receipt_json,extended_zoom:false,preserved_loaders:[("winmm.dll".into(),value("winmm.dll").sha256)].into_iter().collect()};
+            Self {root,policy}
+        }
+        fn write(&self){fs::write(self.root.join(POLICY),serde_json::to_vec(&self.policy).unwrap()).unwrap();}
+        fn asset_hashes(&self)->BTreeMap<String,(u64,String)> {fs::read_dir(&self.root).unwrap().map(|e|e.unwrap()).filter_map(|e|{let name=e.file_name().to_string_lossy().into_owned();asset(&name).then(||(name,stamp(&e.path()).unwrap()))}).collect()}
+        fn edit_request(&mut self,edit:impl FnOnce(&mut PreparedRequest)) {
+            let mut request:PreparedRequest=serde_json::from_str(&self.policy.request_json).unwrap();edit(&mut request);
+            self.policy.request_json=serde_json::to_string(&request).unwrap();self.policy.request_sha256=digest(self.policy.request_json.as_bytes());
+            self.edit_receipt(|r|r.request_sha256=digest(&serde_json::to_vec(&request).unwrap()));
+        }
+        fn edit_receipt(&mut self,edit:impl FnOnce(&mut PreparedReceipt)) {
+            let mut receipt:PreparedReceipt=serde_json::from_str(&self.policy.receipt_json).unwrap();edit(&mut receipt);
+            self.policy.receipt_json=serde_json::to_string(&receipt).unwrap();self.policy.receipt_sha256=digest(self.policy.receipt_json.as_bytes());
+        }
+    }
+    impl Drop for Fixture {fn drop(&mut self){if let (Ok(path),Ok(parent))=(fs::canonicalize(&self.root),fs::canonicalize("E:/Scratch/hdmap-prepared-admission-tests")){if path.parent()==Some(parent.as_path())&&plain(&path).is_ok(){let _=fs::remove_dir_all(path);}}}}
+
+    #[test]
+    fn synthetic_prepared_receipt_admits_committed_bytes_without_asset_writes() {
+        let f=Fixture::new();f.write();let before=f.asset_hashes();
+        assert!(super::super::super::prepare(&f.root).unwrap());
+        assert_eq!(f.asset_hashes(),before);
+        assert_eq!(take_loader_demand(&f.root),0x80000001);
+        assert_eq!(zoom_demand::take(&f.root),0);
+        assert!(!transaction::directory(&f.root,STEM).exists());
+        assert!(!f.root.join("enshrouded.kfc.bak").exists());
+    }
+    #[test]
+    fn rehashed_wrong_producer_roots_selection_outputs_and_dependencies_still_refuse() {
+        for case in 0..10 {
+            let mut f=Fixture::new();
+            match case {
+                0=>f.policy.source_closure="0".repeat(64),
+                1=>f.edit_receipt(|r|r.source_closure="0".repeat(64)),
+                2=>f.edit_request(|r|r.asset_input_root=r.environment_root.clone()),
+                3=>f.edit_request(|r|r.selected_ids=vec!["Auto_Loot".into()]),
+                4=>f.edit_receipt(|r|r.target_root=r.output_stage.clone()),
+                5=>f.edit_receipt(|r|r.staged.get_mut("enshrouded.kfc").unwrap().sha256="0".repeat(64)),
+                6=>{f.policy.preserved_loaders.clear();},
+                7=>f.edit_request(|r|r.output_root=r.environment_root.clone()),
+                8=>f.edit_receipt(|r|r.output_stage=r.target_root.join(".enshrouded.shroudforge-stage")),
+                9=>{fs::write(f.root.join("enshrouded_999.dat"),b"unknown").unwrap();},
+                _=>unreachable!(),
+            }
+            f.write();let before=f.asset_hashes();
+            assert!(super::super::super::prepare(&f.root).is_err(),"case{case}");
+            assert_eq!(f.asset_hashes(),before);assert_eq!(take_loader_demand(&f.root),0);
+        }
+    }
+}

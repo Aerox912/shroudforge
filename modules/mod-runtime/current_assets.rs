@@ -698,6 +698,10 @@ pub fn prepare(root: &Path) -> Result<bool> {
     // This ownership mode validates published bytes and hands off zoom demand;
     // it must never enter the map-only recipe or a baseline/backup path.
     let document: serde_json::Value = read_json(&policy_path)?;
+    if document.get("schemaVersion").and_then(serde_json::Value::as_u64) == Some(5) {
+        manager_generation::verify_prepared(root)?;
+        return Ok(true);
+    }
     if document.get("schemaVersion").and_then(serde_json::Value::as_u64) == Some(4) {
         manager_generation::verify_forward(root)?;
         return Ok(true);
