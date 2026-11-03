@@ -4,10 +4,12 @@ Create the schema-1 committed source receipt required by prepared-generator test
 
 .DESCRIPTION
 The receipt binds the clean root commit/tree, all three root gitlinks, and the
-two Cargo lockfiles. Lockfile hashes cover the exact bytes in the clean
-checkout; CRLF and LF checkouts can therefore produce different lockfile
-hashes. No newline normalization is applied. JSON is UTF-8 without a BOM, uses
-LF line endings, two-space indentation, and fixed field/path ordering.
+two Cargo lockfiles. The receipt hash is exported under every compile-time
+source-closure variable used by the Main tests. Lockfile hashes cover the exact
+bytes in the clean checkout; CRLF and LF checkouts can therefore produce
+different lockfile hashes. No newline normalization is applied. JSON is UTF-8
+without a BOM, uses LF line endings, two-space indentation, and fixed
+field/path ordering.
 #>
 [CmdletBinding()]
 param(
@@ -35,6 +37,70 @@ $expectedLockfilePaths = @(
     'Cargo.lock',
     'dev/hdmap-prepared-generator/Cargo.lock'
 )
+$sourceClosureEnvironmentNames = @(
+    'HD_PREPARED_SOURCE_CLOSURE',
+    'SF_HD_FORWARD_SOURCE_CLOSURE',
+    'SF_FULL_PREPARED_SOURCE_CLOSURE',
+    'SF_FULL_RUNTIME_SOURCE_CLOSURE'
+)
+
+function Get-SourceClosureEnvironmentNames {
+    return @($sourceClosureEnvironmentNames)
+}
+
+function Assert-SourceClosureEnvironmentBindings {
+    param(
+        [Parameter(Mandatory)][Collections.IDictionary]$Bindings,
+        [Parameter(Mandatory)][string]$ManifestHash
+    )
+
+    if ($ManifestHash -cnotmatch '^[0-9a-f]{64}$') {
+        throw 'The prepared source closure hash must be lowercase SHA-256.'
+    }
+    foreach ($name in $sourceClosureEnvironmentNames) {
+        if (-not $Bindings.Contains($name) -or [string]$Bindings[$name] -cne $ManifestHash) {
+            throw "$name must equal the persisted prepared source closure SHA-256."
+        }
+    }
+}
+
+function Add-SourceClosureEnvironmentBindings {
+    param(
+        [Parameter(Mandatory)][string]$EnvironmentPath,
+        [Parameter(Mandatory)][string]$ManifestHash
+    )
+
+    if ($ManifestHash -cnotmatch '^[0-9a-f]{64}$') {
+        throw 'The prepared source closure hash must be lowercase SHA-256.'
+    }
+    if (-not (Test-Path -LiteralPath $EnvironmentPath -PathType Leaf)) {
+        throw 'The GitHub environment file does not exist.'
+    }
+
+    $environmentBytes = [IO.File]::ReadAllBytes($EnvironmentPath)
+    $environmentText = $utf8NoBom.GetString($environmentBytes)
+    $environmentForScan = $environmentText.TrimStart([char]0xFEFF)
+    $existingNames = [Collections.Generic.List[string]]::new()
+    foreach ($name in $sourceClosureEnvironmentNames) {
+        $pattern = '(?im)^' + [Regex]::Escape($name) + '(?:=|<<)'
+        if ([Regex]::IsMatch($environmentForScan, $pattern)) {
+            $existingNames.Add($name)
+        }
+    }
+    if ($existingNames.Count -gt 0) {
+        throw ('The GitHub environment file already defines prepared-source closure binding(s): ' + ($existingNames -join ', ') + '.')
+    }
+
+    $prefix = if ($environmentText.Length -gt 0 -and -not $environmentText.EndsWith("`n", [StringComparison]::Ordinal)) { "`n" } else { '' }
+    $lines = @($sourceClosureEnvironmentNames | ForEach-Object { "$_=$ManifestHash" })
+    $environmentBlock = $prefix + ($lines -join "`n") + "`n"
+    [IO.File]::AppendAllText(
+        $EnvironmentPath,
+        $environmentBlock,
+        [Text.UTF8Encoding]::new($false)
+    )
+}
+
 function Invoke-Git {
     param(
         [Parameter(Mandatory)][string]$RepositoryPath,
@@ -212,20 +278,7 @@ if (-not (Test-Path -LiteralPath $outputDirectory -PathType Container)) {
 
 if (-not [string]::IsNullOrWhiteSpace($GitHubEnvPath)) {
     $fullEnvPath = [IO.Path]::GetFullPath($GitHubEnvPath)
-    if (-not (Test-Path -LiteralPath $fullEnvPath -PathType Leaf)) {
-        throw 'The GitHub environment file does not exist.'
-    }
-    $environmentText = $utf8NoBom.GetString([IO.File]::ReadAllBytes($fullEnvPath))
-    if ($environmentText -match '(?m)^HD_PREPARED_SOURCE_CLOSURE=') {
-        throw 'HD_PREPARED_SOURCE_CLOSURE is already defined in the GitHub environment file.'
-    }
-    $prefix = if ($environmentText.Length -gt 0 -and -not $environmentText.EndsWith("`n", [StringComparison]::Ordinal)) { "`n" } else { '' }
-    $environmentLine = $prefix + "HD_PREPARED_SOURCE_CLOSURE=$manifestHash`n"
-    [IO.File]::AppendAllText(
-        $fullEnvPath,
-        $environmentLine,
-        [Text.UTF8Encoding]::new($false)
-    )
+    Add-SourceClosureEnvironmentBindings -EnvironmentPath $fullEnvPath -ManifestHash $manifestHash
 }
 
 Write-Output $manifestHash

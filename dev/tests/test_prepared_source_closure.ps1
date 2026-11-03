@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-Verify the persisted schema-1 receipt and its prepared-test environment handoff.
+Verify the persisted schema-1 receipt and all compile-time closure bindings.
 
 .DESCRIPTION
 Recomputes the receipt once and requires byte-for-byte deterministic output.
@@ -33,9 +33,9 @@ function Test-IsUnderDirectory {
 }
 
 $helperPath = Join-Path $PSScriptRoot '..\build\compute_prepared_source_closure.ps1'
+$utf8NoBom = [Text.UTF8Encoding]::new($false, $true)
+.$helperPath -TestOnly
 if ($FixtureOnly) {
-    . $helperPath -TestOnly
-
     $fixtureLockfiles = @(
         [ordered]@{ path = 'Cargo.lock'; sha256 = 'a' * 64 },
         [ordered]@{ path = 'dev/hdmap-prepared-generator/Cargo.lock'; sha256 = 'b' * 64 }
@@ -97,6 +97,45 @@ if ($FixtureOnly) {
         throw 'The source closure formatter produced an invalid fixture digest.'
     }
 
+    $closureEnvironmentNames = @(Get-SourceClosureEnvironmentNames)
+    $validBindings = [ordered]@{}
+    foreach ($name in $closureEnvironmentNames) {
+        $validBindings[$name] = $fixtureHash
+    }
+    Assert-SourceClosureEnvironmentBindings -Bindings $validBindings -ManifestHash $fixtureHash
+
+    function Assert-ClosureBindingsRejected {
+        param(
+            [Parameter(Mandatory)][Collections.IDictionary]$Bindings,
+            [Parameter(Mandatory)][string]$ExpectedHash,
+            [Parameter(Mandatory)][string]$Case
+        )
+
+        $rejected = $false
+        try {
+            Assert-SourceClosureEnvironmentBindings -Bindings $Bindings -ManifestHash $ExpectedHash
+        }
+        catch {
+            $rejected = $true
+        }
+        if (-not $rejected) {
+            throw "The closure verifier accepted a $Case binding set."
+        }
+    }
+
+    foreach ($name in $closureEnvironmentNames) {
+        $missingBinding = [ordered]@{}
+        $mismatchedBinding = [ordered]@{}
+        foreach ($otherName in $closureEnvironmentNames) {
+            $missingBinding[$otherName] = $fixtureHash
+            $mismatchedBinding[$otherName] = $fixtureHash
+        }
+        $missingBinding.Remove($name)
+        $mismatchedBinding[$name] = 'b' * 64
+        Assert-ClosureBindingsRejected -Bindings $missingBinding -ExpectedHash $fixtureHash -Case "missing $name"
+        Assert-ClosureBindingsRejected -Bindings $mismatchedBinding -ExpectedHash $fixtureHash -Case "mismatched $name"
+    }
+
     if ([string]::IsNullOrWhiteSpace($EvidenceRoot)) {
         throw 'FixtureOnly requires EvidenceRoot so newline fixtures stay outside tracked source.'
     }
@@ -116,6 +155,9 @@ if ($FixtureOnly) {
     $fixtureSuffix = "$PID-$([guid]::NewGuid().ToString('N'))"
     $lfFixturePath = Join-Path $fixtureDirectory "prepared-source-closure-lf-$fixtureSuffix.bin"
     $crlfFixturePath = Join-Path $fixtureDirectory "prepared-source-closure-crlf-$fixtureSuffix.bin"
+    $environmentFixturePath = Join-Path $fixtureDirectory "prepared-source-closure-env-$fixtureSuffix.txt"
+    $conflictFixturePath = Join-Path $fixtureDirectory "prepared-source-closure-conflict-$fixtureSuffix.txt"
+    $duplicateFixturePath = Join-Path $fixtureDirectory "prepared-source-closure-duplicate-$fixtureSuffix.txt"
     $fixtureEncoding = [Text.UTF8Encoding]::new($false)
     $lfFixtureBytes = $fixtureEncoding.GetBytes('fixture' + [char]10)
     $crlfFixtureBytes = $fixtureEncoding.GetBytes('fixture' + [char]13 + [char]10)
@@ -129,9 +171,38 @@ if ($FixtureOnly) {
             $lfFixtureHash -ceq $crlfFixtureHash) {
             throw 'Lockfile hashing did not follow the distinct LF and CRLF fixture bytes.'
         }
+
+        [IO.File]::WriteAllBytes($environmentFixturePath, [byte[]]@())
+        Add-SourceClosureEnvironmentBindings -EnvironmentPath $environmentFixturePath -ManifestHash $fixtureHash
+        $expectedEnvironmentText = (@($closureEnvironmentNames | ForEach-Object { "$_=$fixtureHash" }) -join "`n") + "`n"
+        $actualEnvironmentText = $utf8NoBom.GetString([IO.File]::ReadAllBytes($environmentFixturePath))
+        if ($actualEnvironmentText -cne $expectedEnvironmentText) {
+            throw 'The GitHub environment export did not bind all four variables to the same receipt hash.'
+        }
+
+        foreach ($name in $closureEnvironmentNames) {
+            foreach ($environmentFixtureCase in @(
+                    [pscustomobject]@{ Path = $conflictFixturePath; Text = "$name=$('c' * 64)`n"; Label = "conflicting $name" },
+                    [pscustomobject]@{ Path = $duplicateFixturePath; Text = "$name=$fixtureHash`n$name=$fixtureHash`n"; Label = "duplicate $name" }
+                )) {
+                [IO.File]::WriteAllBytes($environmentFixtureCase.Path, $fixtureEncoding.GetBytes($environmentFixtureCase.Text))
+                $before = [Convert]::ToBase64String([IO.File]::ReadAllBytes($environmentFixtureCase.Path))
+                $writeRejected = $false
+                try {
+                    Add-SourceClosureEnvironmentBindings -EnvironmentPath $environmentFixtureCase.Path -ManifestHash $fixtureHash
+                }
+                catch {
+                    $writeRejected = $true
+                }
+                $after = [Convert]::ToBase64String([IO.File]::ReadAllBytes($environmentFixtureCase.Path))
+                if (-not $writeRejected -or $after -cne $before) {
+                    throw "The GitHub environment exporter failed to reject $($environmentFixtureCase.Label) without partial writes."
+                }
+            }
+        }
     }
     finally {
-        foreach ($path in @($lfFixturePath, $crlfFixturePath)) {
+        foreach ($path in @($lfFixturePath, $crlfFixturePath, $environmentFixturePath, $conflictFixturePath, $duplicateFixturePath)) {
             if (Test-Path -LiteralPath $path -PathType Leaf) {
                 $fixtureItem = Get-Item -LiteralPath $path -Force
                 if (($fixtureItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
@@ -166,7 +237,7 @@ if ($FixtureOnly) {
         throw 'The source closure submodule guard accepted an uninitialized gitlink.'
     }
 
-    Write-Output 'Prepared source closure schema, guard, and actual LF/CRLF byte fixtures verified.'
+    Write-Output 'Prepared source closure schema, four-variable export/verification, strict environment guards, and LF/CRLF byte fixtures verified.'
     return
 }
 
@@ -198,9 +269,11 @@ if ($manifestBytes.Length -ge 3 -and $manifestBytes[0] -eq 0xEF -and $manifestBy
 $utf8 = [Text.UTF8Encoding]::new($false, $true)
 $manifestText = $utf8.GetString($manifestBytes)
 $manifestHash = [BitConverter]::ToString([Security.Cryptography.SHA256]::HashData($manifestBytes)).Replace('-', '').ToLowerInvariant()
-if ($manifestHash -cnotmatch '^[0-9a-f]{64}$' -or $env:HD_PREPARED_SOURCE_CLOSURE -cne $manifestHash) {
-    throw 'HD_PREPARED_SOURCE_CLOSURE does not match the persisted manifest SHA-256.'
+$closureBindings = [ordered]@{}
+foreach ($name in Get-SourceClosureEnvironmentNames) {
+    $closureBindings[$name] = [Environment]::GetEnvironmentVariable($name)
 }
+Assert-SourceClosureEnvironmentBindings -Bindings $closureBindings -ManifestHash $manifestHash
 
 $manifest = $manifestText | ConvertFrom-Json -Depth 8
 if ($manifest.schema_version -ne 1 -or $manifest.source_root.repository -cne 'shroudforge') {
