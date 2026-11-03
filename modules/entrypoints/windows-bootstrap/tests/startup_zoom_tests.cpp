@@ -4,7 +4,32 @@ using namespace StartupZoom;
 using namespace ZoomFixture;
 int main() {
     unsigned cases=0;
-    for (unsigned mutation=0;mutation<17;++mutation) {
+    assert(Profile::ImageSize==0x02A40000u);
+    assert(Profile::Timestamp==0x6AE4601Eu);
+    const std::uint32_t expectedSites[]={0x00C2E3C0u,0x00D54420u,0x00D52170u,0x00D95316u};
+    const std::uint32_t expectedBegins[]={0x00C2E304u,0x00D54420u,0x00D51F5Fu,0x00D95042u};
+    const std::uint32_t expectedEnds[]={0x00C2EDA7u,0x00D5457Du,0x00D5223Eu,0x00D9548Fu};
+    const std::uint32_t expectedUnwinds[]={0x01F41480u,0x01F42048u,0x01F4225Cu,0x01F42138u};
+    for (unsigned i=0;i<4;++i) {
+        assert(Profile::Signatures[i].rva==expectedSites[i]);
+        assert(Profile::Signatures[i].begin==expectedBegins[i]);
+        assert(Profile::Signatures[i].end==expectedEnds[i]);
+        assert(Profile::Signatures[i].unwind==expectedUnwinds[i]);
+    }
+    {
+        auto* image=Create(); Protect(image);
+        const auto site=Profile::Signatures[0].rva;
+        assert(!std::memcmp(image+site,Profile::Original,4));
+        {
+            Cap cap;
+            assert(cap.TestApply(image,Profile::ImageSize,1,true,EngineHooks::ReplaceExecutableBytes)==Result::Applied);
+            assert(!std::memcmp(image+site,Profile::Replacement,4));
+            assert(image[site+3]==0x05);
+            cap.Commit();
+        }
+        VirtualFree(image,0,MEM_RELEASE); ++cases;
+    }
+    for (unsigned mutation=0;mutation<19;++mutation) {
         auto* image=Create(); auto* nt=reinterpret_cast<IMAGE_NT_HEADERS64*>(image+0x100);
         auto* fn=reinterpret_cast<RUNTIME_FUNCTION*>(image+0x1000);
         switch(mutation) {
@@ -25,9 +50,24 @@ int main() {
         case 14: image[Profile::Signatures[0].rva+27]=4;break;
         case 15: image[Profile::Signatures[2].rva+10]^=1;break;
         case 16: image[Profile::Signatures[3].rva+10]^=1;break;
+        case 17: image[Profile::Signatures[1].rva+10]^=1;break;
+        case 18: nt->FileHeader.TimeDateStamp=1792507660;break; // prior d64966e2 profile identity
         }
         std::vector<unsigned char> before(image,image+Profile::ImageSize); Protect(image);
         { Cap cap; assert(cap.TestApply(image,Profile::ImageSize,1,true,EngineHooks::ReplaceExecutableBytes)==Result::Unavailable); }
+        assert(!std::memcmp(before.data(),image,before.size())); VirtualFree(image,0,MEM_RELEASE); ++cases;
+    }
+    {
+        constexpr unsigned oldImageSize=44163072;
+        auto* image=static_cast<unsigned char*>(VirtualAlloc(nullptr,oldImageSize,MEM_COMMIT|MEM_RESERVE,PAGE_READWRITE));
+        assert(image);
+        auto* dos=reinterpret_cast<IMAGE_DOS_HEADER*>(image); dos->e_magic=IMAGE_DOS_SIGNATURE; dos->e_lfanew=0x100;
+        auto* nt=reinterpret_cast<IMAGE_NT_HEADERS64*>(image+0x100); nt->Signature=IMAGE_NT_SIGNATURE;
+        nt->FileHeader.Machine=IMAGE_FILE_MACHINE_AMD64; nt->FileHeader.TimeDateStamp=1792507660;
+        nt->FileHeader.SizeOfOptionalHeader=sizeof(IMAGE_OPTIONAL_HEADER64);
+        nt->OptionalHeader.Magic=IMAGE_NT_OPTIONAL_HDR64_MAGIC; nt->OptionalHeader.SizeOfImage=oldImageSize;
+        std::vector<unsigned char> before(image,image+4096);
+        { Cap cap; assert(cap.TestApply(image,oldImageSize,1,true,EngineHooks::ReplaceExecutableBytes)==Result::Unavailable); }
         assert(!std::memcmp(before.data(),image,before.size())); VirtualFree(image,0,MEM_RELEASE); ++cases;
     }
     for (auto pair : {std::pair{0u,true},std::pair{2u,true},std::pair{1u,false}}) {
@@ -59,5 +99,5 @@ int main() {
         if(mode==6)assert(!std::memcmp(reinterpret_cast<void*>(target),Profile::Replacement,4));
         VirtualFree(image,0,MEM_RELEASE); ++cases;
     }
-    std::cout << "PASS " << cases << " cap validation/ownership cases" << std::endl;
+    std::cout << "PASS current 0x0403981f profile 4->5; " << cases << " cap validation/ownership cases" << std::endl;
 }

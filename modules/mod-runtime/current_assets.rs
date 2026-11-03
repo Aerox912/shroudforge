@@ -685,6 +685,7 @@ fn rewrite_selected_with_layout(
 pub fn prepare(root: &Path) -> Result<bool> {
     clear_zoom_demand();
     manager_generation::clear_loader_demand();
+    manager_generation::reject_forward_hold(root)?;
     let policy_path = joined(root, POLICY)?;
     if !policy_path.try_exists()? {
         ensure!(
@@ -697,6 +698,10 @@ pub fn prepare(root: &Path) -> Result<bool> {
     // This ownership mode validates published bytes and hands off zoom demand;
     // it must never enter the map-only recipe or a baseline/backup path.
     let document: serde_json::Value = read_json(&policy_path)?;
+    if document.get("schemaVersion").and_then(serde_json::Value::as_u64) == Some(4) {
+        manager_generation::verify_forward(root)?;
+        return Ok(true);
+    }
     if document.get("schemaVersion").and_then(serde_json::Value::as_u64) == Some(3) {
         manager_generation::verify(root)?;
         return Ok(true);
@@ -969,6 +974,7 @@ pub fn prepare(root: &Path) -> Result<bool> {
 /// Presence also includes ownership receipts, so deleting the policy cannot
 /// silently re-enable the baseline path on a previously composed installation.
 pub fn active(root: &Path) -> Result<bool> {
+    manager_generation::reject_forward_hold(root)?;
     for name in [POLICY, STATE, PENDING] {
         if joined(root, name)?.try_exists()? {
             return Ok(true);
