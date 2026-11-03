@@ -895,7 +895,8 @@ mod managed_plugin_plan_tests {
             "[Plugin]\nEnabled=true\nDll=plugin.dll\n",
         )
         .unwrap();
-        let (ordinary, _, current_rejected, _) = classify_plan_entries(&fixture.0, vec![plugin]);
+        let (ordinary, _, current_rejected, _) =
+            classify_plan_entries(&fixture.0, vec![plugin.clone()]);
 
         assert_eq!(ordinary.len(), 1);
         assert!(current_rejected.is_empty());

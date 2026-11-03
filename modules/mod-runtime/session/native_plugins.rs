@@ -2,11 +2,12 @@ use super::*;
 use crate::session::native_plugin_abi::{
     NativePluginEntry, NativePluginHostMetadata, NativePluginInstance, NativePluginMode,
 };
+use mod_loader::Capability;
 use mod_loader::dll_manager::{DllLoadMode, PluginLoadDisposition};
 use std::io::Read;
 use std::path::PathBuf as NativePathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::mpsc;
+use std::sync::mpsc::{self, Receiver, TryRecvError};
 
 static NEXT_NATIVE_PACKAGE_GENERATION: AtomicU64 = AtomicU64::new(1);
 
