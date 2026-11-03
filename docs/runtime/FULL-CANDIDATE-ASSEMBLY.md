@@ -1,0 +1,73 @@
+# Full candidate assembly
+
+`dev/full-candidate-assembler` prepares a private E: payload and review record for the selected ShroudForge client composition. The template is always noninstallable. A selected Greeneye host requires a typed, hash-bound continuation profile, the exact host and four scan inputs, and matching full-runtime/WinMM artifact identities. If that evidence is absent the template records a concrete missing requirement; if present but mismatched the assembler refuses. The route binding does not claim plugin scan or gameplay readiness. The tool has no install, ACL, process, or live-target operation.
+
+The asset generator request and receipt remain the immutable 13-provider asset environment. Runtime-only packages are validated and staged as additional runtime inputs; they are never inserted into the generator request. Prepared asset postimages remain hash-bound references to the generator stage and are not copied into the candidate payload.
+
+## Commands
+
+Pin the exact input bytes before running the tool:
+
+```text
+sf-full-candidate-assembler prepare-template <E-manifest.json> <manifest-sha256>
+sf-full-candidate-assembler finalize-policy <E-template.json> <template-sha256> <E-approved-plan.json> <E-prepared-receipt.json> <receipt-sha256>
+```
+
+The manifest uses schema version 1 and rejects unknown properties. It binds the target root lexically, a fresh E: output directory, prepared asset request and receipt files, their raw SHA-256 digests, producer and runtime source closures, the exact 20 selected feature rows, explicit feature-to-deployment-unit ownership, the ordered 13 asset-provider IDs, seven required exclusion categories, complete package source inventories, root-file owners, runtime service selection, explicit runtime file bindings, Greeneye paths, the approved XHL plan, preservation evidence, and any unresolved requirements.
+
+`selectedFeatures` contains one typed `{ row, name, enabled }` entry for each row in the pinned Markdown table. `components` contains deployment units, not feature rows. Each unit declares `featureRows`, `dependencies`, its unique `id` and `version`, `kind`, `enabled`, optional `packageDirectory` or `serviceId`, any `xhlPaths` it owns, `requiresGreeneye`, and a client target. Several independent units can map to one feature, and a unit can support multiple feature rows. A shared host is represented once and referenced through dependency IDs. The assembler rejects missing feature coverage, unresolved or cyclic dependencies, duplicate units, unowned units, and enabled units that depend on disabled units.
+
+The exact 13 `asset-provider` deployment units remain separate packages. Their order in `assetProviderIds` must match both the asset-provider units in `components` and the immutable request's `selectedIds` order. The canonical Lua runtime order is recorded separately from `ModEnvironment::runtime_plan_report_detailed`; it is never inferred from request order. Asset-provider package inventories must exactly match the package files in the prepared generator environment. An enabled `runtime-only` unit needs a separately pinned E: package and must appear in the canonical runtime plan. A documented nonpackage service uses the distinct `runtime-service` kind and must match `bootServices`; it is not treated as a package. `xhl-native` units own exact paths in the approved XHL plan; their path ownership must cover that plan exactly once. Runtime-only package inventories must be absent from the immutable asset environment. Intended config overlays name the replaced or new file, exact output hash, source evidence pins, preserved field names, and disposition. Raw saved settings are not an input mode.
+
+The input manifest also names exact contract files, startup services and opt-ins, the selected XHL approved-plan digest and transaction, Greeneye startup paths, ExtendedZoom intent, preservation evidence, and a list of missing requirements. Incomplete inputs produce a blocked noninstallable template with explicit requirements; no hash or selection value is synthesized.
+
+### Input manifest fields
+
+The schema is strict: all listed fields are explicit, and unknown fields are rejected. `EvidencePin` is `{ path, sha256 }`; `Stamp` is `{ bytes, sha256 }`.
+
+| Field | Contents and checks |
+| --- | --- |
+| `schemaVersion`, `candidateId` | Version `1` and a stable candidate label. |
+| `targetRoot`, `outputRoot` | A lexical native target path, which is never probed, and a fresh E: output directory. |
+| `request`, `assetReceipt` | E: paths and raw-byte hashes for the generator request and schema 2 receipt. The typed canonical request digest is checked separately. |
+| `preparedProducerClosure`, `runtimeSourceClosure` | Exact generator producer and current runtime source closure identities. The receipt must bind the former. |
+| `selectedManifest` | E: path and hash for the Markdown selection manifest. The parser requires exactly 20 rows and binds row numbers and feature names to `selectedFeatures`. |
+| `selectedFeatures` | Exactly 20 typed rows with unique row numbers, exact selected names, and explicit `enabled: true` intent for the selected matrix. |
+| `components` | Up to 64 typed deployment units with unique IDs, `featureRows`, explicit dependency IDs, `version`, `kind`, and `enabled`. Kinds are `asset-provider`, `runtime-only`, `runtime-service`, `native-only`, and `xhl-native`. Each enabled feature must have an enabled unit; every unit must be owned by a feature or dependency. |
+| `assetProviderIds` | Exactly 13 unique IDs in order. This list must exactly equal the asset-provider unit order and the immutable request's `selectedIds`; canonical Lua load order is recorded separately. |
+| `exclusions` | One reasoned entry for each of `autoloot`, `shroudtopia`, `standalone-flight`, `duplicate-flight`, `old-minimap-host`, `server-only`, and `legacy-fallback`, identifying excluded IDs or paths. |
+| `packages` | Complete package source inventories. Asset providers use the pinned generator environment; runtime-only and native-only packages use separately pinned E: source roots and must not appear in that environment. Each entry binds `componentId`, `packageDirectory`, `origin`, `sourceFiles`, and any intended `overlays`. Package count is independent of feature-row count. |
+| `rootFiles` | Exact E: source, target-relative path, stamp, mandatory owning `componentId`, and whether the file belongs in the runtime contract. The loose Vein INI is the only package-root exception. |
+| `contractFilePaths`, `greeneyePaths` | Exact runtime contract bindings and one selected Greeneye host path. The four scan inputs must be explicit contract file paths. A selected host must provide the exact `mods/<package>/dbgcore.dll` path through a hash-pinned native-only package. |
+| `greeneyeRoute` | Optional typed evidence for profile `greeneye-entry-continuation-v1` version 1. It pins the accepted profile document, exact full-runtime closure, actual `shroudforge-runtime.dll` and `winmm.dll` artifacts, the 288,256-byte selected host, and all four fixed scan inputs. Missing evidence adds a blocking requirement; mismatched evidence is refused. |
+| `extendedZoom`, `selection` | The selected HD Map value and client runtime choices: `bootServices`, `processRole`, `dedicatedGuestQualified`, `allowUnverifiedCursorGate`, `flightTransportEnabled`, `veinSelected`, optional `veinSettingsPath`, `overlay`, and `firstPerson`. |
+| `xhlPlan` | E: path and raw-byte hash for the approved XHL plan. The prepared receipt and directory identities are supplied only to finalization. |
+| `preservationEvidence`, `preservation` | E: hash-only evidence and named target fields/dispositions. Raw saved settings and backups are not copied into the candidate. |
+| `preservedRuntimeFiles` | Optional array, currently at most one exact selected Vein INI. Each entry contains `componentId`, `target`, `stamp` (`bytes`, `sha256`) and `evidence` (`path`, `sha256`). The pinned evidence must name the same installation and one unchanged `PRESENT_PRESERVE_BYTES` file row, with matching before/after hashes. A matching preservation record is required. This dependency enters the runtime contract without entering the payload or write set. |
+| `missingRequirements` | Explicit unresolved requirements. Any entry keeps the result blocked and prevents policy finalization. |
+
+An `IntendedOverlay` names its output-relative `path`, E: `source`, expected `stamp`, whether it `replaces` an existing source entry, selected-value `evidence`, preserved `fields`, and a `disposition`. The inventory must account for every source file; overlays may replace only declared paths or add a declared new file. There are no implicit config defaults.
+
+Asset request `selectedIds` are retained in their original order and bound exactly to `assetProviderIds`; this list is not used as a load order. The canonical resolver output is recorded separately as `canonicalRuntimeModOrder` and in the schema 3 contract `runtimeMods`; it comes from `ModEnvironment::runtime_plan_report_detailed` after metadata and dependencies are resolved.
+
+## Digest boundaries
+
+The prepared generator receipt's `requestSha256` is the SHA-256 of canonical typed `Request` serialization. The policy's `requestSha256` and `receiptSha256` are SHA-256 values over the exact raw JSON bytes stored in `requestJson` and `receiptJson`. The template records both forms separately and checks both during finalization. The XHL approved-plan digest binds its exact raw JSON bytes; the RB65 prepared receipt digest is also reported in both raw-file and canonical typed-serialization forms.
+
+## Output and finalization
+
+`prepare-template` creates a fresh output directory containing `payload/`, `template.json`, `review-manifest.json`, and `transaction-intent.json`. The payload contains only approved package code/data, native runtime files, and intended new configuration. It does not include base game assets or copied generation postimages. `template.json` contains no prepared XHL directory identities and no schema 6 policy.
+
+`finalize-policy` accepts only a complete template plus the exact approved plan and matching RB65 prepared receipt. It verifies the raw plan hash, transaction, target, file stamps, scan-directory closure, and unique receipt identities, then writes schema 6 / runtime schema 3 policy JSON under the E: payload and a `finalization.json` receipt. The policy artifact remains noninstallable until Deployment repeats current target and preservation freshness checks and owns the actual transaction.
+
+Deployment owns mandatory whole-payload verification: before any target preparation, compare the complete E: payload file membership and every size/hash with `template.payloadFiles`, rejecting aliases, reparse points and non-regular entries. After finalization, allow only the exact newly derived policy in addition to that set and repeat the verification before applying. The finalizer itself rechecks its specific Greeneye and preserved-INI bindings; it does not claim whole-payload inventory verification. Installation must use the reviewed finite action map, never recursively copy unlisted files.
+
+Any pre-existing output path, alias, reparse point, source/hash drift, component conflict, out-of-scope package, loader-plan issue, runtime-plan issue, missing required binding, XHL mismatch, or attempt to include excluded AutoLoot, Shroudtopia, standalone Flight, duplicate Flight, old Minimap host, server-only, or legacy-fallback inputs is refused.
+
+The preserved Vein INI is never read from the target by this assembler. Preparation and finalization recheck its E-only evidence and contract binding; Deployment must freshly verify its actual bytes and identity before and after application and reject any action targeting it. Unknown fields remain untouched. Two focused fixtures cover its no-copy preparation/finalization and refusal of mismatched evidence, payload collisions and contract drift.
+
+## Verification
+
+Fifteen focused fixtures passed for template/finalization binding, missing native inputs, distinct raw and canonical digests, XHL receipt or plan mismatch, path-escape refusal, exact selected-manifest row binding, grouped EMBER/building feature-to-unit ownership, refusal when an enabled feature has no unit, enabled runtime-only package and plan requirements, typed nonpackage service rows, exact XHL unit path ownership, explicit Greeneye path binding, case-insensitive reserved XHL log detection, and preservation of input request order beside canonical runtime order. A separate CLI input-reader check passed for E-only ancestry, parent traversal and size bounds. Synthetic fixtures exercise local planning only; they do not establish gameplay or live-target acceptance. Canonical activation is represented in `extended.mod.json` in both fixtures and real packages.
+
+When compiling this standalone crate against the integration tree, `shroudforge-api` also compiles the current runtime library. Its `SF_HD_FORWARD_SOURCE_CLOSURE` compile-time value must come from the accepted closure for the exact source being compiled; a historical baseline closure is not valid for a changed runtime tree. The scoped compile and fixtures used runtime/forward closure `2dd8b7c5a04a8953c394bb5a2988dc17cc64ce543af5ca6881f3746606f1f235` and the separately frozen prepared producer closure. The executable, complete real candidate and installation transaction require their own exact artifact and outcome review.
