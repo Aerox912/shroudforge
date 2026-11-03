@@ -15,6 +15,15 @@ straight-alpha/coverage contract. Embedded SPIR-V hashes are recorded alongside
 those build inputs and in the Task3 source-input manifest.
 Candidate/offline source provenance only; no live acceptance.
 
+Current0403981f MapRuntime adaptation (2026-11-03): selected native pin arrays,
+callback-local iterator extent/snapshot, and finite public-provider reader from
+the frozen557 ESM Minimap source manifest335c06f9cf9de3d03a3f20f94ec1b2b6bf2f4121c56d7a687177781e1e9fb7e1.
+The SF adaptation keeps aggregate timing off, adds a private bounded continuous
+provider-module lease handoff, and uses Main's genuine held-entry API and shared
+executable writer. It preserves the existing pre-body camera entry sample.
+This is not post-FP frame publication, typed-ring/allocation proof, current-host
+coexistence acceptance or a selected consumer/product runtime receipt.
+
 MIT License
 
 Copyright (c) 2024 Miguel Oppermann

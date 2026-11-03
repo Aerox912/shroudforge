@@ -43,7 +43,10 @@ KFC_RUNTIME_API std::int32_t __cdecl KfcRuntimeQueryMapOverlayService(const std:
     std::uint32_t capacity,void* output) {
     using namespace OverlayRuntime;try {
         std::string id,name;if(!generation || !output || !Text(package,package_size,256,id) || !Text(service,service_size,64,name))return 1;
-        if(name!="shroudforge.map" && name!="shroudforge.overlay")return 4;if(version!=1)return 2;
+        if(name!="shroudforge.map" && name!="shroudforge.overlay")return 4;
+        const bool map_service=name=="shroudforge.map";
+        if((map_service && version!=SF_MAP_SERVICE_VERSION) ||
+            (!map_service && version!=SF_OVERLAY_SERVICE_VERSION && version!=SF_OVERLAY_EXTENDED_SERVICE_VERSION))return 2;
         if(capacity<(name=="shroudforge.map" ? sizeof(SFMapServiceV1):sizeof(SFOverlayServiceV1)))return 5;
         std::lock_guard lock(service_mutex);const auto key=std::make_pair(id,generation);
         if(!activations.contains(key) && activations.size()>=4096)return 6;auto& item=activations[key];if(item.revoked)return 3;
