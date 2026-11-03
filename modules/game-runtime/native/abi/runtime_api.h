@@ -24,10 +24,35 @@ extern "C" {
 #define KFC_RUNTIME_ABI_VERSION 12u
 KFC_RUNTIME_API uint32_t KFC_RUNTIME_CALL KfcRuntimeAbi(void);
 KFC_RUNTIME_API bool KFC_RUNTIME_CALL KfcRuntimeInitialize(void);
+/* Optional ABI-12 bootstrap control: 0 disabled, 1 declared enabled overlay demand. */
+KFC_RUNTIME_API bool KFC_RUNTIME_CALL KfcRuntimePrepareOverlay(unsigned demand);
 KFC_RUNTIME_API void KFC_RUNTIME_CALL KfcRuntimeTick(void);
 KFC_RUNTIME_API void KFC_RUNTIME_CALL KfcRuntimeShutdown(void);
 KFC_RUNTIME_API void KFC_RUNTIME_CALL KfcRuntimeStatus(char* buffer, size_t capacity);
 KFC_RUNTIME_API void KFC_RUNTIME_CALL KfcRuntimeDiagnostics(char* buffer, size_t capacity);
+/* Optional ABI-12 one-shot passive operation metadata. The bounded JSON output
+ * contains allowlisted scalar metadata only and never executes an operation. */
+KFC_RUNTIME_API void KFC_RUNTIME_CALL KfcRuntimeOperationMetadata(char* buffer, size_t capacity);
+/* Optional owner-scoped map/overlay services. ABI12 is unchanged. The trusted
+ * host establishes package authority; all queried tables are bounded copies. */
+KFC_RUNTIME_API int32_t KFC_RUNTIME_CALL KfcRuntimeQueryMapOverlayService(const uint8_t*,uint32_t,uint64_t,const uint8_t*,uint32_t,uint32_t,uint32_t,void*);
+KFC_RUNTIME_API int32_t KFC_RUNTIME_CALL KfcRuntimeRevokeMapOverlayServices(const uint8_t*,uint32_t,uint64_t);
+KFC_RUNTIME_API int32_t KFC_RUNTIME_CALL KfcRuntimeDrainMapOverlayServices(const uint8_t*,uint32_t,uint64_t,uint32_t);
+KFC_RUNTIME_API int32_t KFC_RUNTIME_CALL KfcRuntimeReadInputKeys(const uint32_t*,uint32_t,uint32_t,void*);
+/* Optional ABI-12, operation-specific first-person camera control. owner_token
+ * is the trusted, process-unique lua_map_owner generation supplied by the host.
+ * These exports admit only the exact camera/gauge controls implemented by the
+ * first-person provider. They do not grant general runtime or ECS writes. */
+#define KFC_RUNTIME_FIRST_PERSON_READY 0u
+#define KFC_RUNTIME_FIRST_PERSON_UNSUPPORTED_BUILD 1u
+#define KFC_RUNTIME_FIRST_PERSON_INVALID_ARGUMENT 2u
+#define KFC_RUNTIME_FIRST_PERSON_OWNER_CONFLICT 3u
+#define KFC_RUNTIME_FIRST_PERSON_FAILED 4u
+KFC_RUNTIME_API bool KFC_RUNTIME_CALL KfcRuntimeFirstPersonAvailable(void);
+KFC_RUNTIME_API size_t KFC_RUNTIME_CALL KfcRuntimeFirstPersonDetail(char* buffer, size_t capacity);
+KFC_RUNTIME_API uint32_t KFC_RUNTIME_CALL KfcRuntimeFirstPersonConfigure(uint64_t owner_token, double camera_distance);
+KFC_RUNTIME_API uint32_t KFC_RUNTIME_CALL KfcRuntimeFirstPersonSetMode(uint64_t owner_token, bool enabled);
+KFC_RUNTIME_API uint32_t KFC_RUNTIME_CALL KfcRuntimeFirstPersonReleaseOwner(uint64_t owner_token);
 /* Optional ABI-12 selected-character cache. Returns required UTF-8 bytes
  * including NUL, or zero when unavailable. Copies only a complete name.
  * This getter never reads game memory or refreshes the cached selection. */

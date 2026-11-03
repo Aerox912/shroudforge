@@ -10,8 +10,22 @@ use std::{fs, path::Path};
 pub struct ProtectedHotkey {
     pub scancode: u16,
     pub label: String,
+    #[serde(default)]
     pub emoji: String,
+    #[serde(default)]
     pub text: String,
+    /// Legacy action carried by `hotkeys.protectedKeys`; current policy uses the confirm/cancel groups.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub action: Option<ProtectedHotkeyAction>,
+}
+
+/// Legacy protected-key action values retained for settings migration compatibility.
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum ProtectedHotkeyAction {
+    Block,
+    Confirm,
+    Cancel,
 }
 
 #[derive(Clone, Debug, Default, Serialize, PartialEq, Eq)]
@@ -311,12 +325,11 @@ pub fn assess_hotkey_change(
             assess_binding(root, &config, binding, None)
         }
         HotkeyAssessmentTarget::Mod { id, key, values } => {
-            let package = crate::package_lookup::find_mod_package(root, id)
-                .ok_or("mod package not found")?;
+            let package =
+                crate::package_lookup::find_mod_package(root, id).ok_or("mod package not found")?;
             let manifest = crate::config::read_manifest_path(root, &package)?;
             if !manifest.settings.iter().any(|setting| {
-                setting.key == *key
-                    && matches!(setting.control, Some(SettingControl::Keybind))
+                setting.key == *key && matches!(setting.control, Some(SettingControl::Keybind))
             }) {
                 return Err(format!("'{key}' is not a declared keybind setting"));
             }

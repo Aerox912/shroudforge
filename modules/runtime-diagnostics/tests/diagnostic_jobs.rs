@@ -483,6 +483,336 @@ fn runtime_job_session_for(
     (root, session)
 }
 
+fn operation_metadata_session() -> (tempfile::TempDir, Session) {
+    let root = tempfile::tempdir().unwrap();
+    shroudforge_loader_config::config::update_loader(root.path(), |value| {
+        value["modules"]["runtimeDiagnostics"]["enabled"] = json!(true);
+        Ok(())
+    })
+    .unwrap();
+    let session = Session::new(root.path());
+    (root, session)
+}
+
+fn request_operation_metadata_snapshot(root: &std::path::Path) {
+    request_job(
+        root,
+        "snapshot",
+        Some(crate::request_diagnostic_action::OPERATION_METADATA_JOB_ID),
+    )
+    .unwrap();
+}
+
+#[test]
+fn operation_metadata_start_is_refused_without_mutating_the_request() {
+    let root = tempfile::tempdir().unwrap();
+    shroudforge_loader_config::config::update_loader(root.path(), |value| {
+        let settings = &mut value["modules"]["runtimeDiagnostics"];
+        settings["enabled"] = json!(true);
+        settings["jobId"] = json!(crate::request_diagnostic_action::OPERATION_METADATA_JOB_ID);
+        settings["continuous"] = json!(false);
+        settings["requestId"] = json!(9);
+        Ok(())
+    })
+    .unwrap();
+    let before = shroudforge_loader_config::config::read_loader(root.path()).unwrap()
+        ["modules"]["runtimeDiagnostics"]
+        .clone();
+
+    assert!(request_job(root.path(), "start", None).is_err());
+
+    let after = shroudforge_loader_config::config::read_loader(root.path()).unwrap()
+        ["modules"]["runtimeDiagnostics"]
+        .clone();
+    assert_eq!(after, before);
+    assert_eq!(crate::collectors::operation_metadata::snapshot_calls(), 0);
+}
+
+#[test]
+fn operation_metadata_builtin_cannot_be_overridden_with_job_execution() {
+    let root = tempfile::tempdir().unwrap();
+    shroudforge_loader_config::config::update_loader(root.path(), |value| {
+        value["modules"]["runtimeDiagnostics"]["enabled"] = json!(true);
+        Ok(())
+    })
+    .unwrap();
+    let directory = shroudforge_loader_config::paths::diagnostic_jobs_dir(root.path());
+    std::fs::create_dir_all(&directory).unwrap();
+    let attempted_override = json!({
+        "schemaVersion": 1,
+        "id": crate::request_diagnostic_action::OPERATION_METADATA_JOB_ID,
+        "name": "Operation metadata execution override",
+        "description": "Attempts to replace the built-in metadata collector",
+        "capabilities": [],
+        "execution": {
+            "kind": "modAction",
+            "modId": "world-editor",
+            "action": "clear-selection"
+        }
+    });
+    std::fs::write(
+        directory.join("operation-metadata-override.json"),
+        serde_json::to_vec(&attempted_override).unwrap(),
+    )
+    .unwrap();
+
+    let catalog = crate::diagnostic_job_catalog(
+        root.path(),
+        &json!({"jobId":crate::request_diagnostic_action::OPERATION_METADATA_JOB_ID}),
+    );
+    assert!(!catalog.errors.is_empty());
+    let job = crate::job_catalog::resolve(
+        root.path(),
+        &json!({"jobId":crate::request_diagnostic_action::OPERATION_METADATA_JOB_ID}),
+        None,
+    )
+    .unwrap();
+    assert_eq!(
+        job.id,
+        crate::request_diagnostic_action::OPERATION_METADATA_JOB_ID
+    );
+    assert_eq!(job.capabilities, ["runtime"]);
+    assert!(job.execution.is_none());
+
+    crate::collectors::operation_metadata::reset_snapshot_calls();
+    crate::collectors::runtime_health::reset_snapshot_calls();
+    let mut session = Session::new(root.path());
+    request_operation_metadata_snapshot(root.path());
+    session.next_config = Instant::now();
+    session.tick();
+    assert!(session.job.as_ref().unwrap().execution.is_none());
+    assert_eq!(
+        session.last_report["operationMetadata"]["resolutionStatus"],
+        "test-stub"
+    );
+    assert_eq!(crate::collectors::operation_metadata::snapshot_calls(), 1);
+    assert_eq!(crate::collectors::runtime_health::snapshot_calls(), 0);
+}
+
+#[test]
+fn operation_metadata_snapshot_claims_once_without_runtime_health_fallback_or_replay() {
+    let (root, mut session) = operation_metadata_session();
+    crate::collectors::operation_metadata::reset_snapshot_calls();
+    crate::collectors::runtime_health::reset_snapshot_calls();
+
+    request_operation_metadata_snapshot(root.path());
+    session.next_config = Instant::now();
+    session.tick();
+
+    assert!(!session.active);
+    assert_eq!(session.reason, "snapshot-complete");
+    assert_eq!(
+        session.last_report["operationMetadata"]["resolutionStatus"],
+        "test-stub"
+    );
+    assert!(session.last_report.get("native").is_none());
+    assert_eq!(crate::collectors::operation_metadata::snapshot_calls(), 1);
+    assert_eq!(crate::collectors::runtime_health::snapshot_calls(), 0);
+    let settings = shroudforge_loader_config::config::read_loader(root.path()).unwrap()["modules"]
+        ["runtimeDiagnostics"]
+        .clone();
+    assert_eq!(settings["sessionActive"], false);
+    assert_eq!(settings["continuous"], false);
+    assert_eq!(settings["requestId"], 1);
+
+    session.next_config = Instant::now();
+    session.tick();
+    assert_eq!(crate::collectors::operation_metadata::snapshot_calls(), 1);
+    assert_eq!(crate::collectors::runtime_health::snapshot_calls(), 0);
+    drop(session);
+
+    let mut recreated = Session::new(root.path());
+    recreated.next_config = Instant::now();
+    recreated.tick();
+    assert_eq!(crate::collectors::operation_metadata::snapshot_calls(), 1);
+    assert_eq!(crate::collectors::runtime_health::snapshot_calls(), 0);
+}
+
+#[test]
+fn operation_metadata_claim_rechecks_enabled_before_collecting() {
+    let (root, mut session) = operation_metadata_session();
+    crate::collectors::operation_metadata::reset_snapshot_calls();
+    crate::collectors::runtime_health::reset_snapshot_calls();
+    request_operation_metadata_snapshot(root.path());
+    session.next_config = Instant::now();
+    session.refresh();
+    assert!(session.active);
+
+    shroudforge_loader_config::config::update_loader(root.path(), |value| {
+        value["modules"]["runtimeDiagnostics"]["enabled"] = json!(false);
+        Ok(())
+    })
+    .unwrap();
+    session.tick();
+
+    assert!(!session.active);
+    assert_eq!(session.reason, "stopped");
+    assert_eq!(crate::collectors::operation_metadata::snapshot_calls(), 0);
+    assert_eq!(crate::collectors::runtime_health::snapshot_calls(), 0);
+    assert!(session.last_report.is_null());
+    assert_eq!(
+        shroudforge_loader_config::config::read_loader(root.path()).unwrap()["modules"]["runtimeDiagnostics"]
+            ["sessionActive"],
+        false
+    );
+}
+
+#[test]
+fn operation_metadata_stop_before_first_sample_cancels_without_collecting() {
+    let (root, mut session) = operation_metadata_session();
+    crate::collectors::operation_metadata::reset_snapshot_calls();
+    crate::collectors::runtime_health::reset_snapshot_calls();
+    request_operation_metadata_snapshot(root.path());
+    session.next_config = Instant::now();
+    session.refresh();
+    assert!(session.active);
+
+    request(root.path(), "stop").unwrap();
+    session.next_config = Instant::now();
+    session.tick();
+
+    assert!(!session.active);
+    assert_eq!(session.reason, "stopped");
+    assert_eq!(crate::collectors::operation_metadata::snapshot_calls(), 0);
+    assert_eq!(crate::collectors::runtime_health::snapshot_calls(), 0);
+    assert_eq!(
+        shroudforge_loader_config::config::read_loader(root.path()).unwrap()["modules"]["runtimeDiagnostics"]
+            ["sessionActive"],
+        false
+    );
+}
+
+#[test]
+fn operation_metadata_drop_cancels_before_sampling_and_recreation_does_not_replay() {
+    let (root, mut session) = operation_metadata_session();
+    crate::collectors::operation_metadata::reset_snapshot_calls();
+    crate::collectors::runtime_health::reset_snapshot_calls();
+    request_operation_metadata_snapshot(root.path());
+    session.next_config = Instant::now();
+    session.refresh();
+    assert!(session.active);
+
+    drop(session);
+    assert_eq!(crate::collectors::operation_metadata::snapshot_calls(), 0);
+    assert_eq!(crate::collectors::runtime_health::snapshot_calls(), 0);
+    assert_eq!(
+        shroudforge_loader_config::config::read_loader(root.path()).unwrap()["modules"]["runtimeDiagnostics"]
+            ["sessionActive"],
+        false
+    );
+
+    let mut recreated = Session::new(root.path());
+    recreated.next_config = Instant::now();
+    recreated.tick();
+    assert!(!recreated.active);
+    assert_eq!(crate::collectors::operation_metadata::snapshot_calls(), 0);
+    assert_eq!(crate::collectors::runtime_health::snapshot_calls(), 0);
+}
+
+#[test]
+fn operation_metadata_drop_before_request_refresh_cancels_without_collecting() {
+    let (root, session) = operation_metadata_session();
+    crate::collectors::operation_metadata::reset_snapshot_calls();
+    crate::collectors::runtime_health::reset_snapshot_calls();
+    request_operation_metadata_snapshot(root.path());
+
+    drop(session);
+
+    assert_eq!(crate::collectors::operation_metadata::snapshot_calls(), 0);
+    assert_eq!(crate::collectors::runtime_health::snapshot_calls(), 0);
+    assert_eq!(
+        shroudforge_loader_config::config::read_loader(root.path()).unwrap()["modules"]["runtimeDiagnostics"]
+            ["sessionActive"],
+        false
+    );
+    let mut recreated = Session::new(root.path());
+    recreated.next_config = Instant::now();
+    recreated.tick();
+    assert_eq!(crate::collectors::operation_metadata::snapshot_calls(), 0);
+    assert_eq!(crate::collectors::runtime_health::snapshot_calls(), 0);
+}
+
+#[test]
+fn operation_metadata_new_session_cancels_inherited_pending_request() {
+    let root = tempfile::tempdir().unwrap();
+    shroudforge_loader_config::config::update_loader(root.path(), |value| {
+        let settings = &mut value["modules"]["runtimeDiagnostics"];
+        settings["enabled"] = json!(true);
+        settings["jobId"] = json!(crate::request_diagnostic_action::OPERATION_METADATA_JOB_ID);
+        settings["sessionActive"] = json!(true);
+        settings["continuous"] = json!(false);
+        settings["requestId"] = json!(41);
+        Ok(())
+    })
+    .unwrap();
+    crate::collectors::operation_metadata::reset_snapshot_calls();
+    crate::collectors::runtime_health::reset_snapshot_calls();
+
+    let mut session = Session::new(root.path());
+    assert!(!session.active);
+    assert_eq!(session.reason, "stopped");
+    assert_eq!(
+        shroudforge_loader_config::config::read_loader(root.path()).unwrap()["modules"]["runtimeDiagnostics"]
+            ["sessionActive"],
+        false
+    );
+    session.next_config = Instant::now();
+    session.tick();
+    assert_eq!(crate::collectors::operation_metadata::snapshot_calls(), 0);
+    assert_eq!(crate::collectors::runtime_health::snapshot_calls(), 0);
+}
+
+#[test]
+fn operation_metadata_cancellation_preserves_a_newer_snapshot_request() {
+    let (root, mut session) = operation_metadata_session();
+    crate::collectors::operation_metadata::reset_snapshot_calls();
+    crate::collectors::runtime_health::reset_snapshot_calls();
+    request_operation_metadata_snapshot(root.path());
+    session.next_config = Instant::now();
+    session.refresh();
+    assert!(session.active);
+    let old_request_id = session.settings["requestId"].as_u64().unwrap();
+
+    request_operation_metadata_snapshot(root.path());
+    session.next_config = Instant::now() + Duration::from_secs(10);
+    session.tick();
+    assert!(!session.active);
+    assert_eq!(crate::collectors::operation_metadata::snapshot_calls(), 0);
+    assert_eq!(crate::collectors::runtime_health::snapshot_calls(), 0);
+    let settings = shroudforge_loader_config::config::read_loader(root.path()).unwrap()["modules"]
+        ["runtimeDiagnostics"]
+        .clone();
+    assert_eq!(settings["sessionActive"], true);
+    assert_eq!(settings["requestId"], old_request_id + 1);
+
+    session.next_config = Instant::now();
+    session.tick();
+    assert!(!session.active);
+    assert_eq!(crate::collectors::operation_metadata::snapshot_calls(), 1);
+    assert_eq!(crate::collectors::runtime_health::snapshot_calls(), 0);
+}
+
+#[test]
+fn two_distinct_operation_metadata_snapshots_each_collect_once() {
+    let (root, mut session) = operation_metadata_session();
+    crate::collectors::operation_metadata::reset_snapshot_calls();
+    crate::collectors::runtime_health::reset_snapshot_calls();
+
+    request_operation_metadata_snapshot(root.path());
+    session.next_config = Instant::now();
+    session.tick();
+    assert_eq!(crate::collectors::operation_metadata::snapshot_calls(), 1);
+    assert_eq!(crate::collectors::runtime_health::snapshot_calls(), 0);
+
+    request_operation_metadata_snapshot(root.path());
+    session.next_config = Instant::now();
+    session.tick();
+    assert!(!session.active);
+    assert_eq!(session.reason, "snapshot-complete");
+    assert_eq!(crate::collectors::operation_metadata::snapshot_calls(), 2);
+    assert_eq!(crate::collectors::runtime_health::snapshot_calls(), 0);
+}
+
 #[test]
 fn runtime_job_snapshot_starts_once_and_waits_for_finished() {
     let (root, mut session) = runtime_job_session("snapshot", 30);

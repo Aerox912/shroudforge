@@ -44,9 +44,9 @@ pub fn choose_folder_from(
         use std::os::windows::ffi::OsStrExt;
 
         let path: Vec<u16> = path.as_os_str().encode_wide().chain(Some(0)).collect();
-        if let Ok(folder) = unsafe {
-            SHCreateItemFromParsingName::<_, _, IShellItem>(PCWSTR(path.as_ptr()), None)
-        } {
+        if let Ok(folder) =
+            unsafe { SHCreateItemFromParsingName::<_, _, IShellItem>(PCWSTR(path.as_ptr()), None) }
+        {
             let _ = unsafe { dialog.SetDefaultFolder(&folder) };
         }
     }

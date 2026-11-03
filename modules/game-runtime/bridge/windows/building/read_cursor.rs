@@ -42,7 +42,9 @@ pub fn world_cursor_read_input(component_size: usize) -> Result<(Vec<u8>, u64), 
             Err("Local cursor query is still scanning or changed. Retry on the next update".into())
         }
         6 => Err(match input_detail() {
-            Some(detail) => format!("local cursor input is ambiguous in the main-client ECS manager ({detail})"),
+            Some(detail) => {
+                format!("local cursor input is ambiguous in the main-client ECS manager ({detail})")
+            }
             None => "local cursor input is ambiguous in the main-client ECS manager".into(),
         }),
         _ => Err("native local cursor reader returned an unsupported result".into()),

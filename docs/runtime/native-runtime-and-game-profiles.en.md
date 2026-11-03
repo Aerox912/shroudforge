@@ -379,3 +379,51 @@ the loader. This is a conservative lifetime token, not a persistent world ID:
 an ECS layout rebuild also invalidates it. Retain the token with undo journals
 and reject work if it is unavailable or changed; do not treat missing handles
 from an invalidated session as proof that an old placement was removed.
+
+## Transient client notices
+
+Lua mods declare both `runtime` and `runtime-notices` in the existing `mod.json`
+capabilities array before startup. `shroudforge.runtime.notice.show(message)`
+returns `accepted, reason`. It is available only during the active client mod
+lifecycle. Enabling the capability after startup requires a game restart to arm
+Vulkan creation observation. Dedicated servers return unavailable.
+
+Native V1 lifecycle plugins with `runtime` request `shroudforge.notices`, version
+1, through the existing owner-bound `query_service`. They declare
+`Services=shroudforge.notices` in `[Plugin]` in `native-plugin.ini` to request
+startup graphics. `SFNoticeServiceV1` is additive and does not change either
+host or plugin V1 table. The queried table contains size, version, context and
+`show(context, utf8, byte_count)`. Query and show use the same owner control
+thread. The standalone public C/C++ SDK is
+`modules/mod-runtime/native_plugin_api.h`. Copying this one header is sufficient
+for SDK consumers. It depends only on the standard `stdint.h`. The internal
+`modules/game-runtime/native/abi/notice_api.h` imports the canonical SDK table
+with plugin export decoration disabled for the host.
+
+A message is 1 to 256 UTF-8 bytes without ASCII control characters. Appearance
+is fixed: a 640 by 72 pixel dark panel, white Windows Segoe UI text, top center,
+with single-line ellipsis if needed. It lasts three seconds from acceptance.
+The latest accepted notice globally replaces the previous one. Expiry never
+reveals an older message. Success accepts publication and does not prove that
+a frame was presented. Unsupported or not-yet-observed graphics returns
+unavailable without publishing. Invalid input returns invalid-argument and a
+foreign thread returns wrong-thread. No feed or settings are persisted.
+
+`graphics/rasterize_notice.cpp` performs bounded GDI rasterization once per
+message and releases all GDI objects immediately. It redistributes no font.
+`graphics/render_overlay.cpp` retains one immutable RGBA publication, submits
+only the retained pixels through the existing texture encoder and uses the
+existing owner in-flight counter for revocation and drain. Render callbacks
+never enter Rust or Lua. A replacement can coexist only with the one active
+render snapshot, whose shared ownership keeps its pixels alive until dispatch
+returns. Owner IDs are capped at 4096 permanent tombstones. Client encoder
+gates reject foreign owner IDs, so the internal high-bit notice owner domain
+cannot collide with plugin resource IDs.
+
+Notices request graphics independently of terrain capture. GPU textures reuse
+the existing owner/resource/revision cache. Superseded, expired and revoked
+notice textures are removed only when that swapchain image's submission and
+presentation fences are complete. Other images retire when next reused or
+through existing renderer shutdown retirement. Existing exceptional Vulkan
+fail-fast policy is unchanged. There is no separate window, input loop,
+widget API or engine-native notification claim.

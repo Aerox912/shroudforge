@@ -8,6 +8,13 @@ use std::path::Path;
 pub(crate) fn run_startup(game_directory: impl AsRef<Path>) -> Result<(), LoaderError> {
     let game_directory = game_directory.as_ref();
     let file_name = process_target_name(game_directory)?;
+    if shroudforge_api::current_assets::active_for(game_directory, file_name)
+        .map_err(|e| LoaderError::Pregame(e.to_string()))?
+    {
+        shroudforge_api::current_assets::prepare_for(game_directory, file_name)
+            .map_err(|e| LoaderError::Pregame(e.to_string()))?;
+        return Ok(());
+    }
     shroudforge_loader_config::config::initialize_loader_config(game_directory)
         .map_err(LoaderError::Pregame)?;
     // Capture a first-install original before the early return for installations

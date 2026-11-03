@@ -1,0 +1,14 @@
+{
+  "schemaVersion": 1,
+  "id": "xhl-unlimited-gifting-range",
+  "modId": "xhl-unlimited-gifting-range",
+  "packageDirectory": "XHL-Unlimited-Gifting-Range",
+  "name": "XHL Unlimited Gifting Range",
+  "target": "client",
+  "files": [
+    {
+      "path": "XHL-Unlimited-Gifting-Range.dll",
+      "mode": "library"
+    }
+  ]
+}

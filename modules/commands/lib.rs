@@ -27,12 +27,8 @@ pub fn run_module() {
     }
 
     if let Some(root) = module_root() {
-        let _ = shroudforge_logging::append(
-            &root,
-            'I',
-            "commands",
-            "Command gateway module available",
-        );
+        let _ =
+            shroudforge_logging::append(&root, 'I', "commands", "Command gateway module available");
     }
 }
 

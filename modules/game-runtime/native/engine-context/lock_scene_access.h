@@ -1,5 +1,6 @@
 #pragma once
 #include "engine-context/engine_owners.h"
+namespace PlayerOwnership { class PreparedPlayerReader; }
 namespace EngineContext {
 class ResourceLifeGuard;
 // Read-only capability snapshot. A write must repeat this policy under the
@@ -27,6 +28,7 @@ public:
     std::size_t MaximumBytes() const { return maximum_bytes_; }
 private:
     friend class ResourceLifeGuard;
+    friend class PlayerOwnership::PreparedPlayerReader;
     struct State;
     std::unique_ptr<State> state_;
     std::uintptr_t registry_lock_{}, scene_lock_{};

@@ -6,8 +6,8 @@ use serde_json::json;
 use std::{
     collections::HashMap,
     sync::{
-        atomic::{AtomicBool, Ordering},
         Arc, Mutex,
+        atomic::{AtomicBool, Ordering},
     },
 };
 
@@ -308,7 +308,7 @@ fn read_setting_value(current: &Table, key: &str) -> mlua::Result<serde_json::Va
     })
 }
 
-fn is_game_focused() -> bool {
+pub(crate) fn try_is_game_focused() -> Option<bool> {
     #[cfg(windows)]
     {
         use windows_sys::Win32::{
@@ -318,16 +318,24 @@ fn is_game_focused() -> bool {
 
         let foreground = unsafe { GetForegroundWindow() };
         if foreground.is_null() {
-            return false;
+            return None;
         }
         let mut process_id = 0;
-        unsafe { GetWindowThreadProcessId(foreground, &mut process_id) };
-        return process_id == unsafe { GetCurrentProcessId() };
+        if unsafe { GetWindowThreadProcessId(foreground, &mut process_id) } == 0 || process_id == 0
+        {
+            return None;
+        }
+        let current_process_id = unsafe { GetCurrentProcessId() };
+        return (current_process_id != 0).then_some(process_id == current_process_id);
     }
     #[cfg(not(windows))]
     {
-        false
+        None
     }
+}
+
+pub(crate) fn is_game_focused() -> bool {
+    try_is_game_focused().unwrap_or(false)
 }
 
 const LEGACY_KEY_DOWN_MIGRATION_MESSAGE: &str = concat!(
@@ -345,10 +353,9 @@ fn request_modloader_toggle() -> Result<(), String> {
         EVENT_MODIFY_STATE, GetCurrentProcessId, OpenEventW, SetEvent,
     };
 
-    let name = format!(
-        "Local\\ShroudForge.ModMenu.Open.{}",
-        unsafe { GetCurrentProcessId() }
-    );
+    let name = format!("Local\\ShroudForge.ModMenu.Open.{}", unsafe {
+        GetCurrentProcessId()
+    });
     let name: Vec<u16> = name.encode_utf16().chain(Some(0)).collect();
     let event = unsafe { OpenEventW(EVENT_MODIFY_STATE, 0, name.as_ptr()) };
     if event.is_null() {

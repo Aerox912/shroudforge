@@ -25,8 +25,11 @@ use check_ingame_access::*;
 pub(crate) use check_ingame_access::{available, runtime_denial_reason};
 pub(crate) mod access_named_service;
 pub(crate) mod ecs;
+mod first_person;
 pub(crate) mod functions;
 mod impact;
+mod map_overlay;
+mod notices;
 pub(crate) mod overrides;
 pub(crate) mod player_input;
 pub(crate) mod prove_buffer_transform;
@@ -57,6 +60,9 @@ pub fn create(lua: &mlua::Lua, r#mod: Mod) -> mlua::Result<mlua::Table> {
     add_function_with_mod(lua, &table, "report_effect", &r#mod, lua_report_effect)?;
     add_function_with_mod(lua, &table, "is_main_menu", &r#mod, lua_is_main_menu)?;
 
+    table.raw_set("map", map_overlay::create(lua, &r#mod)?)?;
+    table.raw_set("notice", notices::create(lua, &r#mod)?)?;
+    table.raw_set("first_person", first_person::create(lua, &r#mod)?)?;
     let player = lua.create_table()?;
     add_function_with_mod(lua, &player, "name", &r#mod, lua_player_name)?;
     table.raw_set("player", player)?;

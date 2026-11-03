@@ -1,0 +1,16 @@
+{
+  "schemaVersion": 1,
+  "id": "greeneye-find-host",
+  "packageDirectory": "greeneye-host",
+  "name": "Greeneye Find Host (Original)",
+  "target": "client",
+  "importFiles": {
+    "native_runtime/find/dbgcore.dll": "dbgcore.dll"
+  },
+  "files": [
+    {
+      "path": "dbgcore.dll",
+      "mode": "library"
+    }
+  ]
+}

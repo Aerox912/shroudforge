@@ -75,3 +75,7 @@ path = "tests/survival_lifecycle.rs"
 [[test]]
 name = "bundled_lua"
 path = "tests/compile_bundled_mods.rs"
+
+[[test]]
+name = "first_person_lifecycle"
+path = "tests/first_person_lifecycle.rs"

@@ -858,3 +858,86 @@ pub fn resolve_package_dll_path(
     }
     Ok(path)
 }
+
+#[cfg(test)]
+mod profile_contract_tests {
+    use super::*;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    #[test]
+    fn auto_loot_plus_profile_resolves_one_client_library_entry() {
+        let suffix = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!("shroudforge-auto-loot-profile-{suffix}"));
+        let package = crate::paths::mods_dir(&root).join("auto-loot-plus");
+        let profile_path = crate::paths::mod_profiles_dir(&root).join("auto-loot-plus.json");
+        let config_path = crate::paths::config_dir(&root).join("modloader-config.json");
+
+        fs::create_dir_all(package.join("native")).unwrap();
+        fs::create_dir_all(package.join("src")).unwrap();
+        fs::create_dir_all(profile_path.parent().unwrap()).unwrap();
+        fs::create_dir_all(config_path.parent().unwrap()).unwrap();
+        fs::write(
+            package.join("mod.json"),
+            br#"{"id":"auto-loot-plus","name":"Auto Loot Plus","version":"1.1.8","dependencies":[]}"#,
+        )
+        .unwrap();
+        fs::write(
+            package.join("extended.mod.json"),
+            br#"{"schemaVersion":1,"enabled":true,"targets":["client","server"]}"#,
+        )
+        .unwrap();
+        fs::write(package.join("src/mod.lua"), "return {}\n").unwrap();
+        // The resolver checks the path only. These inert bytes are never loaded.
+        fs::write(package.join("native/dinput8.dll"), b"inert test fixture").unwrap();
+        fs::write(
+            &profile_path,
+            include_str!("mod-profiles/auto-loot-plus.json"),
+        )
+        .unwrap();
+        let selection = serde_json::json!({
+            "id": "auto-loot-plus",
+            "packageDirectory": "auto-loot-plus",
+            "name": "Auto Loot Plus",
+            "target": "client",
+            "enabled": true,
+            "approved": true,
+            "compatibilityProfile": "auto-loot-plus",
+            "files": []
+        });
+        fs::write(
+            &config_path,
+            serde_json::to_vec(&serde_json::json!({
+                "schemaVersion": 1,
+                "logging": {"minimumLevel": "INFO"},
+                "modules": {"dllManager": {"enabled": true, "profiles": [selection]}}
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+
+        let profiles = mod_profiles::read_profiles(&root).unwrap();
+        assert_eq!(profiles.len(), 1);
+        assert_eq!(profiles[0].id, "auto-loot-plus");
+        assert!(profiles[0].extended_mod_json.is_none());
+        let manifest = crate::read_manifest_path(&root, &package).unwrap();
+        assert!(matches!(manifest.target, crate::ModTarget::ClientServer));
+
+        let client = resolve_load_plan(&root, false);
+        assert!(client.issues.is_empty(), "{:?}", client.issues);
+        assert_eq!(client.entries.len(), 1);
+        assert_eq!(client.entries[0].mode, DllLoadMode::Library);
+        assert_eq!(
+            client.entries[0].path,
+            package.join("native/dinput8.dll").canonicalize().unwrap()
+        );
+
+        let server = resolve_load_plan(&root, true);
+        assert!(server.entries.is_empty());
+        assert!(server.issues.is_empty(), "{:?}", server.issues);
+
+        fs::remove_dir_all(root).unwrap();
+    }
+}

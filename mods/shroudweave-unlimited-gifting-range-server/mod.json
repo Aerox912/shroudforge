@@ -1,0 +1,10 @@
+{
+  "$schema": "../../modules/modloader/manifest/manifest.schema.json",
+  "id": "shroudweave-unlimited-gifting-range-server",
+  "name": "Shroudweave Unlimited Gifting Range Server",
+  "version": "0.1.0",
+  "description": "Dedicated-server compatibility for the existing XHL Unlimited Gifting Range selection.",
+  "license": null,
+  "dependencies": [],
+  "capabilities": ["runtime"]
+}

@@ -46,6 +46,11 @@ pub(crate) mod runtime_networking {
                         .to_owned()
                 },
                 is_server: |lua| lua.app_data_ref::<super::AppState>().unwrap().is_server(),
+                network_module_enabled: |lua| {
+                    lua.app_data_ref::<super::AppState>()
+                        .unwrap()
+                        .network_module_enabled()
+                },
                 denial_reason: |lua, owner, operation| {
                     let state = lua.app_data_ref::<super::AppState>().unwrap();
                     super::loader::runtime_denial_reason(&state, owner, operation)

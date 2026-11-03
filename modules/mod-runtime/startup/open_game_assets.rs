@@ -55,22 +55,35 @@ pub fn create_reader_with_extension(
     }
 }
 
-pub fn create_writer(
+pub fn create_writer_with_policy(
+    source: &Path,
     dir: &Path,
     file_name: &str,
     type_registry: &Rc<TypeRegistry>,
     ref_file: &Rc<KFCFile>,
+    preserve_current: bool,
 ) -> Result<KFCWriter<Rc<KFCFile>, Rc<TypeRegistry>>, ()> {
-    let writer = match KFCWriter::new_incremental_with_options(
-        dir,
-        file_name,
-        ref_file.clone(),
-        type_registry.clone(),
-        KFCWriteOptions {
-            overwrite_containers: true,
-            ..Default::default()
-        },
-    ) {
+    let writer = if preserve_current {
+        KFCWriter::new_generated_incremental(
+            source,
+            dir,
+            file_name,
+            ref_file.clone(),
+            type_registry.clone(),
+        )
+    } else {
+        KFCWriter::new_incremental_with_options(
+            dir,
+            file_name,
+            ref_file.clone(),
+            type_registry.clone(),
+            KFCWriteOptions {
+                overwrite_containers: true,
+                ..Default::default()
+            },
+        )
+    };
+    let writer = match writer {
         Ok(writer) => writer,
         Err(e) => {
             error!(

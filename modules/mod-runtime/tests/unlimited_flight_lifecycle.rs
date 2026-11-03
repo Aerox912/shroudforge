@@ -11,6 +11,7 @@ fn unlimited_flight_uses_public_runtime_api_and_restores_owned_values() -> mlua:
     )?;
     let source: String = lua.globals().get("flight_source")?;
     assert!(source.contains("runtime.overrides.new()"));
+    assert!(source.contains("was_keybind_pressed, \"toggleUpwardGliding\""));
     assert!(!source.contains("bind_modifier"));
     assert!(!source.contains("legacy"));
     let manifest: serde_json::Value =
@@ -19,6 +20,16 @@ fn unlimited_flight_uses_public_runtime_api_and_restores_owned_values() -> mlua:
         manifest["dependencies"]
             .as_array()
             .is_none_or(Vec::is_empty)
+    );
+    let extended: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(root.join("../extended.mod.json")).unwrap()).unwrap();
+    assert_eq!(
+        extended["settings"]["toggleUpwardGliding"]["value"],
+        "SDL:63"
+    );
+    assert_eq!(
+        extended["settings"]["toggleUpwardGliding"]["control"],
+        "keybind"
     );
     lua.globals().set(
         "overrides_source",

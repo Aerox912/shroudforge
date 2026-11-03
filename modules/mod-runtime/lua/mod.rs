@@ -29,7 +29,7 @@ pub(crate) mod shroudforge {
         pub(crate) mod read_runtime_operations;
         mod read_ui_locale;
         mod set_mod_settings;
-        pub(crate) use create_mod_api::create;
+        pub(crate) use create_mod_api::{create, is_game_focused, try_is_game_focused};
         pub(crate) use dispatch_mod_ui_actions::{dispatch_ui_actions, invoke_mod_action};
         pub(crate) use set_mod_settings::set_settings;
     }

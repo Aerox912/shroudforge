@@ -44,7 +44,8 @@ fn job_source(id: &str) -> String {
 fn diagnostic_job_sources_compile() -> mlua::Result<()> {
     let lua = Lua::new();
     let mut compiled = 0;
-    for job in crate::job_catalog::builtins().expect("bundled diagnostic job definitions must load") {
+    for job in crate::job_catalog::builtins().expect("bundled diagnostic job definitions must load")
+    {
         if let Some(DiagnosticExecution::Lua { source, .. }) = job.execution {
             lua.load(source.as_str()).set_name(job.id).into_function()?;
             compiled += 1;
@@ -119,7 +120,10 @@ fn typed_input_observation_separates_readability_from_consumption_and_sessions()
         fn add_methods<M: mlua::UserDataMethods<Self>>(methods: &mut M) {
             methods.add_meta_method(mlua::MetaMethod::Len, |_, this, ()| Ok(this.0.len()));
             methods.add_meta_method(mlua::MetaMethod::Index, |_, this, index: usize| {
-                Ok(index.checked_sub(1).and_then(|index| this.0.get(index)).cloned())
+                Ok(index
+                    .checked_sub(1)
+                    .and_then(|index| this.0.get(index))
+                    .cloned())
             });
         }
     }

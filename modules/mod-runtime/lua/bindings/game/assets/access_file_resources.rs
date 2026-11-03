@@ -32,15 +32,14 @@ pub(super) fn lua_get_resource_parts(lua: &mlua::Lua, args: FunctionArgs) -> mlu
                 LuaError::generic(format!("type not found: {}", r#type.qualified_name))
             })?;
 
-    let file = app_state.kfc_file();
     let result = lua.create_table()?;
 
-    for guid in file.resources().keys() {
-        if guid.guid() != target_guid.guid() || !kfc_format::same_type(guid, &target_guid) {
+    for guid in app_state.asset_resource_ids() {
+        if guid.guid() != target_guid.guid() || !kfc_format::same_type(&guid, &target_guid) {
             continue;
         }
 
-        let resource = match app_state.get_resource_info(guid) {
+        let resource = match app_state.get_resource_info(&guid) {
             Some(info) => Resource::new(info),
             None => {
                 debug!("Resource info not found for GUID: {}", guid);
@@ -62,12 +61,10 @@ pub(super) fn lua_get_resources_by_type(
 
     let r#type = get_type(&args, 0, app_state.type_registry().as_ref())?;
 
-    let file = app_state.kfc_file();
-    let result = lua.create_table_with_capacity(file.resources().len(), 0)?;
+    let resource_ids = app_state.asset_resource_ids_by_type(&r#type.qualified_name);
+    let result = lua.create_table_with_capacity(resource_ids.len(), 0)?;
 
-    for guid in
-        kfc_format::resources_by_type(file, app_state.type_registry(), &r#type.qualified_name)
-    {
+    for guid in resource_ids {
         let resource = match app_state.get_resource_info(&guid) {
             Some(info) => Resource::new(info),
             None => {
@@ -85,11 +82,11 @@ pub(super) fn lua_get_resources_by_type(
 pub(super) fn lua_get_all_resources(lua: &mlua::Lua, _args: FunctionArgs) -> mlua::Result<Table> {
     let app_state = lua.app_data_ref::<AppState>().unwrap();
 
-    let file = app_state.kfc_file();
-    let result = lua.create_table_with_capacity(file.resources().len(), 0)?;
+    let resource_ids = app_state.asset_resource_ids();
+    let result = lua.create_table_with_capacity(resource_ids.len(), 0)?;
 
-    for guid in file.resources().keys() {
-        let resource = match app_state.get_resource_info(guid) {
+    for guid in resource_ids {
+        let resource = match app_state.get_resource_info(&guid) {
             Some(info) => Resource::new(info),
             None => {
                 debug!("Resource info not found for GUID: {}", guid);
@@ -106,10 +103,10 @@ pub(super) fn lua_get_all_resources(lua: &mlua::Lua, _args: FunctionArgs) -> mlu
 pub(super) fn lua_get_resource_types(lua: &mlua::Lua, _args: FunctionArgs) -> mlua::Result<Table> {
     let app_state = lua.app_data_ref::<AppState>().unwrap();
 
-    let file = app_state.kfc_file();
-    let result = lua.create_table_with_capacity(file.resource_bundles().len(), 0)?;
+    let type_indices = app_state.asset_resource_type_indices();
+    let result = lua.create_table_with_capacity(type_indices.len(), 0)?;
 
-    for type_index in kfc_format::resource_type_indices(file, app_state.type_registry()) {
+    for type_index in type_indices {
         let value = app_state
             .get_type(lua, type_index)?
             .expect("type not found in context");

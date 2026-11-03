@@ -228,14 +228,20 @@ fn public_announcement(value: Value) -> Value {
 
 fn release_changelog(body: &str) -> Vec<String> {
     let lines = body.lines().map(str::trim).collect::<Vec<_>>();
-    let has_changelog_heading = lines
-        .iter()
-        .any(|line| line.trim_matches('#').trim().eq_ignore_ascii_case("changelog:"));
+    let has_changelog_heading = lines.iter().any(|line| {
+        line.trim_matches('#')
+            .trim()
+            .eq_ignore_ascii_case("changelog:")
+    });
     let mut in_changelog = !has_changelog_heading;
     lines
         .into_iter()
         .filter_map(|line| {
-            if line.trim_matches('#').trim().eq_ignore_ascii_case("changelog:") {
+            if line
+                .trim_matches('#')
+                .trim()
+                .eq_ignore_ascii_case("changelog:")
+            {
                 in_changelog = true;
                 return None;
             }
@@ -257,8 +263,7 @@ fn release_changelog(body: &str) -> Vec<String> {
                 .or_else(|| line.strip_prefix("+ "))
                 .unwrap_or(line)
                 .trim();
-            (!entry.is_empty())
-                .then(|| entry.chars().take(2_000).collect::<String>())
+            (!entry.is_empty()).then(|| entry.chars().take(2_000).collect::<String>())
         })
         .take(50)
         .collect()

@@ -40,11 +40,17 @@ pub fn set_capture_active(active: bool, device: InputDevice) -> Result<(), Strin
     }
 }
 
-pub fn is_capture_active() -> bool {
+/// Report capture state as `None` when the cross-process marker could not be
+/// read. Callers that admit input must treat that state as unavailable.
+pub fn capture_active_status() -> Option<bool> {
     #[cfg(windows)]
-    return windows::is_capture_active();
+    return windows::capture_active_status();
     #[cfg(not(windows))]
-    false
+    None
+}
+
+pub fn is_capture_active() -> bool {
+    capture_active_status().unwrap_or(false)
 }
 
 pub fn take_captured_hotkey() -> Option<Hotkey> {
@@ -174,7 +180,10 @@ mod windows {
         time::{Duration, Instant},
     };
     use windows_sys::Win32::{
-        Foundation::{CloseHandle, ERROR_ALREADY_EXISTS, GetLastError, HANDLE, WAIT_OBJECT_0},
+        Foundation::{
+            CloseHandle, ERROR_ALREADY_EXISTS, ERROR_FILE_NOT_FOUND, GetLastError, HANDLE,
+            WAIT_OBJECT_0, WAIT_TIMEOUT,
+        },
         System::{
             LibraryLoader::{
                 GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS, GET_MODULE_HANDLE_EX_FLAG_PIN,
@@ -545,7 +554,7 @@ mod windows {
                 if repeat {
                     return;
                 }
-                if down && !is_capture_active() {
+                if down && !capture_active_status().unwrap_or(false) {
                     let revision = PRESS_SEQUENCE
                         .fetch_add(1, Ordering::AcqRel)
                         .wrapping_add(1);
@@ -671,17 +680,21 @@ mod windows {
         Ok(())
     }
 
-    pub(super) fn is_capture_active() -> bool {
+    pub(super) fn capture_active_status() -> Option<bool> {
         let name = capture_name();
         let handle = unsafe { OpenEventW(SYNCHRONIZATION_SYNCHRONIZE, 0, name.as_ptr()) };
         if handle.is_null() {
-            return false;
+            return (unsafe { GetLastError() } == ERROR_FILE_NOT_FOUND).then_some(false);
         }
-        let active = unsafe { WaitForSingleObject(handle, 0) } == WAIT_OBJECT_0;
+        let wait_result = unsafe { WaitForSingleObject(handle, 0) };
         unsafe {
             CloseHandle(handle);
         }
-        active
+        match wait_result {
+            WAIT_OBJECT_0 => Some(true),
+            WAIT_TIMEOUT => Some(false),
+            _ => None,
+        }
     }
 
     #[cfg(test)]
@@ -705,17 +718,27 @@ mod windows {
         fn protection_waits_for_the_held_inputs_then_ignores_new_presses() {
             let mut capture = ending_capture();
             capture.release_if_idle(false);
-            assert!(capture.ending && capture.release_after.is_none(), "the captured key is still held");
+            assert!(
+                capture.ending && capture.release_after.is_none(),
+                "the captured key is still held"
+            );
 
             capture.release_if_idle(true);
             let release_after = capture.release_after.expect("the delay starts at release");
 
             capture.release_if_idle(false);
-            assert_eq!(capture.release_after, Some(release_after), "a new press keeps the delay");
+            assert_eq!(
+                capture.release_after,
+                Some(release_after),
+                "a new press keeps the delay"
+            );
 
             capture.release_after = Some(Instant::now() - Duration::from_millis(1));
             capture.release_if_idle(false);
-            assert!(!capture.ending, "the protection ends even while a new key is held");
+            assert!(
+                !capture.ending,
+                "the protection ends even while a new key is held"
+            );
         }
     }
 }

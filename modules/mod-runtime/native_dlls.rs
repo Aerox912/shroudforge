@@ -2,6 +2,8 @@
 //! Native hooks outlive Lua sessions. Handles are deliberately retained until exit.
 
 use mod_loader::dll_manager::{DllLoadEntry, DllLoadMode};
+mod greeneye_host_admission;
+mod xhl_host_projection;
 use std::{
     collections::{BTreeMap, HashMap, HashSet},
     path::{Path, PathBuf},
@@ -56,7 +58,10 @@ fn executor() -> Result<&'static Executor, String> {
                         tracing::debug!(target: "shroudforge::dll_manager", status_id = %entry.status_id,
                             dll = %entry.path.display(), source = %entry.source, mode = ?entry.mode,
                             "Loading native DLL on the ordered process worker");
-                        let (handle, result) = load_library(&root, &entry);
+                        let (handle, result) = match greeneye_host_admission::before_host_load(&root, &entry) {
+                            Ok(()) => load_library(&root, &entry),
+                            Err(error) => (None, Err(error)),
+                        };
                         let (state_name, detail) = match result {
                             Ok(()) => {
                                 tracing::info!(target: "shroudforge::dll_manager", status_id = %entry.status_id,
@@ -119,6 +124,20 @@ pub(crate) fn manager_enabled(root: &Path) -> Result<bool, String> {
         .unwrap_or(true))
 }
 
+pub(crate) fn reject_reserved_greeneye_plugin_registration(
+    root: &Path,
+    mod_id: &str,
+    package_directory: &str,
+    path: &Path,
+) -> Result<(), String> {
+    greeneye_host_admission::reject_reserved_plugin_registration(
+        root,
+        mod_id,
+        package_directory,
+        path,
+    )
+}
+
 pub(crate) fn queue(root: &Path, mut entry: DllLoadEntry) -> Result<(), String> {
     if !manager_enabled(root)? {
         return Err(
@@ -145,6 +164,15 @@ pub(crate) fn queue(root: &Path, mut entry: DllLoadEntry) -> Result<(), String> 
         .map_err(|error| format!("could not resolve native DLL path: {error}"))?;
     if !entry.path.is_file() {
         return Err("The selected native DLL is not a regular file".into());
+    }
+    greeneye_host_admission::check_queue(root, &entry)?;
+    if crate::session::managed_native_path(root, &entry.package_directory, &entry.path)? {
+        if entry.mode != DllLoadMode::Library {
+            return Err("Lifecycle-managed plugins require library loading mode".into());
+        }
+        tracing::debug!(target: "shroudforge::dll_manager", dll = %entry.path.display(),
+            "Deferring lifecycle plugin initialization to its runtime owner");
+        return Ok(());
     }
     let key = path_key(&entry.path);
     let executor = executor()?;
@@ -192,15 +220,36 @@ pub(crate) fn queue(root: &Path, mut entry: DllLoadEntry) -> Result<(), String> 
 /// File errors remain local to their DLL. A worker that never finishes must not
 /// release the game into an unknown, possibly locked initialization state.
 pub fn prepare_startup(root: &Path, is_server: bool) -> Result<(), String> {
-    apply_plan(root, is_server, true)
+    apply_plan_for_phase(root, is_server, true, true)
 }
 
 pub(crate) fn apply_plan(root: &Path, is_server: bool, wait: bool) -> Result<(), String> {
+    apply_plan_for_phase(root, is_server, wait, false)
+}
+
+fn apply_plan_for_phase(
+    root: &Path,
+    is_server: bool,
+    wait: bool,
+    startup_held_entry: bool,
+) -> Result<(), String> {
     if APPLIED_PLAN.get().is_some() {
         return Ok(());
     }
     let enabled = manager_enabled(root)?;
     let plan = mod_loader::dll_manager::resolve_load_plan(root, is_server);
+    // The original XHL host scans adjacent `mods` lazily through its DirectInput
+    // export. Prepare its private projection before anything can load that host.
+    let xhl = if enabled {
+        xhl_host_projection::prepare(root, is_server, &plan)
+    } else {
+        xhl_host_projection::Prepared::default()
+    };
+    let greeneye = if enabled {
+        greeneye_host_admission::prepare(root, is_server, startup_held_entry, &plan)
+    } else {
+        greeneye_host_admission::Prepared::default()
+    };
     if APPLIED_PLAN
         .set(mod_loader::dll_manager::load_plan_identity(&plan))
         .is_err()
@@ -211,7 +260,11 @@ pub(crate) fn apply_plan(root: &Path, is_server: bool, wait: bool) -> Result<(),
         tracing::info!(target: "shroudforge::dll_manager", "DLL Manager is disabled. Native DLL loading is skipped");
         return Ok(());
     }
-    if plan.entries.is_empty() && plan.issues.is_empty() {
+    if plan.entries.is_empty()
+        && plan.issues.is_empty()
+        && xhl.issues.is_empty()
+        && greeneye.issues.is_empty()
+    {
         return Ok(());
     }
     let executor = executor()?;
@@ -226,9 +279,59 @@ pub(crate) fn apply_plan(root: &Path, is_server: bool, wait: bool) -> Result<(),
             .issues
             .insert(issue.status_id, issue.detail);
     }
-    for entry in plan.entries {
+    for (status_id, detail) in xhl.issues {
+        tracing::warn!(target: "shroudforge::dll_manager", %status_id,
+            detail = %detail, "XHL host projection needs attention");
+        executor
+            .shared
+            .0
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .issues
+            .insert(status_id, detail);
+    }
+    for (status_id, detail) in greeneye.issues {
+        tracing::warn!(target: "shroudforge::dll_manager", %status_id,
+            detail = %detail, "Greeneye Find admission needs attention");
+        executor
+            .shared
+            .0
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .issues
+            .insert(status_id, detail);
+    }
+    for mut entry in plan.entries {
+        match xhl.dispositions.get(&entry.status_id) {
+            Some(xhl_host_projection::Disposition::Skip) => continue,
+            Some(xhl_host_projection::Disposition::Route(path)) => {
+                entry.path = path.clone();
+            }
+            None => {}
+        }
+        match greeneye.dispositions.get(&entry.status_id) {
+            Some(greeneye_host_admission::Disposition::Skip) => continue,
+            Some(greeneye_host_admission::Disposition::Route(path)) => {
+                entry.path = path.clone();
+            }
+            None => {}
+        }
         let status_id = entry.status_id.clone();
-        if let Err(error) = queue(root, entry) {
+        let is_greeneye_host = matches!(
+            greeneye.dispositions.get(&status_id),
+            Some(greeneye_host_admission::Disposition::Route(_))
+        );
+        let authorization_entry = is_greeneye_host.then(|| entry.clone());
+        let authorization = if is_greeneye_host {
+            greeneye_host_admission::authorize_host_queue(root, &entry)
+        } else {
+            Ok(())
+        };
+        let result = authorization.and_then(|()| queue(root, entry));
+        if let Err(error) = result {
+            if let Some(entry) = authorization_entry.as_ref() {
+                greeneye_host_admission::cancel_host_queue_authorization(root, entry);
+            }
             tracing::error!(target: "shroudforge::dll_manager", %status_id, %error,
                 "Native DLL could not be scheduled");
             executor

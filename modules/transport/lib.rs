@@ -6,8 +6,18 @@
 
 pub const MAX_MESSAGE_BYTES: usize = 512 * 1024;
 
+#[cfg(test)]
+thread_local! {
+    static TEST_BACKEND: std::cell::RefCell<Option<(Status, std::collections::VecDeque<Message>)>> = const { std::cell::RefCell::new(None) };
+}
+#[cfg(test)]
+pub(crate) fn test_backend(status: Option<Status>, messages: Vec<Message>) {
+    TEST_BACKEND.with(|value| *value.borrow_mut() = status.map(|s| (s, messages.into())));
+}
+
 #[cfg(windows)]
-static RECEIVE_BUFFER: std::sync::OnceLock<std::sync::Mutex<Vec<u8>>> = std::sync::OnceLock::new();
+static RECEIVE_BUFFER: std::sync::OnceLock<std::sync::Mutex<Option<Vec<u8>>>> =
+    std::sync::OnceLock::new();
 
 #[derive(Debug, Clone)]
 pub struct Status {
@@ -37,6 +47,10 @@ pub struct ServiceStats {
 }
 
 pub fn status() -> Status {
+    #[cfg(test)]
+    if let Some(status) = TEST_BACKEND.with(|b| b.borrow().as_ref().map(|(s, _)| s.clone())) {
+        return status;
+    }
     #[cfg(windows)]
     unsafe {
         type NetworkStatus = unsafe extern "C" fn(*mut u64) -> i32;
@@ -251,6 +265,24 @@ pub fn connected_peers() -> Result<Vec<String>, String> {
 
 pub fn receive(channel: i32) -> Result<Option<Message>, String> {
     validate_channel(channel)?;
+    receive_router::poll_with(channel, None, receive_physical)
+}
+
+pub(crate) fn receive_for_batch(channel: i32) -> Result<receive_router::PollOutcome, String> {
+    validate_channel(channel)?;
+    receive_router::poll_progress_with(channel, None, receive_physical)
+}
+
+fn receive_physical(channel: i32) -> Result<Option<Message>, String> {
+    validate_channel(channel)?;
+    #[cfg(test)]
+    if let Some(message) = TEST_BACKEND.with(|b| {
+        b.borrow_mut()
+            .as_mut()
+            .map(|(_, messages)| messages.pop_front())
+    }) {
+        return Ok(message);
+    }
     #[cfg(windows)]
     unsafe {
         type NetworkReceive =
@@ -261,15 +293,16 @@ pub fn receive(channel: i32) -> Result<Option<Message>, String> {
         // Idle polling is common for Lua mods. Keep the 512 KiB native receive
         // buffer across calls and allocate an owned payload only when a packet
         // actually arrives.
-        let shared =
-            RECEIVE_BUFFER.get_or_init(|| std::sync::Mutex::new(vec![0u8; MAX_MESSAGE_BYTES]));
+        let shared = RECEIVE_BUFFER.get_or_init(|| std::sync::Mutex::new(None));
         let mut payload = shared
             .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .take()
+            .unwrap_or_else(|| vec![0u8; MAX_MESSAGE_BYTES]);
         let mut peer_steam_id = 0;
         let mut actual = 0;
         let mut reliable = 0;
-        match receive(
+        let result = match receive(
             channel,
             payload.as_mut_ptr(),
             payload.len(),
@@ -284,7 +317,11 @@ pub fn receive(channel: i32) -> Result<Option<Message>, String> {
                 reliable: reliable != 0,
             })),
             _ => Err("Steam Networking receive failed or returned an invalid message".into()),
-        }
+        };
+        *shared
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(payload);
+        result
     }
     #[cfg(not(windows))]
     Err("Steam Networking Messages is supported only by the Windows game runtime".into())
@@ -329,6 +366,14 @@ fn symbol(name: &[u8]) -> Option<*const ()> {
 
 #[path = "lua/network.rs"]
 pub mod lua;
+pub mod mod_messages;
+pub mod mod_network_frame;
+pub mod receive_router;
+
+pub fn receive_v2(channel: i32, registration: u64) -> Result<Option<Message>, String> {
+    validate_channel(channel)?;
+    receive_router::poll_with(channel, Some(registration), receive_physical)
+}
 
 mod read_network_allowlist;
 mod report_network_health;

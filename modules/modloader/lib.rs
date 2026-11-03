@@ -4,17 +4,18 @@ mod mod_errors;
 pub use mod_errors::*;
 mod mod_log_macros;
 use mod_log_macros as log;
-pub mod check_mod_conflicts;
 mod check_hotkey_conflicts;
+pub mod check_mod_conflicts;
 pub use check_hotkey_conflicts::{
     HotkeyAssessment, HotkeyAssessmentTarget, HotkeyConflict, ProtectedHotkey,
-    ProtectedHotkeyGroups, assess_hotkey_change, find_hotkey_conflicts, protected_hotkeys,
+    ProtectedHotkeyAction, ProtectedHotkeyGroups, assess_hotkey_change, find_hotkey_conflicts,
+    protected_hotkeys,
     validate_hotkey_configuration,
 };
 pub use validate_mod_settings::setting_is_enabled;
 pub mod dll_manager;
-pub mod mod_profiles;
 mod infer_mod_api_contract;
+pub mod mod_profiles;
 pub use check_mod_conflicts as compatibility;
 mod plan_mod_load_order;
 pub use plan_mod_load_order::*;
@@ -46,8 +47,12 @@ mod update_mod_configuration;
 mod validate_mod_settings;
 pub use calculate_mod_config_revision::*;
 pub use read_mod_config_revision::*;
+pub use read_mod_settings::{
+    ModSettingsSnapshot, read_bound_mod_settings_snapshot, read_mod_settings_snapshot,
+};
 pub use save_mod_settings::*;
 pub use set_mod_enabled::*;
+pub use update_mod_configuration::ModConfigurationError;
 pub mod calculate_preparation_fingerprint;
 pub use calculate_preparation_fingerprint as prepared;
 pub mod documents;

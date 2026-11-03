@@ -252,9 +252,11 @@ mod tests {
             lua.globals().get::<mlua::Table>("first")?.to_pointer(),
             "rebuilding the same mod environment must retain its original tracker registry"
         );
-        assert!(cleanup(&lua, "first")
-            .unwrap_err()
-            .contains("Scene gate is busy"));
+        assert!(
+            cleanup(&lua, "first")
+                .unwrap_err()
+                .contains("Scene gate is busy")
+        );
         assert_eq!(lua.globals().get::<i64>("first_value")?, 2);
         lua.globals().set("busy", false)?;
         cleanup(&lua, "first").unwrap();

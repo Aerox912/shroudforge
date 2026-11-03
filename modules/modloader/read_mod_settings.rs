@@ -1,5 +1,46 @@
 use crate::{SettingCondition, SettingDefinition, SettingOption, SettingValueType};
 use serde_json::{Value, json};
+use std::path::Path;
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct ModSettingsSnapshot {
+    pub revision: String,
+    pub values: Value,
+}
+
+/// Read one canonical mod configuration state under the same installation
+/// lock used by configuration writers.
+pub fn read_mod_settings_snapshot(root: &Path, id: &str) -> Result<ModSettingsSnapshot, String> {
+    let _installation_lock = shroudforge_loader_config::config::installation_lock(root)?;
+    let package = crate::package_lookup::resolve_mod_package(root, id)?;
+    read_mod_settings_snapshot_at(root, &package)
+}
+
+/// Read settings for the exact package admitted to a native runtime owner.
+pub fn read_bound_mod_settings_snapshot(
+    root: &Path,
+    binding: &crate::package_lookup::ModPackageBinding,
+) -> Result<ModSettingsSnapshot, String> {
+    let _installation_lock = shroudforge_loader_config::config::installation_lock(root)?;
+    let package = crate::package_lookup::validate_mod_package_binding_locked(root, binding)?;
+    read_mod_settings_snapshot_at(root, &package)
+}
+
+fn read_mod_settings_snapshot_at(
+    root: &Path,
+    package: &Path,
+) -> Result<ModSettingsSnapshot, String> {
+    let manifest = crate::config::read_manifest_path(root, package)?;
+    let state = json!({
+        "enabled": manifest.enabled,
+        "settings": manifest.setting_values.clone(),
+    });
+    Ok(ModSettingsSnapshot {
+        revision: crate::config_revision(&state),
+        values: manifest.setting_values,
+    })
+}
+
 pub(crate) fn parse_setting_definition(
     key: &str,
     value: &Value,
@@ -119,7 +160,11 @@ pub(crate) fn parse_setting_definition(
     let asset_preparation = match metadata.get("assetPreparation") {
         None => false,
         Some(Value::Bool(value)) => *value,
-        Some(_) => return Err(format!("setting '{key}' assetPreparation must be a boolean")),
+        Some(_) => {
+            return Err(format!(
+                "setting '{key}' assetPreparation must be a boolean"
+            ));
+        }
     };
     let enabled_when = metadata
         .get("enabledWhen")

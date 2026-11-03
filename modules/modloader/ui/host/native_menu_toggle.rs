@@ -4,7 +4,7 @@ use std::thread::{self, JoinHandle};
 use tao::event_loop::EventLoopProxy;
 use windows_sys::Win32::Foundation::{CloseHandle, HANDLE, WAIT_OBJECT_0};
 use windows_sys::Win32::System::Threading::{
-    CreateEventW, ResetEvent, SetEvent, WaitForMultipleObjects, INFINITE,
+    CreateEventW, INFINITE, ResetEvent, SetEvent, WaitForMultipleObjects,
 };
 
 pub(crate) struct NativeMenuToggle {
@@ -71,9 +71,8 @@ impl NativeMenuToggle {
                 .spawn(move || {
                     let handles = [stop_handle as HANDLE, open_handle as HANDLE];
                     loop {
-                        let result = unsafe {
-                            WaitForMultipleObjects(2, handles.as_ptr(), 0, INFINITE)
-                        };
+                        let result =
+                            unsafe { WaitForMultipleObjects(2, handles.as_ptr(), 0, INFINITE) };
                         if result == WAIT_OBJECT_0 {
                             break;
                         }
@@ -127,14 +126,7 @@ impl Drop for NativeMenuToggle {
 }
 
 fn create_event(name: &[u16], manual_reset: bool) -> Result<HANDLE, String> {
-    let event = unsafe {
-        CreateEventW(
-            ptr::null(),
-            i32::from(manual_reset),
-            0,
-            name.as_ptr(),
-        )
-    };
+    let event = unsafe { CreateEventW(ptr::null(), i32::from(manual_reset), 0, name.as_ptr()) };
     if event.is_null() {
         Err(format!(
             "Could not create native menu event: {}",

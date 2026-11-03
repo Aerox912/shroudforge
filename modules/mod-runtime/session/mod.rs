@@ -15,8 +15,15 @@ use kfc::{
     reflection::{TypeHandle, TypeIndex, TypeRegistry},
     resource::value::Value,
 };
+use mod_loader::Capability;
 use mod_loader::{Mod, ModEnvironment};
+use native_plugins::{NativeDll, PendingNativeDll};
 use once_cell::unsync::OnceCell;
+use std::{
+    io::Read,
+    path::PathBuf as NativePathBuf,
+    sync::mpsc::{self, Receiver, TryRecvError},
+};
 
 use crate::{
     RunArgs, RuntimePhase, ShroudForgeApi,
@@ -34,10 +41,16 @@ use crate::{
 pub struct AppState {
     pub(crate) runtime_configured: Cell<bool>,
     runtime_active_mods: RefCell<HashSet<String>>,
+    map_lua_owners: RefCell<HashMap<String, u64>>,
     runtime_effects: RefCell<HashMap<String, serde_json::Value>>,
     runtime_write_fault: RefCell<Option<(u64, String)>>,
     runtime_ownership:
         Rc<RefCell<crate::lua::ingame::overrides::claim_runtime_storage::OwnershipStore>>,
+    native_dlls: RefCell<Vec<NativeDll>>,
+    pending_native_dlls: RefCell<Vec<PendingNativeDll>>,
+    network_policy: Cell<native_plugin_abi::NativeNetworkPolicy>,
+    native_plugin_services:
+        RefCell<std::sync::Arc<dyn native_plugin_abi::NativePluginServiceLifetime>>,
     env: ModEnvironment,
     api: ShroudForgeApi,
     config: AppConfig,
@@ -52,6 +65,11 @@ pub struct AppState {
     reader: RefCell<KFCCursor<KFCReader>>,
     writer: RefCell<Option<KFCWriter<Rc<KFCFile>, Rc<TypeRegistry>>>>,
     asset_transaction: Cell<bool>,
+    generated_asset_transaction: bool,
+    defer_current_commit: bool,
+    prepared_asset_output: bool,
+    asset_input_root: NativePathBuf,
+    asset_output_root: NativePathBuf,
     asset_stem: String,
 
     // NOTE: the `Vec<u8>` must always be treated as immutable
@@ -113,6 +131,17 @@ impl AppState {
     #[inline]
     pub fn has_feature(&self, feature: AppFeatures) -> bool {
         self.config.feature_flags.contains(feature)
+    }
+
+    /// Lua Network checks read this memory snapshot. The existing runtime
+    /// refresh updates it at most once per second, so setting changes take
+    /// effect on the next refresh.
+    pub(crate) fn network_module_enabled(&self) -> Option<bool> {
+        match self.network_policy.get() {
+            native_plugin_abi::NativeNetworkPolicy::Enabled => Some(true),
+            native_plugin_abi::NativeNetworkPolicy::Disabled => Some(false),
+            native_plugin_abi::NativeNetworkPolicy::Unavailable => None,
+        }
     }
 
     #[inline]
@@ -198,7 +227,7 @@ impl AppState {
 
 impl Drop for AppState {
     fn drop(&mut self) {
-        if self.asset_transaction.get() {
+        if self.asset_transaction.get() && !self.prepared_asset_output {
             if let Err(error) = shroudforge_game_assets::transaction::abort(
                 self.env.game_dir().as_std_path(),
                 &self.asset_stem,
@@ -206,6 +235,8 @@ impl Drop for AppState {
                 warn!(error = %error, "Failed to abort typed asset transaction");
             }
         }
+        self.shutdown_native_dlls();
+        self.release_all_lua_map_owners();
     }
 }
 
@@ -214,7 +245,16 @@ pub(crate) mod configure_component_contract;
 mod create_mod_session;
 pub(crate) mod loaded_resource_indexes;
 mod loaded_resources;
-mod native_plugins;
+mod map_overlay_services;
+mod native_plugin_abi;
+mod native_plugin_lifecycle;
+pub(crate) mod native_plugins;
+mod read_native_plugin_declaration;
+mod validate_generated_assets;
+pub(crate) use read_native_plugin_declaration::{
+    first_person_startup_demand, gifting_range_startup_demand, managed_native_path,
+    native_overlay_startup_demand, vein_mining_startup_demand,
+};
 mod record_runtime_state;
 pub use asset_resources::ResourceInfo;
 use asset_resources::ResourceSource;

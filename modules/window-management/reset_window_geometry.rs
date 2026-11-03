@@ -10,7 +10,7 @@ pub fn reset_window_geometry(root: &Path, module: &str, component: &str) -> Resu
         _ => {
             return Err(format!(
                 "unsupported window geometry component: {component}"
-            ))
+            ));
         }
     };
 

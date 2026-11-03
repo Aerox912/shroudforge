@@ -10,13 +10,34 @@ pub fn load_type_registry(
     cache_dir: &Path,
     file_name: &str,
 ) -> Result<(TypeRegistry, bool), ()> {
-    if let Err(e) = std::fs::create_dir_all(cache_dir) {
-        error!(
-            error = %e,
-            path = ?cache_dir,
-            "Failed to create cache directory, unable to load or save type registry",
-        );
-        return Err(());
+    load_with_cache_policy(game_dir, cache_dir, file_name, true)
+}
+
+/// Reuse a validated cache or extract an operation-local registry. Never create
+/// a cache directory or alter the shared registry/identity documents.
+pub(crate) fn load_current_composition_registry(
+    game_dir: &Path,
+    cache_dir: &Path,
+    file_name: &str,
+) -> Result<(TypeRegistry, bool), ()> {
+    load_with_cache_policy(game_dir, cache_dir, file_name, false)
+}
+
+fn load_with_cache_policy(
+    game_dir: &Path,
+    cache_dir: &Path,
+    file_name: &str,
+    persist_cache: bool,
+) -> Result<(TypeRegistry, bool), ()> {
+    if persist_cache {
+        if let Err(e) = std::fs::create_dir_all(cache_dir) {
+            error!(
+                error = %e,
+                path = ?cache_dir,
+                "Failed to create cache directory, unable to load or save type registry",
+            );
+            return Err(());
+        }
     }
 
     let types_path = cache_dir.join(format!("types-{file_name}.json"));
@@ -110,32 +131,36 @@ pub fn load_type_registry(
                 if let Some(version_tag) = version_tag {
                     registry.version = version_tag;
 
-                    match serde_json::to_value(&registry) {
-                        Ok(json) => {
-                            if let Err(e) = shroudforge_loader_config::config::write_json(
-                                types_path.as_std_path(),
-                                &json,
-                            ) {
+                    if persist_cache {
+                        match serde_json::to_value(&registry) {
+                            Ok(json) => {
+                                if let Err(e) = shroudforge_loader_config::config::write_json(
+                                    types_path.as_std_path(),
+                                    &json,
+                                ) {
+                                    debug!(
+                                        error = %e,
+                                        path = ?types_path,
+                                        "Failed to write type registry to file",
+                                    );
+                                } else if let Some(identity) = &identity {
+                                    if let Err(error) =
+                                        shroudforge_loader_config::config::write_json(
+                                            identity_path.as_std_path(),
+                                            identity,
+                                        )
+                                    {
+                                        debug!(%error, "Could not save executable identity for type cache");
+                                    }
+                                }
+                            }
+                            Err(e) => {
                                 debug!(
                                     error = %e,
                                     path = ?types_path,
-                                    "Failed to write type registry to file",
+                                    "Failed to serialize type registry to JSON",
                                 );
-                            } else if let Some(identity) = &identity {
-                                if let Err(error) = shroudforge_loader_config::config::write_json(
-                                    identity_path.as_std_path(),
-                                    identity,
-                                ) {
-                                    debug!(%error, "Could not save executable identity for type cache");
-                                }
                             }
-                        }
-                        Err(e) => {
-                            debug!(
-                                error = %e,
-                                path = ?types_path,
-                                "Failed to serialize type registry to JSON",
-                            );
                         }
                     }
                 } else {

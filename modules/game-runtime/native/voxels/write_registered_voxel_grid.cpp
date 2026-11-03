@@ -1,9 +1,13 @@
 #include "voxels/write_registered_voxel_grid.h"
 #include "voxels/read_registered_voxel_grid.h"
+#include "voxels/inspect_registered_writer_metadata.h"
 #include "voxels/voxel_request.h"
 #include "impact/resolve_registered_operation.h"
+#include "ecs/entity_session.h"
+#include "engine-context/lock_scene_access.h"
 #include "code-inventory/resolve_original_call_graph.h"
 #include "named-services/named_service_contract.h"
+#include <bcrypt.h>
 #include <deque>
 #include <map>
 #include <set>
@@ -220,18 +224,66 @@ bool dirty_commit(const Procedure& code) {
     return dirty && allocator && notify;
 }
 
-struct WriterCode { std::uintptr_t root{}, writer{}; OriginalCode::CodeEvidence bytes; };
+struct WriterCode {
+    std::uintptr_t root{}, writer{};
+    OriginalCode::CodeEvidence bytes;
+    std::array<std::uintptr_t, maximum_metadata_path> path{};
+    std::size_t path_count{};
+};
 std::mutex resolution_mutex;
 WriterCode cached;
 
 bool capture_code(const Procedure& code, WriterCode& result) {
     return OriginalCode::AppendEvidence(code, result.bytes);
 }
+
+bool digest_procedure(const Procedure& procedure, std::array<char, 65>& output) {
+    BCRYPT_ALG_HANDLE algorithm{};
+    BCRYPT_HASH_HANDLE hash{};
+    ULONG object_size{}, digest_size{}, received{};
+    std::vector<UCHAR> object;
+    std::array<UCHAR, 32> digest{};
+    bool ok = BCryptOpenAlgorithmProvider(&algorithm, BCRYPT_SHA256_ALGORITHM, nullptr, 0) >= 0;
+    if (ok) ok = BCryptGetProperty(algorithm, BCRYPT_OBJECT_LENGTH,
+        reinterpret_cast<PUCHAR>(&object_size), sizeof(object_size), &received, 0) >= 0 &&
+        BCryptGetProperty(algorithm, BCRYPT_HASH_LENGTH,
+            reinterpret_cast<PUCHAR>(&digest_size), sizeof(digest_size), &received, 0) >= 0 &&
+        object_size && object_size <= 4096 && digest_size == digest.size();
+    if (ok) {
+        object.resize(object_size);
+        ok = BCryptCreateHash(algorithm, &hash, object.data(), object_size, nullptr, 0, 0) >= 0;
+    }
+    const auto append = [&](const std::uint8_t* bytes, std::size_t size) {
+        while (ok && size) {
+            const auto count = (std::min)(size, static_cast<std::size_t>(UINT32_MAX));
+            ok = BCryptHashData(hash, const_cast<PUCHAR>(bytes), static_cast<ULONG>(count), 0) >= 0;
+            bytes += count;
+            size -= count;
+        }
+    };
+    if (ok && procedure.instructions.empty()) ok = false;
+    for (const auto& instruction : procedure.instructions) {
+        const auto length = instruction.decoded.length;
+        if (!length || length > instruction.bytes.size()) { ok = false; break; }
+        append(instruction.bytes.data(), length);
+    }
+    if (ok) ok = BCryptFinishHash(hash, digest.data(), digest_size, 0) >= 0;
+    if (hash) BCryptDestroyHash(hash);
+    if (algorithm) BCryptCloseAlgorithmProvider(algorithm, 0);
+    if (!ok) return false;
+    constexpr char hex[] = "0123456789abcdef";
+    for (std::size_t i = 0; i < digest.size(); ++i) {
+        output[i * 2] = hex[digest[i] >> 4];
+        output[i * 2 + 1] = hex[digest[i] & 0x0f];
+    }
+    output[64] = '\0';
+    return true;
+}
+
 bool code_unchanged(const WriterCode& code) {
     return OriginalCode::EvidenceUnchanged(code.bytes);
 }
-bool resolve_writer(std::uintptr_t root, WriterCode& output) {
-    std::scoped_lock lock(resolution_mutex);
+bool resolve_writer_locked(std::uintptr_t root, WriterCode& output) {
     if (cached.root == root && cached.writer && code_unchanged(cached)) { output = cached; return true; }
     WriterCode result; result.root = root;
     if (!OriginalCode::FindUniqueReachable(root, 6, writer_contract, result.writer)) return false;
@@ -255,7 +307,10 @@ bool resolve_writer(std::uintptr_t root, WriterCode& output) {
         if (at == result.writer) {
             for (const auto step : path) {
                 Procedure part;
-                if (!OriginalCode::ReadProcedure(step, part) || !capture_code(part, result)) return false;
+                if (result.path_count >= result.path.size() || !OriginalCode::ReadProcedure(step, part)) return false;
+                result.path[result.path_count] = step;
+                if (!capture_code(part, result)) return false;
+                ++result.path_count;
             }
             found = true; break;
         }
@@ -267,8 +322,24 @@ bool resolve_writer(std::uintptr_t root, WriterCode& output) {
     cached = result; output = std::move(result); return true;
 }
 
+bool resolve_writer(std::uintptr_t root, WriterCode& output) {
+    std::scoped_lock lock(resolution_mutex);
+    return resolve_writer_locked(root, output);
+}
+
+WriterMetadataStatus inspect_writer(std::uintptr_t root, WriterCode& output) {
+    std::unique_lock lock(resolution_mutex, std::try_to_lock);
+    if (!lock.owns_lock()) return WriterMetadataStatus::Busy;
+    return resolve_writer_locked(root, output) ? WriterMetadataStatus::Found :
+        WriterMetadataStatus::DecodeFailure;
+}
+
 bool invoke_write(std::uintptr_t callback, std::uintptr_t world,
     const std::uint16_t* values, std::size_t count, const std::uint32_t* dimensions, const std::int32_t* origin) {
+#if defined(KFC_RUNTIME_TEST_COUNT_REGISTERED_VOXEL_WRITES)
+    extern std::size_t registered_voxel_engine_invocations;
+    ++registered_voxel_engine_invocations;
+#endif
     struct Span { const std::uint16_t* data; std::uint64_t count; } span{values, count};
     using Callback = void(__fastcall*)(void*, const Span*, const std::uint32_t*, const std::int32_t*);
     __try {
@@ -284,6 +355,161 @@ bool registered_root(const NamedServiceImplementation::BindingContract& binding,
         ImpactRuntime::ResolveResult::Found || operation.arguments != 9) return false;
     root = operation.callback; return true;
 }
+
+OperationMetadataStatus status_for_resolve(ImpactRuntime::ResolveResult result) {
+    switch (result) {
+    case ImpactRuntime::ResolveResult::SessionChanged: return OperationMetadataStatus::Stale;
+    case ImpactRuntime::ResolveResult::UnsupportedContract: return OperationMetadataStatus::Unsupported;
+    case ImpactRuntime::ResolveResult::RegistryUnavailable: return OperationMetadataStatus::Unknown;
+    case ImpactRuntime::ResolveResult::Found: return OperationMetadataStatus::Found;
+    }
+    return OperationMetadataStatus::Unknown;
+}
+
+bool pin_registered_operation(const NamedServiceImplementation::BindingContract& binding,
+    std::uint64_t expected_generation, ImpactRuntime::RegisteredOperationMetadata& output,
+    OperationMetadataStatus& failure, const WriterCode* evidence = nullptr) {
+    if (!expected_generation || KfcRuntimeWorldSessionId() != expected_generation) {
+        failure = OperationMetadataStatus::Stale;
+        return false;
+    }
+    std::unique_lock operation_lock(NamedServiceImplementation::operation_mutex, std::try_to_lock);
+    if (!operation_lock.owns_lock()) {
+        failure = OperationMetadataStatus::Busy;
+        return false;
+    }
+    EcsRuntime::SessionGuard session;
+    if (!session.TryAcquire(expected_generation)) {
+        failure = OperationMetadataStatus::Stale;
+        return false;
+    }
+    EngineContext::EcsWriteGuard scene;
+    if (!scene.TryAcquire(session.View())) {
+        failure = OperationMetadataStatus::Busy;
+        return false;
+    }
+    if (!scene.Validate()) {
+        failure = OperationMetadataStatus::Stale;
+        return false;
+    }
+    ImpactRuntime::RegisteredOperationMetadata found;
+    const auto result = ImpactRuntime::ResolveRegisteredTerraformingMetadataPinned(
+        binding, session.View(), expected_generation, found);
+    if (result != ImpactRuntime::ResolveResult::Found) {
+        failure = status_for_resolve(result);
+        return false;
+    }
+    if (!scene.Validate() || KfcRuntimeWorldSessionId() != expected_generation ||
+        (evidence && !code_unchanged(*evidence)) || !scene.Validate()) {
+        failure = OperationMetadataStatus::Stale;
+        return false;
+    }
+    output = found;
+    return true;
+}
+
+bool code_address_rva(std::uintptr_t address, std::uintptr_t image_base,
+    std::uint32_t image_size, std::uint32_t& output) {
+    if (!address || !image_base || address < image_base || address - image_base >= image_size ||
+        address - image_base > UINT32_MAX) return false;
+    output = static_cast<std::uint32_t>(address - image_base);
+    return true;
+}
+}
+
+OperationMetadata InspectOperationMetadata() {
+    OperationMetadata unavailable;
+    try {
+        const auto generation = KfcRuntimeWorldSessionId();
+        if (!generation) return unavailable;
+        const auto binding = NamedServiceImplementation::binding_contract("impact::ImpactSystem");
+        ImpactRuntime::RegisteredOperationMetadata initial;
+        OperationMetadataStatus failure{};
+        if (!pin_registered_operation(binding, generation, initial, failure)) {
+            unavailable.status = failure;
+            return unavailable;
+        }
+
+        const auto module = GetModuleHandleW(nullptr);
+        const auto base = reinterpret_cast<std::uintptr_t>(module);
+        if (!module || !initial.image_size || initial.callback_rva >= initial.image_size ||
+            initial.callback_rva > UINTPTR_MAX - base) {
+            unavailable.status = OperationMetadataStatus::Unsupported;
+            return unavailable;
+        }
+
+        WriterCode code;
+        std::array<std::array<char, 65>, maximum_metadata_path> path_digests{};
+        bool have_code_evidence{};
+        bool have_writer{};
+        WriterMetadataStatus writer_status = WriterMetadataStatus::NotInspected;
+        if (initial.arguments == 9) {
+            const auto root = base + initial.callback_rva;
+            const auto writer_resolution = inspect_writer(root, code);
+            if (writer_resolution == WriterMetadataStatus::Busy) {
+                writer_status = WriterMetadataStatus::Busy;
+            } else if (writer_resolution == WriterMetadataStatus::Found) {
+                have_code_evidence = true;
+                if (code.path_count && code.writer && code.path_count <= path_digests.size()) {
+                    have_writer = true;
+                    for (std::size_t i = 0; i < code.path_count; ++i) {
+                        OriginalCode::Procedure procedure;
+                        if (!OriginalCode::ReadProcedure(code.path[i], procedure) ||
+                            !digest_procedure(procedure, path_digests[i])) {
+                            have_writer = false;
+                            break;
+                        }
+                    }
+                }
+                writer_status = have_writer ? WriterMetadataStatus::Found : WriterMetadataStatus::DecodeFailure;
+            } else {
+                writer_status = WriterMetadataStatus::DecodeFailure;
+            }
+        } else {
+            writer_status = WriterMetadataStatus::UnsupportedArity;
+        }
+
+        ImpactRuntime::RegisteredOperationMetadata repeated;
+        if (!pin_registered_operation(binding, generation, repeated, failure,
+                have_code_evidence ? &code : nullptr)) {
+            unavailable.status = failure;
+            return unavailable;
+        }
+        if (repeated != initial || GetModuleHandleW(nullptr) != module) {
+            unavailable.status = OperationMetadataStatus::Stale;
+            return unavailable;
+        }
+
+        OperationMetadata accepted;
+        accepted.status = have_writer ? OperationMetadataStatus::Found : OperationMetadataStatus::Partial;
+        accepted.writer_status = writer_status;
+        accepted.operation_found = true;
+        accepted.argument_count = initial.arguments;
+        accepted.operation_name = initial.name;
+        accepted.image_size = initial.image_size;
+        accepted.session_generation = initial.session_generation;
+        accepted.callback_rva = initial.callback_rva;
+        if (have_writer) {
+            if (!code_address_rva(code.writer, base, initial.image_size, accepted.writer_candidate_rva) ||
+                code.path_count > accepted.writer_path.size()) {
+                unavailable.status = OperationMetadataStatus::Stale;
+                return unavailable;
+            }
+            accepted.writer_path_count = code.path_count;
+            for (std::size_t i = 0; i < code.path_count; ++i) {
+                if (!code_address_rva(code.path[i], base, initial.image_size,
+                        accepted.writer_path[i].rva) || !MetadataSerialization::is_sha256(path_digests[i])) {
+                    unavailable.status = OperationMetadataStatus::Stale;
+                    return unavailable;
+                }
+                accepted.writer_path[i].code_sha256 = path_digests[i];
+            }
+        }
+        return accepted;
+    } catch (...) {
+        unavailable.status = OperationMetadataStatus::Unknown;
+        return unavailable;
+    }
 }
 
 bool WriteAvailable() {

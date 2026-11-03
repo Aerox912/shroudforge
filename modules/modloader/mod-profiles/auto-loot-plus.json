@@ -1,0 +1,14 @@
+{
+  "schemaVersion": 1,
+  "id": "auto-loot-plus",
+  "modId": "auto-loot-plus",
+  "packageDirectory": "auto-loot-plus",
+  "name": "Auto Loot Plus",
+  "target": "client",
+  "files": [
+    {
+      "path": "native/dinput8.dll",
+      "mode": "library"
+    }
+  ]
+}

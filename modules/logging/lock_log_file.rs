@@ -46,7 +46,11 @@ pub(crate) fn with_log_lock<T>(
     if let Some(parent) = lock.parent() {
         std::fs::create_dir_all(parent)?;
     }
-    let file = OpenOptions::new().create(true).read(true).write(true).open(lock)?;
+    let file = OpenOptions::new()
+        .create(true)
+        .read(true)
+        .write(true)
+        .open(lock)?;
     if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX) } != 0 {
         return Err(io::Error::last_os_error());
     }

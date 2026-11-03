@@ -13,17 +13,25 @@
     "support-patreon": "https://www.patreon.com/cw/bonsaibauer"
   },
   "changelog": [
+    "Adds personal F6 controls and a native per-player glider-flight candidate for supported dedicated servers. Older providers return an explicit unsupported result.",
     "Separates upward gliding from unlimited glider stamina. Restores original game values when the mod is disabled."
   ],
   "settings": {
+    "toggleUpwardGliding": {
+      "value": "SDL:63",
+      "label": "Toggle Upward Gliding",
+      "description": "Press F6 to toggle this runtime's Upward Gliding setting. Assign another shortcut in Compatibility → Hotkeys.",
+      "control": "keybind",
+      "applyAt": "live"
+    },
     "unlimitedFlying": {
-      "value": true,
+      "value": false,
       "label": "Upward Gliding",
       "description": "Allows the glider to tilt upward while glider stamina depletes normally.",
       "control": "checkbox"
     },
     "unlimitedGliderStamina": {
-      "value": true,
+      "value": false,
       "label": "Unlimited Glider Stamina",
       "description": "Prevents stamina drain while gliding.",
       "control": "checkbox"
@@ -70,6 +78,7 @@
       "label": "Unlimited Flight",
       "description": "Speed changes affect the active glider and every player using the same glider type.",
       "settings": [
+        "toggleUpwardGliding",
         "unlimitedFlying",
         "unlimitedGliderStamina",
         "turnSpeed",

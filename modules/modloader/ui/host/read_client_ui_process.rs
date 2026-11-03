@@ -2,8 +2,7 @@ use super::read_host_arguments::SYNCHRONIZE_ACCESS;
 use std::path::{Path, PathBuf};
 use windows_sys::Win32::Foundation::{CloseHandle, WAIT_TIMEOUT};
 use windows_sys::Win32::System::Threading::{
-    OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION, QueryFullProcessImageNameW,
-    WaitForSingleObject,
+    OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION, QueryFullProcessImageNameW, WaitForSingleObject,
 };
 
 pub(crate) fn active_client_ui_pid(root: &Path) -> Option<u32> {
@@ -27,15 +26,10 @@ pub(crate) fn active_client_ui_pid(root: &Path) -> Option<u32> {
     active.then_some(pid)
 }
 
-fn process_uses_current_executable(
-    process: windows_sys::Win32::Foundation::HANDLE,
-) -> bool {
+fn process_uses_current_executable(process: windows_sys::Win32::Foundation::HANDLE) -> bool {
     let mut buffer = vec![0u16; 32768];
     let mut length = buffer.len() as u32;
-    if unsafe {
-        QueryFullProcessImageNameW(process, 0, buffer.as_mut_ptr(), &mut length)
-    } == 0
-    {
+    if unsafe { QueryFullProcessImageNameW(process, 0, buffer.as_mut_ptr(), &mut length) } == 0 {
         return false;
     }
     let process_path = PathBuf::from(String::from_utf16_lossy(&buffer[..length as usize]));

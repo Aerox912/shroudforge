@@ -119,8 +119,14 @@ pub(crate) fn view_state(root: &Path) -> Result<ViewState, Box<dyn std::error::E
     }
     let keybinds = keybind_labels(root, &applied_keybinds);
     if hint.is_empty() {
-        if let Some(mark) = keybinds.iter().find(|binding| binding.id == "markCursorNext") {
-            hint = format!("Select the Building Hammer, choose a Single Voxel, aim at the first corner, then press {}.", mark.key);
+        if let Some(mark) = keybinds
+            .iter()
+            .find(|binding| binding.id == "markCursorNext")
+        {
+            hint = format!(
+                "Select the Building Hammer, choose a Single Voxel, aim at the first corner, then press {}.",
+                mark.key
+            );
         }
     }
     let window_toggle_label = shroudforge_loader_config::config::read_loader(root)
@@ -221,7 +227,10 @@ fn keybind_labels(root: &Path, applied: &BTreeMap<String, String>) -> Vec<Keybin
         .settings
         .iter()
         .filter(|setting| {
-            matches!(setting.control, Some(shroudforge_package::SettingControl::Keybind))
+            matches!(
+                setting.control,
+                Some(shroudforge_package::SettingControl::Keybind)
+            )
         })
         .map(|setting| {
             let value = applied
@@ -229,11 +238,12 @@ fn keybind_labels(root: &Path, applied: &BTreeMap<String, String>) -> Vec<Keybin
                 .map(String::as_str)
                 .or_else(|| manifest.setting_values[&setting.key].as_str())
                 .unwrap_or("");
-            let active = manifest.enabled && shroudforge_package::setting_is_enabled(
-                &setting.key,
-                &manifest.settings,
-                &manifest.setting_values,
-            );
+            let active = manifest.enabled
+                && shroudforge_package::setting_is_enabled(
+                    &setting.key,
+                    &manifest.settings,
+                    &manifest.setting_values,
+                );
             let key = if active {
                 shroudforge_hotkeys::parse_hotkey(value)
                     .ok()

@@ -1,4 +1,20 @@
+pub mod current_assets;
 pub mod documents;
+
+/// Private bootstrap diagnostic route. No SDK adoption or native capability.
+/// The selected observation DLL remains unavailable until its exact independent
+/// review and the separate shared-host candidate are accepted.
+pub unsafe fn prepare_early_owner_probe(host: *const std::ffi::c_void) -> u32 {
+    #[cfg(windows)] { unsafe { session::native_plugins::early_probe::prepare(host) } }
+    #[cfg(not(windows))] { let _ = host; 2 }
+}
+pub fn tick_early_owner_probe() -> u32 {
+    #[cfg(windows)] { session::native_plugins::early_probe::tick() }
+    #[cfg(not(windows))] { 0 }
+}
+pub fn revoke_early_owner_probe() {
+    #[cfg(windows)] { session::native_plugins::early_probe::revoke(); }
+}
 use kfc::{ResourceReference, TypeDefinition};
 use shroudforge_compatibility::GameContract;
 use std::path::PathBuf;
@@ -21,6 +37,38 @@ use reflection as runtime_resolution;
 use shroudforge_runtime_bridge as runtime_provider;
 use startup::cache;
 use startup::open_game_assets as game_files;
+
+/// Read the planned, enabled client packages' explicit native overlay demand.
+/// Call before releasing the executable entrypoint; enabling later requires restart.
+pub fn native_overlay_startup_demand(
+    environment: &mod_loader::ModEnvironment,
+) -> Result<bool, String> {
+    session::native_overlay_startup_demand(environment)
+}
+
+/// Read whether the enabled client runtime plan includes the First Person package.
+/// The bootstrap calls this before releasing the entrypoint; enabling later requires restart.
+pub fn first_person_startup_demand(
+    environment: &mod_loader::ModEnvironment,
+) -> Result<bool, String> {
+    session::first_person_startup_demand(environment)
+}
+
+/// Read whether enabled `sf-vein-mining` qualifies for the dedicated-server
+/// runtime plan before the bootstrap releases the executable entrypoint.
+pub fn vein_mining_startup_demand(
+    environment: &mod_loader::ModEnvironment,
+) -> Result<bool, String> {
+    session::vein_mining_startup_demand(environment)
+}
+
+/// Read whether the explicit Shroudweave Unlimited Gifting Range server
+/// package qualifies for the dedicated-server runtime plan before entry release.
+pub fn gifting_range_startup_demand(
+    environment: &mod_loader::ModEnvironment,
+) -> Result<bool, String> {
+    session::gifting_range_startup_demand(environment)
+}
 
 pub const API_VERSION: &str = env!("CARGO_PKG_VERSION");
 
@@ -111,6 +159,11 @@ impl RuntimePhase {
 
 #[derive(Debug, Clone, Default)]
 pub struct RunOptions {
+    /// Apply selected pregame mods to the current composed assets without a
+    /// baseline snapshot. The caller owns the startup lease and inverse lifecycle.
+    pub current_asset_mods: Option<Vec<String>>,
+    /// Transfer validated generated output to the outer coordinator for publication.
+    pub defer_current_commit: bool,
     /// If true, it will ignore the cache and re-apply all mods.
     pub skip_cache: bool,
     /// If true, keep the asset writer enabled even when input fingerprints match.
@@ -141,7 +194,9 @@ pub use runtime::IngameRuntime;
 pub use startup::manage_asset_baseline::{
     backup_companion_file, create_working_kfc_backup, restore, working_baseline_is_incompatible,
 };
-pub use startup::run_startup_mods::{run, run_with_local_schema};
+pub use startup::run_startup_mods::{
+    run, run_prepared, run_prepared_with_local_schema, run_with_local_schema,
+};
 
 #[cfg(test)]
 use runtime::Lifecycle;

@@ -1,0 +1,17 @@
+{
+  "$schema": "../../modules/modloader/manifest/manifest.schema.json",
+  "id": "shroudweave-first-person",
+  "name": "ShroudWeave First Person",
+  "version": "1.0.0",
+  "description": "Toggle the first-person camera and corrected stamina gauge with Home.",
+  "authors": [
+    "Miguel Oppermann (s0T7x)",
+    "bonsaibauer"
+  ],
+  "license": "MIT",
+  "icon": null,
+  "dependencies": [],
+  "capabilities": [
+    "runtime"
+  ]
+}

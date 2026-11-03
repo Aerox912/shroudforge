@@ -171,10 +171,12 @@ mod tests {
 
         assert!(plan.iter().all(|item| item.info().id != "world-editor"));
         assert!(plan.iter().any(|item| item.info().id == "independent-mod"));
-        assert!(errors["world-editor"]
-            .as_str()
-            .unwrap()
-            .contains("disabled in Settings"));
+        assert!(
+            errors["world-editor"]
+                .as_str()
+                .unwrap()
+                .contains("disabled in Settings")
+        );
 
         fs::remove_dir_all(root).unwrap();
     }

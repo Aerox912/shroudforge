@@ -153,11 +153,9 @@ pub(crate) fn read_ui_snapshot(
                 .map(str::to_owned),
             active_runtime_profile: active_runtime_profile(root),
             runtime_profiles: runtime_profile_ids(root),
-            runtime_profile_directory: shroudforge_loader_config::paths::runtime_profiles_dir(
-                root,
-            )
-            .display()
-            .to_string(),
+            runtime_profile_directory: shroudforge_loader_config::paths::runtime_profiles_dir(root)
+                .display()
+                .to_string(),
             diagnostic_jobs: diagnostic_jobs.jobs,
             diagnostic_job_errors: diagnostic_jobs.errors,
             diagnostic_job_directory: diagnostic_jobs.directory,
@@ -187,7 +185,10 @@ fn hotkey_conflicts(
         return Vec::new();
     }
     let mut bindings = Vec::new();
-    if let Some(modules) = central.get("modules").and_then(serde_json::Value::as_object) {
+    if let Some(modules) = central
+        .get("modules")
+        .and_then(serde_json::Value::as_object)
+    {
         for (id, module) in modules {
             if module.get("enabled").and_then(serde_json::Value::as_bool) == Some(false) {
                 continue;

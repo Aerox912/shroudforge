@@ -1,0 +1,17 @@
+{
+  "schemaVersion": 1,
+  "id": "xhl-native-core",
+  "modId": "xhl-native-core",
+  "packageDirectory": "xhl-native-core",
+  "name": "XHL Native Core (Original)",
+  "target": "client",
+  "importFiles": {
+    "native_runtime/xhl/dinput8.dll": "dinput8.dll"
+  },
+  "files": [
+    {
+      "path": "dinput8.dll",
+      "mode": "dinput8"
+    }
+  ]
+}

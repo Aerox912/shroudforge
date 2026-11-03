@@ -1,0 +1,14 @@
+{
+  "schemaVersion": 1,
+  "id": "xhl-remote-altar-close",
+  "modId": "xhl-remote-altar-close",
+  "packageDirectory": "XHL-Remote-Altar-Close",
+  "name": "XHL Remote Altar Close",
+  "target": "client",
+  "files": [
+    {
+      "path": "XHL-Remote-Altar-Close.dll",
+      "mode": "library"
+    }
+  ]
+}

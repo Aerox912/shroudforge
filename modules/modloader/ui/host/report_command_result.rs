@@ -6,8 +6,7 @@ use std::path::Path;
 
 pub(crate) fn is_module_unavailable_warning(message: &str) -> bool {
     let message = message.to_ascii_lowercase();
-    message.contains("disabled in settings")
-        || message.contains("is disabled in module settings")
+    message.contains("disabled in settings") || message.contains("is disabled in module settings")
 }
 
 pub(crate) fn disable_missing_updater(root: &Path) -> String {

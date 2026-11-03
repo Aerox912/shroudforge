@@ -6,6 +6,80 @@ endif()
 
 enable_language(RC)
 enable_language(C)
+enable_language(ASM_MASM)
+
+add_executable(kfc-runtime-test-map-service-lifetime EXCLUDE_FROM_ALL ../tests/map_service_lifetime_test.cpp
+    map/read_map_frame.cpp graphics/render_overlay.cpp graphics/rasterize_notice.cpp)
+target_include_directories(kfc-runtime-test-map-service-lifetime PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
+target_compile_features(kfc-runtime-test-map-service-lifetime PRIVATE cxx_std_20)
+target_compile_definitions(kfc-runtime-test-map-service-lifetime PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX KFC_RUNTIME_BUILD)
+set_property(TARGET kfc-runtime-test-map-service-lifetime PROPERTY MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+
+add_executable(kfc-runtime-test-waypoint-capture EXCLUDE_FROM_ALL ../tests/waypoint_capture_test.cpp
+    map/read_map_frame.cpp map/hud_visibility.cpp engine-hooks/write_executable_bytes.cpp engine-hooks/allocate_near_code.cpp)
+target_include_directories(kfc-runtime-test-waypoint-capture PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
+target_compile_features(kfc-runtime-test-waypoint-capture PRIVATE cxx_std_20)
+target_compile_definitions(kfc-runtime-test-waypoint-capture PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX)
+set_property(TARGET kfc-runtime-test-waypoint-capture PROPERTY MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+
+add_executable(kfc-runtime-test-map-overlay-c EXCLUDE_FROM_ALL ../tests/map_overlay_c_test.c)
+target_include_directories(kfc-runtime-test-map-overlay-c PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
+target_compile_features(kfc-runtime-test-map-overlay-c PRIVATE c_std_11)
+set_property(TARGET kfc-runtime-test-map-overlay-c PROPERTY MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+
+add_executable(kfc-runtime-test-first-person-c-abi EXCLUDE_FROM_ALL ../tests/first_person_c_abi_test.c)
+target_include_directories(kfc-runtime-test-first-person-c-abi PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
+target_compile_features(kfc-runtime-test-first-person-c-abi PRIVATE c_std_11)
+set_property(TARGET kfc-runtime-test-first-person-c-abi PROPERTY MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+
+add_executable(kfc-runtime-test-vulkan-broker EXCLUDE_FROM_ALL ../tests/vulkan_broker_test.cpp map/read_map_frame.cpp
+    map/capture_game_map.cpp map/hud_visibility.cpp graphics/render_overlay.cpp graphics/rasterize_notice.cpp engine-hooks/write_executable_bytes.cpp engine-hooks/allocate_near_code.cpp)
+target_include_directories(kfc-runtime-test-vulkan-broker PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
+target_compile_features(kfc-runtime-test-vulkan-broker PRIVATE cxx_std_20)
+target_compile_definitions(kfc-runtime-test-vulkan-broker PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX)
+set_property(TARGET kfc-runtime-test-vulkan-broker PROPERTY MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+
+add_executable(kfc-runtime-test-overlay-gpu EXCLUDE_FROM_ALL ../tests/overlay_gpu_test.cpp map/read_map_frame.cpp
+    map/capture_game_map.cpp map/hud_visibility.cpp graphics/render_overlay.cpp graphics/rasterize_notice.cpp engine-hooks/write_executable_bytes.cpp engine-hooks/allocate_near_code.cpp)
+target_include_directories(kfc-runtime-test-overlay-gpu PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
+target_compile_features(kfc-runtime-test-overlay-gpu PRIVATE cxx_std_20)
+target_compile_definitions(kfc-runtime-test-overlay-gpu PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX)
+set_property(TARGET kfc-runtime-test-overlay-gpu PROPERTY MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+
+add_executable(kfc-runtime-test-overlay EXCLUDE_FROM_ALL ../tests/overlay_test.cpp map/read_map_frame.cpp
+    map/capture_game_map.cpp map/hud_visibility.cpp graphics/render_overlay.cpp graphics/rasterize_notice.cpp engine-hooks/write_executable_bytes.cpp engine-hooks/allocate_near_code.cpp)
+target_include_directories(kfc-runtime-test-overlay PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
+target_compile_features(kfc-runtime-test-overlay PRIVATE cxx_std_20)
+target_compile_definitions(kfc-runtime-test-overlay PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX)
+set_property(TARGET kfc-runtime-test-overlay PROPERTY MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+
+add_executable(kfc-runtime-test-map-frame EXCLUDE_FROM_ALL ../tests/map_frame_test.cpp map/read_map_frame.cpp)
+target_include_directories(kfc-runtime-test-map-frame PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
+target_compile_features(kfc-runtime-test-map-frame PRIVATE cxx_std_20)
+target_compile_definitions(kfc-runtime-test-map-frame PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX)
+set_property(TARGET kfc-runtime-test-map-frame PROPERTY MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+add_executable(kfc-runtime-test-map-capture EXCLUDE_FROM_ALL ../tests/map_capture_test.cpp
+    map/read_map_frame.cpp map/hud_visibility.cpp engine-hooks/write_executable_bytes.cpp engine-hooks/allocate_near_code.cpp)
+target_include_directories(kfc-runtime-test-map-capture PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
+target_compile_features(kfc-runtime-test-map-capture PRIVATE cxx_std_20)
+target_compile_definitions(kfc-runtime-test-map-capture PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX)
+set_property(TARGET kfc-runtime-test-map-capture PROPERTY MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+
+add_executable(kfc-runtime-test-first-person-control EXCLUDE_FROM_ALL ../tests/first_person_control_test.cpp)
+target_include_directories(kfc-runtime-test-first-person-control PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
+target_compile_features(kfc-runtime-test-first-person-control PRIVATE cxx_std_20)
+target_compile_definitions(kfc-runtime-test-first-person-control PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX)
+set_property(TARGET kfc-runtime-test-first-person-control PROPERTY MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+
+add_executable(kfc-runtime-test-gifting-range-host EXCLUDE_FROM_ALL ../tests/gifting_range_host_test.cpp)
+target_include_directories(kfc-runtime-test-gifting-range-host PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
+target_compile_features(kfc-runtime-test-gifting-range-host PRIVATE cxx_std_20)
+target_compile_definitions(kfc-runtime-test-gifting-range-host PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX)
+set_property(TARGET kfc-runtime-test-gifting-range-host PROPERTY MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+
+# Private attribution is compiled and tested independently. Its preparation
+# entry remains uncalled by current startup and exports no SDK/consumer API.
+add_subdirectory(semantic-attribution)
 
 # Two typed original-operation adapters inspect directed call edges. Decode
 # actual instructions rather than scanning E8 bytes or storing function RVAs.
@@ -73,9 +147,13 @@ file(MAKE_DIRECTORY "${generated_dir}")
 set(profile_resource_rc "${generated_dir}/embedded_profiles.rc")
 set(profile_resource_header "${generated_dir}/embedded_profile_ids.h")
 set(profile_rc_content "#include <windows.h>\n")
+file(TO_CMAKE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/graphics/Khronos-Apache-2.0.txt" khronos_license_path)
+file(TO_CMAKE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/graphics/Khronos-NOTICE.txt" khronos_notice_path)
 file(TO_CMAKE_PATH "${zydis_SOURCE_DIR}/LICENSE" zydis_license_path)
 file(TO_CMAKE_PATH "${zydis_SOURCE_DIR}/dependencies/zycore/LICENSE" zycore_license_path)
 string(APPEND profile_rc_content
+    "\"KHRONOS_LICENSE\" RCDATA \"${khronos_license_path}\"\n"
+    "\"KHRONOS_NOTICE\" RCDATA \"${khronos_notice_path}\"\n"
     "\"ZYDIS_LICENSE\" RCDATA \"${zydis_license_path}\"\n"
     "\"ZYCORE_LICENSE\" RCDATA \"${zycore_license_path}\"\n")
 set(profile_header_content "#pragma once\nnamespace KfcRuntimeEmbedded {\ninline constexpr int profile_resource_ids[] = {")
@@ -107,6 +185,23 @@ set_source_files_properties("${profile_resource_rc}" PROPERTIES
     OBJECT_DEPENDS "${runtime_profiles};${resource_read_profiles}")
 
 add_library(kfc-runtime SHARED
+    ecs/try_read_borrowed_scene_epoch.cpp
+    player-ownership/callback_player_scope.cpp
+    player-ownership/native_flight_callback.cpp
+    player-ownership/service_lifetime.cpp
+    player-ownership/prepare_service_retirement.cpp
+    player-ownership/flight_control_api.cpp
+    player-ownership/vein_control_api.cpp
+    player-ownership/flight_hook_entries.cpp
+    player-ownership/prepare_flight_cpu_state.cpp
+    player-ownership/flight_hook_thunk.asm
+    player-ownership/read_current_players.cpp
+    player-ownership/resolve_peer_binding.cpp
+    map/serve_map_overlay.cpp
+    graphics/vulkan_overlay.cpp
+    graphics/render_overlay.cpp graphics/rasterize_notice.cpp
+    map/read_map_frame.cpp
+    map/capture_game_map.cpp map/hud_visibility.cpp
     ecs/bind_world_entities.cpp
     ecs/resolve_entity_handle.cpp
     ecs/resolve_entity_command_queue.cpp
@@ -150,6 +245,12 @@ add_library(kfc-runtime SHARED
     named-services/resolve_named_service.cpp
     named-services/read_and_update_named_service.cpp
     impact/resolve_registered_operation.cpp
+    impact/build_terraforming_observation_views.cpp
+    impact/terraforming_call_scope.cpp
+    impact/mining_host_entries.cpp
+    impact/prepare_mining_hooks.cpp
+    impact/mining_entry_thunks.asm
+    voxels/augment_terraforming_region.cpp
     impact/compare_entity_ids.cpp
     impact/submit_entity_destruction.cpp
     impact/submit_building_prop_spawn.cpp
@@ -158,6 +259,8 @@ add_library(kfc-runtime SHARED
     main-menu/resolve_character_selection.cpp
     main-menu/resolve_game_flow.cpp
     main-menu/manage_native_main_menu.cpp
+    first-person/first_person_control.cpp
+    item-transfer/gifting_range_call.cpp
     host/manage_runtime_lifecycle.cpp
     code-inventory/export_function_inspection.cpp
     code-inventory/resolve_original_call_graph.cpp
@@ -185,10 +288,17 @@ target_include_directories(kfc-runtime PRIVATE
     "${CMAKE_CURRENT_SOURCE_DIR}/engine-context"
     "${CMAKE_CURRENT_SOURCE_DIR}/loaded-resources"
     "${CMAKE_CURRENT_SOURCE_DIR}/json/single_include")
+# Preserve the tested float32 planning/boundary semantics of the two effects.
+set_property(SOURCE impact/terraforming_call_scope.cpp voxels/augment_terraforming_region.cpp
+    APPEND PROPERTY COMPILE_OPTIONS "$<$<COMPILE_LANGUAGE:CXX>:/fp:strict>")
+# This component defines NOMINMAX itself before its Windows include.
+set_property(SOURCE voxels/augment_terraforming_region.cpp
+    APPEND PROPERTY COMPILE_OPTIONS "$<$<COMPILE_LANGUAGE:CXX>:/UNOMINMAX>")
+
 target_compile_features(kfc-runtime PRIVATE cxx_std_20)
 target_compile_definitions(kfc-runtime PRIVATE
     KFC_RUNTIME_BUILD WIN32_LEAN_AND_MEAN NOMINMAX)
-target_link_libraries(kfc-runtime PRIVATE bcrypt Zydis)
+target_link_libraries(kfc-runtime PRIVATE bcrypt Zydis gdi32 synchronization sf-attribution-native)
 set_property(TARGET kfc-runtime PROPERTY MSVC_RUNTIME_LIBRARY
     "MultiThreaded$<$<CONFIG:Debug>:Debug>")
 foreach(configuration DEBUG RELEASE RELWITHDEBINFO MINSIZEREL)
@@ -196,7 +306,7 @@ foreach(configuration DEBUG RELEASE RELWITHDEBINFO MINSIZEREL)
         RUNTIME_OUTPUT_DIRECTORY_${configuration} "${CMAKE_BINARY_DIR}/bin")
 endforeach()
 if(MSVC)
-    target_compile_options(kfc-runtime PRIVATE /W4 /EHsc)
+    target_compile_options(kfc-runtime PRIVATE "$<$<COMPILE_LANGUAGE:CXX>:/W4;/EHsc>")
 endif()
 
 # Development tools never run from the game or from the modloader.
@@ -239,7 +349,7 @@ foreach(test_target kfc-runtime-test-prop-query kfc-runtime-test-ecs-read kfc-ru
     target_include_directories(${test_target} PRIVATE ${prop_test_includes})
     target_compile_features(${test_target} PRIVATE cxx_std_20)
     target_compile_definitions(${test_target} PRIVATE KFC_RUNTIME_BUILD WIN32_LEAN_AND_MEAN NOMINMAX)
-    target_link_libraries(${test_target} PRIVATE bcrypt Zydis)
+    target_link_libraries(${test_target} PRIVATE bcrypt Zydis gdi32 synchronization)
     set_property(TARGET ${test_target} PROPERTY MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
 endforeach()
 
@@ -281,7 +391,7 @@ foreach(test_target kfc-runtime-test-entity-command-queue kfc-runtime-test-entit
         "MultiThreaded$<$<CONFIG:Debug>:Debug>")
 endforeach()
 target_link_libraries(kfc-runtime-test-original-code PRIVATE Zydis)
-target_link_libraries(kfc-runtime-test-native-mutation-contract PRIVATE Zydis)
+target_link_libraries(kfc-runtime-test-native-mutation-contract PRIVATE Zydis bcrypt)
 target_compile_features(kfc-runtime-test-building-input PRIVATE cxx_std_20)
 target_include_directories(kfc-runtime-test-building-input PRIVATE
     "${CMAKE_CURRENT_SOURCE_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}/player-input"
@@ -369,5 +479,18 @@ add_executable(kfc-runtime-test-world-context EXCLUDE_FROM_ALL
 target_include_directories(kfc-runtime-test-world-context PRIVATE ${prop_test_includes})
 target_compile_features(kfc-runtime-test-world-context PRIVATE cxx_std_20)
 target_compile_definitions(kfc-runtime-test-world-context PRIVATE KFC_RUNTIME_BUILD WIN32_LEAN_AND_MEAN NOMINMAX)
-target_link_libraries(kfc-runtime-test-world-context PRIVATE bcrypt Zydis)
+target_link_libraries(kfc-runtime-test-world-context PRIVATE bcrypt Zydis gdi32 synchronization)
 set_property(TARGET kfc-runtime-test-world-context PROPERTY MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+
+add_executable(kfc-runtime-test-notices EXCLUDE_FROM_ALL ../tests/notice_service_test.cpp
+    map/read_map_frame.cpp graphics/render_overlay.cpp graphics/rasterize_notice.cpp)
+target_include_directories(kfc-runtime-test-notices PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
+target_compile_features(kfc-runtime-test-notices PRIVATE cxx_std_20)
+target_compile_definitions(kfc-runtime-test-notices PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX KFC_RUNTIME_BUILD)
+set_property(TARGET kfc-runtime-test-notices PROPERTY MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+foreach(notice_target kfc-runtime-test-notices kfc-runtime-test-map-service-lifetime kfc-runtime-test-vulkan-broker kfc-runtime-test-overlay-gpu kfc-runtime-test-overlay)
+    target_link_libraries(${notice_target} PRIVATE gdi32)
+endforeach()
+add_executable(kfc-runtime-test-native-plugin-c-abi EXCLUDE_FROM_ALL ../../mod-runtime/tests/native_plugin_abi_c_consumer.c)
+target_compile_features(kfc-runtime-test-native-plugin-c-abi PRIVATE c_std_11)
+set_property(TARGET kfc-runtime-test-native-plugin-c-abi PROPERTY MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")

@@ -1,19 +1,20 @@
 use super::apply_language_change::apply_language_change;
 use super::apply_loader_setting::apply_loader_setting;
 use super::apply_loader_settings::apply_loader_settings;
-use super::assess_hotkey_change::assess_hotkey_change;
 use super::apply_mod_enabled::apply_mod_enabled;
 use super::apply_mod_settings::apply_mod_settings;
+use super::assess_hotkey_change::assess_hotkey_change;
 use super::change_notice_read_state::change_notice_read_state;
 use super::change_storage_folder::change_storage_folder;
 use super::copy_activity_log::copy_activity_log;
+use super::handoff_to_client::handoff_to_client;
 use super::invoke_updater_request::{UpdaterRequestResult, spawn as spawn_updater_request};
+use super::native_menu_toggle::NativeMenuToggle;
 use super::open_requested_folder::open_requested_folder;
 use super::open_requested_link::open_requested_link;
 use super::parse_ui_command::Command;
 use super::parse_ui_command::UiCommand;
 use super::parse_ui_command::parse_ui_command;
-use super::handoff_to_client::handoff_to_client;
 use super::read_host_arguments::Arguments;
 use super::read_host_arguments::arguments;
 use super::read_missing_updater_announcement;
@@ -30,7 +31,6 @@ use super::read_window_focus::foreground_is_shroudforge_window;
 use super::read_window_focus::foreground_process;
 use super::read_window_focus::foreground_title;
 use super::read_window_focus::open_event;
-use super::native_menu_toggle::NativeMenuToggle;
 use super::refresh_activity_log::refresh_activity_log;
 use super::refresh_installed_mod::refresh_installed_mod;
 use super::refresh_ui_snapshot::SnapshotRefresher;
@@ -41,8 +41,7 @@ use super::request_mod_action::request_mod_action;
 use super::request_module_visibility::request_module_visibility;
 use super::ui_snapshot_types::ModuleConfig;
 use super::{
-    dispatch_control_actions::dispatch_control_actions,
-    watch_toggle_key::watch_toggle_key,
+    dispatch_control_actions::dispatch_control_actions, watch_toggle_key::watch_toggle_key,
 };
 use shroudforge_logging::write_activity;
 use shroudforge_window_management::WindowDefaults;
@@ -97,7 +96,8 @@ fn cancel_keybind_capture(capture: &Mutex<Option<KeybindCapture>>, request_id: O
         return;
     }
     *owner = None;
-    let _ = shroudforge_hotkeys::set_capture_active(false, shroudforge_hotkeys::InputDevice::Keyboard);
+    let _ =
+        shroudforge_hotkeys::set_capture_active(false, shroudforge_hotkeys::InputDevice::Keyboard);
     let _ = shroudforge_hotkeys::take_captured_hotkey();
 }
 
@@ -204,7 +204,9 @@ pub(crate) fn run_with_arguments(arguments: Arguments) -> Result<(), Box<dyn std
         apply_window_geometry(&window, &saved_position, false, window_defaults);
     let (sender, receiver) = mpsc::channel();
     let hotkey_proxy = event_loop.create_proxy();
-    let hotkey_key = Arc::new(RwLock::new(shroudforge_hotkeys::parse_hotkey(&module_config.toggle_key)?));
+    let hotkey_key = Arc::new(RwLock::new(shroudforge_hotkeys::parse_hotkey(
+        &module_config.toggle_key,
+    )?));
     let hotkey_key_watcher = hotkey_key.clone();
     let game_pid = arguments.game_pid;
     watch_toggle_key(
@@ -252,14 +254,19 @@ pub(crate) fn run_with_arguments(arguments: Arguments) -> Result<(), Box<dyn std
                 return;
             };
             let _ = shroudforge_hotkeys::take_captured_hotkey();
-            let device = value.device.unwrap_or(shroudforge_hotkeys::InputDevice::Keyboard);
+            let device = value
+                .device
+                .unwrap_or(shroudforge_hotkeys::InputDevice::Keyboard);
             if let Err(error) = shroudforge_hotkeys::set_capture_active(true, device) {
                 *owner = None;
                 let _ = shroudforge_logging::append(&capture_root, 'E', "hotkeys", &error);
                 let _ = keybind_proxy.send_event(UiEvent::KeybindCaptureFailed(request_id, error));
             } else {
                 let _ = shroudforge_logging::append(
-                    &capture_root, 'D', "hotkeys", &format!("Shortcut capture started: {device:?}"),
+                    &capture_root,
+                    'D',
+                    "hotkeys",
+                    &format!("Shortcut capture started: {device:?}"),
                 );
                 *owner = Some(KeybindCapture {
                     request_id,

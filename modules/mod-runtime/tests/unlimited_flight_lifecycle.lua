@@ -27,6 +27,7 @@ local function fixture()
     local f = {
         settings={}, session=41, writes=0, players={11}, active_item=0,
         pitch_mode="YawSpeedPitchTargetAngle", pitch_input=0, pitch_degrees=0, delta_seconds=1/60,
+        server=false, key_pressed=false, remote_server=nil, incoming={}, outgoing={}, connected_peers={},
         action_sets_gliding=false, action_unsets_gliding=false,
         attributes={[11]={StaminaDepletionMod_Glider=0.35}},
         trackers={},
@@ -69,16 +70,44 @@ local function fixture()
     end
     overrides.get_component_claim = claim
     overrides.get_resource_claim = claim
-    shroudforge = {settings={get=function(key, fallback)
-        local value = f.settings[key]
-        if value == nil then return fallback end
-        return value
-    end}}
+    shroudforge = {
+        settings={get=function(key, fallback)
+            local value = f.settings[key]
+            if value == nil then return fallback end
+            return value
+        end},
+        input={was_keybind_pressed=function(key)
+            equal(key, "toggleUpwardGliding", "F6 setting key")
+            local pressed = f.key_pressed
+            f.key_pressed = false
+            return pressed
+        end},
+    }
     runtime = {
         overrides=overrides,
+        is_server=false,
         has=function() return true end,
         report_effect=function(state, detail) f.state, f.detail = state, detail end,
         world={session_id=function() return f.session end},
+        network={
+            status=function()
+                return {available=true, role=f.server and "server" or "client",
+                    local_steam_id="76561198000000002",
+                    remote_dedicated_server_steam_id=f.remote_server}
+            end,
+            send_mod=function(peer, target_mod, payload, options)
+                f.outgoing[#f.outgoing + 1] = {peer_steam_id=peer, to_mod=target_mod,
+                    from_mod="sf-unlimited-flight", payload=payload,
+                    reliable=options and options.reliable}
+                return true
+            end,
+            receive_mod=function()
+                local messages = f.incoming
+                f.incoming = {}
+                return messages
+            end,
+            connected_peers=function() return f.connected_peers end,
+        },
         values={
             encode=function(_, value) return string.pack("f", value) end,
             decode=function(_, bytes) return string.unpack("f", bytes) end,
@@ -167,6 +196,7 @@ local function fixture()
     f.mod.on_load()
     function f:tick()
         if self.cleanup_pending then return self:unload() end
+        runtime.is_server = self.server
         self.mod.on_update(self.delta_seconds)
     end
     function f:unload()
@@ -181,6 +211,81 @@ local function fixture()
         self.cleanup_pending = false
     end
     return f
+end
+
+local function network_message(peer, payload)
+    return {peer_steam_id=peer, from_mod="sf-unlimited-flight", to_mod="sf-unlimited-flight",
+        payload=payload, reliable=true}
+end
+
+-- Native per-player control tests use the actual lifecycle/transport handler.
+do
+    local f = fixture()
+    local peer = "76561198000000001"
+    runtime.ecs.set_peer_flight = function() return false, "native per-player Flight unavailable" end
+    f.server, f.connected_peers = true, {peer}
+    f.incoming = {network_message(peer, "H|1|missing-native")}; f:tick()
+    local epoch = f.outgoing[1].payload:match("^H|1|missing%-native|([%w_%-]+)|1$")
+    f.incoming = {network_message(peer, "S|1|missing-native|" .. epoch .. "|1|1")}; f:tick()
+    f:unload() -- A clean refusal must not invent a native cleanup obligation.
+end
+
+do
+    local f = fixture()
+    local a, b = "76561198000000001", "76561198000000003"
+    local calls, desired = {}, {}
+    runtime.ecs.set_peer_flight = function(peer, enabled)
+        calls[#calls + 1] = {peer=peer, enabled=enabled}
+        desired[peer] = enabled
+        return true
+    end
+    f.server, f.connected_peers = true, {a, b}
+    f.settings.unlimitedFlying, f.settings.unlimitedGliderStamina = true, true
+    f.active_item = f.item_id
+    f.incoming = {network_message(a, "H|1|native-a")}
+    f:tick()
+    local epoch = f.outgoing[1].payload:match("^H|1|native%-a|([%w_%-]+)|1$")
+    assert(epoch, "native control handshake")
+    f.incoming = {network_message(a, "S|1|native-a|" .. epoch .. "|1|1")}
+    f:tick()
+    equal(#calls, 1, "one in-order request reaches native control")
+    equal(calls[1].peer, a, "identity comes from transport sender")
+    equal(desired[a], true, "first player's intent On")
+    assert(f.outgoing[2].payload:find("|accepted|native_flight_on$"), "acceptance describes intent")
+    f.incoming = {network_message(b, "H|1|native-b")}
+    f:tick()
+    f.incoming = {network_message(b, "S|1|native-b|" .. epoch .. "|1|0")}
+    f:tick()
+    equal(desired[b], false, "second player's independent Off")
+    equal(desired[a], true, "second player cannot turn off first player's intent")
+    f.incoming = {network_message(a, "S|1|native-a|" .. epoch .. "|1|0")}
+    f:tick()
+    equal(#calls, 2, "replayed request cannot change native intent")
+    equal(f.writes, 0, "native server route never writes shared resources or stamina, even with saved stamina setting")
+    equal(f.attributes[11].StaminaDepletionMod_Glider, 0.35, "server stamina remains stock")
+    f.connected_peers = {b}
+    f:tick()
+    equal(desired[a], false, "disconnect clears native intent")
+    f:unload()
+    equal(desired[b], false, "unload clears remaining peer intent")
+end
+
+do
+    local f = fixture()
+    local peer, calls, cleanup_busy = "76561198000000001", {}, true
+    runtime.ecs.set_peer_flight = function(p, enabled)
+        calls[#calls+1] = {peer=p, enabled=enabled}
+        if not enabled and cleanup_busy then return false, "native Flight control busy" end
+        return true
+    end
+    f.server, f.connected_peers = true, {peer}
+    f.incoming = {network_message(peer, "H|1|cleanup")}; f:tick()
+    local epoch = f.outgoing[1].payload:match("^H|1|cleanup|([%w_%-]+)|1$")
+    f.incoming = {network_message(peer, "S|1|cleanup|" .. epoch .. "|1|1")}; f:tick()
+    assert(not pcall(f.mod.on_unload), "failed native Off keeps lifecycle cleanup pending")
+    cleanup_busy = false
+    f:unload()
+    equal(calls[#calls].enabled, false, "cleanup retries the retained peer")
 end
 
 do
@@ -429,4 +534,226 @@ do
     equal(applied, false, "a retained target cannot restore or change a later world's resource")
     equal(f.writes, 0, "generic target session guard runs before the writer")
     equal(f.glider.equipment.gliderConfig.yawAngleSpeed, 55)
+end
+
+do
+    local f = fixture()
+    f.settings.unlimitedFlying = false
+    f.active_item, f.pitch_mode, f.pitch_input = f.item_id, "YawSpeedPitchSpeed", -1
+    f.key_pressed = true
+    f:tick()
+    equal(f.glider.equipment.gliderConfig.pitchAngleSpeed, -70, "F6 toggles the local upward-gliding state on")
+    assert(f.detail:find("selected Upward Gliding ON", 1, true), "F6 reports the local selection")
+    equal(#f.outgoing, 0, "singleplayer does not create a remote request")
+    f.key_pressed = true
+    f:tick()
+    equal(f.glider.equipment.gliderConfig.pitchAngleSpeed, 70, "the second F6 press restores the native rate")
+    assert(f.detail:find("selected Upward Gliding OFF", 1, true), "the second press reports the new local selection")
+    f:unload()
+end
+
+do
+    local f = fixture()
+    local peer = "76561198000000001"
+    f.settings.unlimitedFlying = true
+    f.remote_server = peer
+    f.active_item, f.pitch_mode, f.pitch_input = f.item_id, "YawSpeedPitchSpeed", -1
+    f.key_pressed = true
+    f:tick()
+    equal(f.glider.equipment.gliderConfig.pitchAngleSpeed, 70, "F6 off restores the local pitch rate")
+    assert(f.detail:find("has not confirmed", 1, true), "local state remains distinct from server confirmation")
+    local client_nonce = assert(f.outgoing[1].payload:match("^H|1|([%w_%-]+)$"))
+    f.incoming = {network_message(peer, "H|1|" .. client_nonce .. "|server-session-1|1")}
+    f:tick()
+    local request_nonce, server_epoch, sequence, desired = f.outgoing[2].payload:match(
+        "^S|1|([%w_%-]+)|([%w_%-]+)|(%d+)|([01])$")
+    equal(request_nonce, client_nonce)
+    equal(server_epoch, "server-session-1")
+    equal(sequence, "1")
+    equal(desired, "0")
+    assert(f.detail:find("has not confirmed", 1, true), "transport acceptance does not report an enabled server effect")
+    equal(f.writes, 0, "a client request does not write a server-side effect")
+
+    f.incoming = {network_message(peer,
+        table.concat({"R", "1", client_nonce, server_epoch, sequence, "unsupported",
+            "authoritative_requester_mapping_unavailable"}, "|"))}
+    f:tick()
+    assert(f.detail:find("response: unsupported", 1, true), "server limitation is shown explicitly")
+    assert(f.detail:find("No server Flight state was changed", 1, true), "unsupported response confirms no remote mutation")
+    equal(f.writes, 0)
+    f:unload()
+end
+
+do
+    local f = fixture()
+    f.settings.unlimitedFlying = false
+    f.active_item, f.pitch_mode, f.pitch_input = f.item_id, "YawSpeedPitchSpeed", -1
+    f.key_pressed = true
+    f:tick()
+    equal(f.glider.equipment.gliderConfig.pitchAngleSpeed, -70, "one keybind press enables this session's temporary flight state")
+    equal(f.settings.unlimitedFlying, false, "the temporary toggle does not rewrite the saved setting")
+
+    f:tick()
+    equal(f.glider.equipment.gliderConfig.pitchAngleSpeed, -70, "a held key is not treated as another press by the one-shot API")
+    f.active_item = 0
+    f:tick()
+    equal(f.glider.equipment.gliderConfig.pitchAngleSpeed, 70, "landing restores the native pitch before the session changes")
+
+    f.session = f.session + 1
+    f.active_item = f.item_id
+    f:tick()
+    equal(f.glider.equipment.gliderConfig.pitchAngleSpeed, 70, "a new world session clears the previous temporary toggle")
+    f:unload()
+end
+
+do
+    local f = fixture()
+    f.settings.unlimitedFlying = true
+    f.active_item, f.pitch_mode, f.pitch_input = f.item_id, "YawSpeedPitchSpeed", -1
+    f.key_pressed = true
+    f:tick()
+    equal(f.glider.equipment.gliderConfig.pitchAngleSpeed, 70, "F6 temporarily overrides the saved enabled value")
+
+    f.settings.unlimitedFlying = false
+    f:tick()
+    equal(f.glider.equipment.gliderConfig.pitchAngleSpeed, 70, "a live saved-setting change clears the temporary override")
+    f.settings.unlimitedFlying = true
+    f:tick()
+    equal(f.glider.equipment.gliderConfig.pitchAngleSpeed, -70, "the next saved-setting change remains authoritative")
+    f:unload()
+end
+
+do
+    local f = fixture()
+    local peer = "76561198000000001"
+    f.settings.unlimitedFlying = true
+    f.remote_server = peer
+    f.key_pressed = true
+    f:tick()
+    local client_nonce = assert(f.outgoing[1].payload:match("^H|1|([%w_%-]+)$"))
+
+    local wrong_peer = network_message("76561198000000002",
+        "H|1|" .. client_nonce .. "|server-session-1|1")
+    local wrong_mod = network_message(peer, "H|1|" .. client_nonce .. "|server-session-1|1")
+    wrong_mod.from_mod = "another-mod"
+    local malformed = network_message(peer, "H|1|malformed-token!|server-session-1|1")
+    f.incoming = {wrong_peer, wrong_mod, malformed}
+    f:tick()
+    equal(#f.outgoing, 1, "wrong-peer, wrong-envelope, and malformed replies do not establish a session")
+
+    f.incoming = {network_message(peer, "H|1|" .. client_nonce .. "|server-session-1|1")}
+    f:tick()
+    local request_nonce, server_epoch, sequence = f.outgoing[2].payload:match(
+        "^S|1|([%w_%-]+)|([%w_%-]+)|(%d+)|[01]$")
+    equal(request_nonce, client_nonce)
+    equal(server_epoch, "server-session-1")
+    equal(sequence, "1")
+
+    local wrong_peer_result = network_message("76561198000000002",
+        table.concat({"R", "1", request_nonce, server_epoch, sequence, "unsupported",
+            "authoritative_requester_mapping_unavailable"}, "|"))
+    local wrong_sequence = network_message(peer,
+        table.concat({"R", "1", request_nonce, server_epoch, "2", "unsupported",
+            "authoritative_requester_mapping_unavailable"}, "|"))
+    f.incoming = {wrong_peer_result, wrong_sequence, network_message(peer, "R|1|broken")}
+    f:tick()
+    assert(f.detail:find("has not confirmed", 1, true), "unmatched replies cannot claim a server effect")
+    equal(f.writes, 0, "unmatched replies do not change local or shared game values")
+
+    f.delta_seconds = 5
+    f:tick()
+    assert(f.detail:find("server Flight state is unknown", 1, true), "timeout reports the server state as unknown")
+    assert(f.state ~= "write-confirmed", "a missing reply cannot report a confirmed write")
+    equal(f.writes, 0, "timeout does not convert transport delivery into a server-side effect")
+    f:unload()
+end
+
+do
+    local f = fixture()
+    local peer = "76561198000000001"
+    f.server = true
+    f.connected_peers = {peer}
+
+    local wrong_source = network_message(peer, "H|1|client-epoch-1")
+    wrong_source.from_mod = "another-mod"
+    local wrong_target = network_message(peer, "H|1|client-epoch-2")
+    wrong_target.to_mod = "another-mod"
+    local unreliable = network_message(peer, "H|1|client-epoch-3")
+    unreliable.reliable = false
+    local oversized = network_message(peer, string.rep("x", 257))
+    f.incoming = {wrong_source, wrong_target, unreliable, oversized,
+        network_message(peer, "H|1|malformed-token!")}
+    f:tick()
+    equal(#f.outgoing, 0, "connected peers still need the exact reliable mod envelope and a valid payload")
+    equal(f.writes, 0, "malformed or misrouted requests cannot change flight values")
+
+    f.incoming = {network_message(peer, "H|1|client-epoch-1")}
+    f:tick()
+    local client_nonce, server_epoch = f.outgoing[1].payload:match(
+        "^H|1|([%w_%-]+)|([%w_%-]+)|%d+$")
+    equal(client_nonce, "client-epoch-1")
+
+    f.incoming = {network_message(peer,
+        table.concat({"S", "1", client_nonce, server_epoch, "2", "1"}, "|"))}
+    f:tick()
+    assert(f.outgoing[2].payload:find("|rejected|out_of_order_request$"), "skipped request sequences are rejected")
+
+    f.incoming = {network_message(peer,
+        table.concat({"S", "1", client_nonce, server_epoch, "1", "1"}, "|"))}
+    f:tick()
+    assert(f.outgoing[3].payload:find("|unsupported|authoritative_requester_mapping_unavailable$"),
+        "the next in-order request reaches the explicit unsupported result")
+    f.incoming = {network_message(peer,
+        table.concat({"S", "1", client_nonce, server_epoch, "1", "1"}, "|"))}
+    f:tick()
+    assert(f.outgoing[4].payload:find("|rejected|stale_request$"), "unsupported requests still consume freshness")
+    equal(f.writes, 0, "no authenticated client request changes server flight state without requester mapping")
+    equal(f.glider.equipment.gliderConfig.pitchAngleSpeed, 70, "unsupported server requests preserve shared ItemInfo")
+    equal(f.attributes[11].StaminaDepletionMod_Glider, 0.35, "unsupported server requests preserve authoritative stamina")
+    f:unload()
+end
+
+do
+    local f = fixture()
+    local peer = "76561198000000001"
+    f.server = true
+    f.connected_peers = {peer}
+    f.incoming = {network_message(peer, "H|1|client-epoch-1")}
+    f:tick()
+    local client_nonce, server_epoch, next_sequence = f.outgoing[1].payload:match(
+        "^H|1|([%w_%-]+)|([%w_%-]+)|(%d+)$")
+    equal(client_nonce, "client-epoch-1")
+    equal(next_sequence, "1")
+
+    f.incoming = {network_message(peer,
+        table.concat({"S", "1", client_nonce, "stale-server-epoch", "1", "1"}, "|"))}
+    f:tick()
+    assert(f.outgoing[2].payload:find("|rejected|stale_server_session$"), "old server session is rejected")
+
+    f.incoming = {network_message(peer,
+        table.concat({"S", "1", client_nonce, server_epoch, "1", "1"}, "|"))}
+    f:tick()
+    assert(f.outgoing[3].payload:find("|unsupported|authoritative_requester_mapping_unavailable$"),
+        "authenticated request receives explicit unsupported response")
+
+    f.incoming = {network_message(peer,
+        table.concat({"S", "1", client_nonce, server_epoch, "1", "1"}, "|"))}
+    f:tick()
+    assert(f.outgoing[4].payload:find("|rejected|stale_request$"), "duplicate request sequence is rejected")
+    equal(f.writes, 0, "server protocol never changes flight state without requester mapping")
+    equal(f.attributes[11].StaminaDepletionMod_Glider, 0.35, "remote requests preserve server stamina state")
+    equal(f.glider.equipment.gliderConfig.pitchAngleSpeed, 70, "remote requests preserve shared glider pitch")
+    f:unload()
+end
+
+do
+    local f = fixture()
+    local peer = "76561198000000001"
+    f.server = true
+    f.connected_peers = {}
+    f.incoming = {network_message(peer, "H|1|unauthorized-client")}
+    f:tick()
+    equal(#f.outgoing, 0, "unauthenticated peer receives no Flight protocol response")
+    equal(f.writes, 0, "unauthenticated peer cannot change flight state")
+    f:unload()
 end

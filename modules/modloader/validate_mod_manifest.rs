@@ -75,10 +75,7 @@ pub fn validate_manifest(manifest: &ModManifest) -> Result<(), String> {
             continue;
         };
         if condition.setting == setting.key {
-            return Err(format!(
-                "setting '{}' cannot depend on itself",
-                setting.key
-            ));
+            return Err(format!("setting '{}' cannot depend on itself", setting.key));
         }
         let controller = manifest
             .settings

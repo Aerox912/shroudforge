@@ -5,6 +5,16 @@ local last_state, last_detail
 local gliders = {}
 local peak_flight_delta = 0
 local upward_recovery = false
+local flight_feedback
+local configured_flight_setting
+local effective_flight_setting
+local token_sequence = 0
+local transport_session
+local server_epoch
+local server_last_sequences = {}
+local client_transport = {}
+local native_peer_intents = {}
+local clear_native_peer_intents
 
 local item_id_path = "currentAction.triggerContext.usedItem.itemId"
 local pitch_path = "equipment.gliderConfig.pitchAngleSpeed"
@@ -16,6 +26,9 @@ local glider_fields = {
 }
 
 local function report(state, detail)
+    if flight_feedback then
+        detail = (detail and detail ~= "" and detail .. " | " or "") .. flight_feedback
+    end
     if last_state == state and last_detail == detail then return end
     last_state, last_detail = state, detail
     runtime.report_effect(state, detail)
@@ -25,12 +38,416 @@ local function finite(value)
     return type(value) == "number" and value == value and math.abs(value) < math.huge
 end
 
+local function show_flight_notice(message)
+    if runtime.is_server == true or type(shroudforge) ~= "table" then return end
+    local mod_runtime = shroudforge.runtime
+    local notice = type(mod_runtime) == "table" and mod_runtime.notice
+    if type(notice) == "table" and type(notice.show) == "function" then
+        -- A missing/unavailable renderer must not change F6 or retry each tick.
+        pcall(notice.show, message)
+    end
+end
+
+local function queue_flight_feedback(message, notice)
+    flight_feedback = message
+    if notice then show_flight_notice(notice) end
+end
+
+local function configured_flight_enabled()
+    return shroudforge.settings.get("unlimitedFlying", false) == true
+end
+
+local function flight_enabled()
+    local configured = configured_flight_enabled()
+    if configured_flight_setting == nil then
+        configured_flight_setting, effective_flight_setting = configured, configured
+    elseif configured_flight_setting ~= configured then
+        -- A saved Modloader change remains authoritative over the temporary F6
+        -- runtime toggle and clears that toggle override.
+        configured_flight_setting, effective_flight_setting = configured, configured
+    end
+    return effective_flight_setting == true
+end
+
 local function setting_enabled(key)
-    if key == "unlimitedFlying" or key == "unlimitedGliderStamina" then
+    if key == "unlimitedFlying" then return flight_enabled() end
+    if key == "unlimitedGliderStamina" then
         return shroudforge.settings.get(key, false) == true
     end
     local value = shroudforge.settings.get(key, 100)
     return finite(value) and value ~= 100
+end
+
+local function valid_steam_id(value)
+    return type(value) == "string" and #value >= 16 and #value <= 20
+        and value ~= "0" and value:match("^%d+$") ~= nil
+end
+
+local function valid_token(value)
+    return type(value) == "string" and #value >= 1 and #value <= 64
+        and value:match("^[%w_%-]+$") ~= nil
+end
+
+local function valid_sequence(value)
+    local sequence = tonumber(value)
+    return finite(sequence) and sequence >= 1 and sequence <= 2147483647
+        and sequence % 1 == 0
+end
+
+local function new_token()
+    token_sequence = token_sequence + 1
+    local identity = tostring({}):match("0x(%x+)") or "sf"
+    local session = runtime.world.session_id()
+    local random = math.random(0, 2147483647)
+    return table.concat({identity, tostring(session), tostring(token_sequence), string.format("%08x", random)}, "-")
+end
+
+local function reset_transport_session(session)
+    if clear_native_peer_intents then
+        local cleared, reason = clear_native_peer_intents()
+        if not cleared then error("Native Flight cleanup pending: " .. tostring(reason)) end
+    end
+    transport_session = session
+    server_epoch = new_token()
+    server_last_sequences = {}
+    flight_feedback = nil
+    client_transport.peer = nil
+    client_transport.nonce = nil
+    client_transport.epoch = nil
+    client_transport.next_sequence = nil
+    client_transport.pending_state = nil
+    client_transport.latest_sequence = nil
+    client_transport.latest_state = nil
+    client_transport.request_nonce = nil
+    client_transport.awaiting_hello = false
+    client_transport.awaiting_result = false
+    client_transport.hello_elapsed = 1
+    client_transport.send_elapsed = 1
+    client_transport.request_elapsed = 0
+end
+
+local function network_status()
+    if type(runtime.network) ~= "table" or type(runtime.network.status) ~= "function" then return nil end
+    local ok, status = pcall(runtime.network.status)
+    if not ok or type(status) ~= "table" then return nil end
+    return status
+end
+
+local function current_server_peer()
+    if runtime.is_server == true then return nil end
+    local status = network_status()
+    if not status or status.available ~= true or status.role == "server" then return nil end
+    local candidates = {
+        status.local_dedicated_server_steam_id,
+        status.remote_dedicated_server_steam_id,
+        status.configured_server_steam_id,
+    }
+    for index = 1, 3 do
+        if valid_steam_id(candidates[index]) then return candidates[index] end
+    end
+    return nil
+end
+
+local function send_mod_message(peer, payload)
+    if not valid_steam_id(peer) or type(runtime.network) ~= "table"
+        or type(runtime.network.send_mod) ~= "function" then
+        return false
+    end
+    local ok, sent = pcall(runtime.network.send_mod, peer, "sf-unlimited-flight", payload, {reliable=true})
+    return ok and sent == true
+end
+
+local function prepare_client_peer()
+    local peer = current_server_peer()
+    if peer == client_transport.peer then return end
+    client_transport.peer = peer
+    client_transport.nonce = peer and new_token() or nil
+    client_transport.epoch = nil
+    client_transport.next_sequence = nil
+    client_transport.pending_state = nil
+    client_transport.latest_sequence = nil
+    client_transport.latest_state = nil
+    client_transport.request_nonce = nil
+    client_transport.awaiting_hello = false
+    client_transport.awaiting_result = false
+    client_transport.hello_elapsed = 1
+    client_transport.send_elapsed = 1
+    client_transport.request_elapsed = 0
+end
+
+local function toggle_flight_from_hotkey()
+    if runtime.is_server == true or type(shroudforge) ~= "table"
+        or type(shroudforge.input) ~= "table"
+        or type(shroudforge.input.was_keybind_pressed) ~= "function" then
+        return
+    end
+    local ok, pressed = pcall(shroudforge.input.was_keybind_pressed, "toggleUpwardGliding")
+    if not ok or pressed ~= true then return end
+    effective_flight_setting = not flight_enabled()
+    local desired = effective_flight_setting and "ON" or "OFF"
+    local notice_state = effective_flight_setting and "On" or "Off"
+    if client_transport.peer then
+        client_transport.pending_state = effective_flight_setting
+        queue_flight_feedback("F6 selected Upward Gliding " .. desired .. " locally. The Dedicated Server has not confirmed a player effect.",
+            "Unlimited Glider Flight " .. notice_state .. " requested; server unconfirmed")
+    else
+        queue_flight_feedback("F6 selected Upward Gliding " .. desired .. " for this local runtime. Check the effect status for confirmation.",
+            "Unlimited Glider Flight " .. notice_state .. " (local setting)")
+    end
+end
+
+local function connected_peer_set()
+    if type(runtime.network) ~= "table" or type(runtime.network.connected_peers) ~= "function" then return nil end
+    local ok, peers = pcall(runtime.network.connected_peers)
+    if not ok or type(peers) ~= "table" then return nil end
+    local result = {}
+    for _, peer in ipairs(peers) do
+        if valid_steam_id(peer) then result[peer] = true end
+    end
+    return result
+end
+
+local function server_reply(peer, payload)
+    send_mod_message(peer, payload)
+end
+
+local function native_peer_control(peer, enabled)
+    local setter = type(runtime.ecs) == "table" and runtime.ecs.set_peer_flight
+    if type(setter) ~= "function" then return false, "native per-player Flight unsupported" end
+    local ok, accepted, reason = pcall(setter, peer, enabled)
+    if not ok then return false, "native Flight control fault", true end
+    if accepted ~= true then return false, tostring(reason or "native per-player Flight unavailable") end
+    return true
+end
+
+clear_native_peer_intents = function(peers)
+    local first_reason
+    for peer in pairs(native_peer_intents) do
+        if not peers or not peers[peer] then
+            local cleared, reason = native_peer_control(peer, false)
+            if cleared then native_peer_intents[peer] = nil else first_reason = first_reason or reason end
+        end
+    end
+    return first_reason == nil, first_reason
+end
+
+local function handle_server_message(message, peers)
+    if type(message) ~= "table" or type(peers) ~= "table" then return end
+    local peer, payload = message.peer_steam_id, message.payload
+    if not valid_steam_id(peer) or not peers[peer] or message.reliable ~= true
+        or message.from_mod ~= "sf-unlimited-flight" or message.to_mod ~= "sf-unlimited-flight"
+        or type(payload) ~= "string" or #payload > 256 then
+        return
+    end
+
+    local nonce = payload:match("^H|1|([%w_%-]+)$")
+    if valid_token(nonce) then
+        local next_sequence = (server_last_sequences[peer] or 0) + 1
+        if valid_sequence(next_sequence) then
+            server_reply(peer, table.concat({"H", "1", nonce, server_epoch, next_sequence}, "|"))
+        end
+        return
+    end
+
+    local request_nonce, request_epoch, sequence_text, desired =
+        payload:match("^S|1|([%w_%-]+)|([%w_%-]+)|(%d+)|([01])$")
+    local sequence = tonumber(sequence_text)
+    if not valid_token(request_nonce) or not valid_token(request_epoch)
+        or not valid_sequence(sequence) or (desired ~= "0" and desired ~= "1") then
+        return
+    end
+    if request_epoch ~= server_epoch then
+        server_reply(peer, table.concat({"R", "1", request_nonce, server_epoch, sequence,
+            "rejected", "stale_server_session"}, "|"))
+        return
+    end
+    local last_sequence = server_last_sequences[peer] or 0
+    if sequence <= last_sequence then
+        server_reply(peer, table.concat({"R", "1", request_nonce, server_epoch, sequence,
+            "rejected", "stale_request"}, "|"))
+        return
+    end
+    if sequence ~= last_sequence + 1 then
+        server_reply(peer, table.concat({"R", "1", request_nonce, server_epoch, sequence,
+            "rejected", "out_of_order_request"}, "|"))
+        return
+    end
+
+    server_last_sequences[peer] = sequence
+    if type(runtime.ecs) == "table" and type(runtime.ecs.set_peer_flight) == "function" then
+        -- Record potential ownership before calling native code. Even a Lua
+        -- error after native acceptance must leave a peer for unload to clear.
+        local was_tracked = native_peer_intents[peer] ~= nil
+        if not was_tracked then native_peer_intents[peer] = false end
+        local accepted, reason, uncertain = native_peer_control(peer, desired == "1")
+        if not accepted and not was_tracked and not uncertain then native_peer_intents[peer] = nil end
+        if accepted then
+            native_peer_intents[peer] = desired == "1" or nil
+            server_reply(peer, table.concat({"R", "1", request_nonce, server_epoch, sequence,
+                "accepted", desired == "1" and "native_flight_on" or "native_flight_off"}, "|"))
+        elseif reason:find("busy", 1, true) then
+            server_reply(peer, table.concat({"R", "1", request_nonce, server_epoch, sequence,
+                "pending", "native_flight_busy"}, "|"))
+        elseif reason:find("fault", 1, true) then
+            local cleared = native_peer_control(peer, false)
+            if cleared then native_peer_intents[peer] = nil end
+            server_reply(peer, table.concat({"R", "1", request_nonce, server_epoch, sequence,
+                "rejected", "native_flight_fault"}, "|"))
+        else
+            server_reply(peer, table.concat({"R", "1", request_nonce, server_epoch, sequence,
+                "unsupported", "native_flight_unavailable"}, "|"))
+        end
+        return
+    end
+    -- Older providers retain the explicit refusal. Transport delivery alone
+    -- does not establish a current player mapping or native Flight effect.
+    server_reply(peer, table.concat({"R", "1", request_nonce, server_epoch, sequence,
+        "unsupported", "authoritative_requester_mapping_unavailable"}, "|"))
+end
+
+local function handle_client_message(message)
+    if type(message) ~= "table" or not valid_steam_id(client_transport.peer)
+        or message.peer_steam_id ~= client_transport.peer or message.reliable ~= true
+        or message.from_mod ~= "sf-unlimited-flight" or message.to_mod ~= "sf-unlimited-flight"
+        or type(message.payload) ~= "string" or #message.payload > 256 then
+        return
+    end
+
+    local nonce, epoch, next_sequence_text =
+        message.payload:match("^H|1|([%w_%-]+)|([%w_%-]+)|(%d+)$")
+    local next_sequence = tonumber(next_sequence_text)
+    if client_transport.awaiting_hello and valid_token(nonce) and nonce == client_transport.nonce
+        and valid_token(epoch) and valid_sequence(next_sequence) then
+        client_transport.epoch = epoch
+        client_transport.next_sequence = next_sequence
+        client_transport.awaiting_hello = false
+        client_transport.hello_elapsed = 0
+        return
+    end
+
+    local result_nonce, result_epoch, sequence_text, result, reason =
+        message.payload:match("^R|1|([%w_%-]+)|([%w_%-]+)|(%d+)|([%a]+)|([%w_%-]+)$")
+    local sequence = tonumber(sequence_text)
+    if not valid_token(result_nonce) or result_nonce ~= client_transport.request_nonce
+        or not valid_token(result_epoch) or not valid_sequence(sequence)
+        or sequence ~= client_transport.latest_sequence then
+        return
+    end
+    if result == "rejected" and reason == "stale_server_session" then
+        client_transport.pending_state = client_transport.latest_state
+        client_transport.latest_sequence = nil
+        client_transport.awaiting_result = false
+        client_transport.epoch = nil
+        client_transport.next_sequence = nil
+        client_transport.nonce = new_token()
+        client_transport.request_nonce = nil
+        client_transport.awaiting_hello = false
+        client_transport.hello_elapsed = 1
+        queue_flight_feedback("The Dedicated Server rejected a stale Flight session. The current local preference is unconfirmed.",
+            "Unlimited Glider Flight unconfirmed: server session changed")
+        return
+    end
+    if result_epoch ~= client_transport.epoch then return end
+    client_transport.latest_sequence = nil
+    client_transport.awaiting_result = false
+    if result == "accepted" and (reason == "native_flight_on" or reason == "native_flight_off") then
+        queue_flight_feedback("The Dedicated Server accepted this player's Flight " ..
+            (reason == "native_flight_on" and "On" or "Off") .. " intent. Movement remains unconfirmed.")
+    elseif result == "pending" and reason == "native_flight_busy" then
+        client_transport.pending_state = client_transport.latest_state
+        queue_flight_feedback("The Dedicated Server is busy. Retrying this player's unconfirmed Flight preference.")
+    elseif result == "rejected" and reason == "native_flight_fault" then
+        queue_flight_feedback("The Dedicated Server could not confirm native Flight state. Toggle Off to clear this player's intent.",
+            "Unlimited Glider Flight unconfirmed: server error")
+    elseif result == "unsupported" and reason == "native_flight_unavailable" then
+        queue_flight_feedback("The current server provider cannot accept native per-player Flight.",
+            "Unlimited Glider Flight unavailable on this server")
+    elseif result == "unsupported" and reason == "authoritative_requester_mapping_unavailable" then
+        queue_flight_feedback("Dedicated Server response: unsupported. It cannot map the authenticated requester to the authoritative player entity. No server Flight state was changed.",
+            "Unlimited Glider Flight unavailable: server player mapping unsupported")
+    elseif result == "rejected" then
+        queue_flight_feedback("The Dedicated Server rejected an outdated or out-of-order Flight request. No server Flight state was changed.",
+            "Unlimited Glider Flight request rejected; server state unchanged")
+    end
+end
+
+local function update_client_transport(delta_seconds)
+    if not client_transport.peer then return end
+    local delta = finite(delta_seconds) and math.max(0, delta_seconds) or 0
+    client_transport.hello_elapsed = (client_transport.hello_elapsed or 0) + delta
+    client_transport.send_elapsed = (client_transport.send_elapsed or 0) + delta
+    if client_transport.awaiting_result then
+        client_transport.request_elapsed = (client_transport.request_elapsed or 0) + delta
+        if client_transport.request_elapsed >= 5 then
+            client_transport.pending_state = client_transport.latest_state
+            client_transport.latest_sequence = nil
+            client_transport.awaiting_result = false
+            client_transport.epoch = nil
+            client_transport.next_sequence = nil
+            client_transport.nonce = new_token()
+            client_transport.request_nonce = nil
+            client_transport.awaiting_hello = false
+            client_transport.hello_elapsed = 1
+            queue_flight_feedback("No Dedicated Server reply was received. The server Flight state is unknown.")
+        end
+    end
+
+    if not client_transport.epoch then
+        if client_transport.hello_elapsed >= 1 then
+            client_transport.nonce = client_transport.nonce or new_token()
+            local sent = send_mod_message(client_transport.peer,
+                table.concat({"H", "1", client_transport.nonce}, "|"))
+            client_transport.awaiting_hello = sent
+            client_transport.hello_elapsed = 0
+        end
+        return
+    end
+
+    if client_transport.pending_state ~= nil and client_transport.send_elapsed >= 1 then
+        local sequence = client_transport.next_sequence
+        if not valid_sequence(sequence) then
+            client_transport.epoch = nil
+            client_transport.next_sequence = nil
+            client_transport.awaiting_hello = false
+            client_transport.hello_elapsed = 1
+            return
+        end
+        local desired = client_transport.pending_state and "1" or "0"
+        local payload = table.concat({"S", "1", client_transport.nonce,
+            client_transport.epoch, sequence, desired}, "|")
+        local sent = send_mod_message(client_transport.peer, payload)
+        client_transport.send_elapsed = 0
+        if sent then
+            client_transport.pending_state = nil
+            client_transport.latest_sequence = sequence
+            client_transport.latest_state = desired == "1"
+            client_transport.request_nonce = client_transport.nonce
+            client_transport.next_sequence = sequence + 1
+            client_transport.awaiting_result = true
+            client_transport.request_elapsed = 0
+        end
+    end
+end
+
+local function update_network(delta_seconds)
+    if type(runtime.network) ~= "table" or type(runtime.network.receive_mod) ~= "function" then return end
+    local ok, messages = pcall(runtime.network.receive_mod, 16)
+    if ok and type(messages) == "table" then
+        if runtime.is_server == true then
+            local peers = connected_peer_set()
+            clear_native_peer_intents(peers)
+            if peers then
+                for _, message in ipairs(messages) do handle_server_message(message, peers) end
+            end
+        else
+            for _, message in ipairs(messages) do handle_client_message(message) end
+        end
+    end
+    if runtime.is_server ~= true then update_client_transport(delta_seconds) end
+end
+
+local function reset_flight_toggle()
+    configured_flight_setting, effective_flight_setting = nil, nil
 end
 
 local function multiplier(key)
@@ -195,13 +612,21 @@ local function update(delta_seconds)
     local session = runtime.world.session_id()
     if session == 0 then
         peak_flight_delta, upward_recovery = 0, false
+        flight_feedback = nil
         report("waiting", "Waiting for an authoritative world") return
     end
     if active_session and session ~= active_session then
         gliders = {}
         peak_flight_delta, upward_recovery = 0, false
+        reset_flight_toggle()
     end
+    if transport_session ~= session then reset_transport_session(session) end
     active_session = session
+    if runtime.is_server ~= true then
+        prepare_client_peer()
+        toggle_flight_from_hotkey()
+    end
+    update_network(delta_seconds)
     overrides:begin_update()
     pitch_overrides:begin_update()
 
@@ -212,6 +637,14 @@ local function update(delta_seconds)
     end
     if overrides.fault then report("write-failed", overrides.fault) return end
     if pitch_overrides.fault then report("write-failed", pitch_overrides.fault) return end
+    if runtime.is_server == true then
+        -- This candidate's server effect is exclusively the native actor
+        -- operand. Never reintroduce global pitch-speed or stamina writes.
+        pitch_overrides:restore_all()
+        overrides:restore_all()
+        report("intent-only", "Per-player Flight controls; stamina unchanged. Native movement requires gameplay verification")
+        return
+    end
     if not has_effect() then
         report(overrides:has_ownership() and "waiting" or "no-change",
             overrides:summary("Unlimited Flying and all speed multipliers are at their defaults"))
@@ -307,10 +740,15 @@ end
 return {
     update_interval_ms = 100,
     on_load = function()
+        reset_transport_session(runtime.world.session_id())
         if type(game.assets.prepare_loaded_index) == "function" then
             game.assets.prepare_loaded_index("keen::ItemInfo", "itemId.value")
         end
         report("waiting", "SF Unlimited Flight loaded. Waiting for typed engine access")
     end,
     on_update = update,
+    on_unload = function()
+        local cleared, reason = clear_native_peer_intents()
+        if not cleared then error("Native Flight cleanup pending: " .. tostring(reason)) end
+    end,
 }

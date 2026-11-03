@@ -40,8 +40,12 @@ An existing game-root `dinput8-chain.ini` is read in its established format:
 
 ```ini
 [Chain]
-mods\xhl-native-core\xhl-native-core.dll
+mods\xhl-native-core\dinput8.dll
 ```
+
+The XHL profiles are `xhl-native-core`, `xhl-remote-altar-close` and `xhl-unlimited-gifting-range`. The original DirectInput host package uses `mods/xhl-native-core/dinput8.dll`, imported from `native_runtime/xhl/dinput8.dll` without modifying the binary. The two plugin profiles declare their original DLLs as ordinary libraries. At startup, ShroudForge routes the selected host through a private projection only when at least one plugin has its own enabled and approved DLL Manager selection and passes the existing target, manifest and dependency checks. The projection's adjacent `mods/` directory contains only those admitted XHL packages. If the host writes `XHL-Native-Plugin-Host.log` at the projection root, that exact file is treated as output, excluded from snapshot identity and never copied into a later snapshot. Similar names and files under plugin directories remain unexpected.
+
+Greeneye Find uses two separate client-only profiles: `greeneye-find-host` imports the unchanged original host into `mods/greeneye-host/dbgcore.dll`, and `find-mouse-alignment` imports Find's original wrapper, sidecar and manifest into `mods/find/greeneye/find/`. During startup-held entry preparation, both profiles must be enabled and approved, Find must pass the canonical DLL Manager plan, and the game-root `dbgcore.dll` must be absent. ShroudForge loads the selected host from its package and stages the original Find files to `greeneye/find/` only when `game/greeneye` is absent. An existing tree is accepted only when its immutable hashes and exact contents match; existing `find.ini`, `find.log` and `loader.log` remain user data. Greeneye preparation is startup-only. Changing either profile requires a game restart.
 
 Explicit chain order takes precedence over automatically derived DLL declarations. The first valid DirectInput provider keeps forwarded calls. Own bootstrap files are skipped, recursive forwarding falls back to System32, and repeated canonical paths reuse one process handle. Chain entries must resolve to files inside a direct installed mod package, such as `mods/<folder>/`. Game-root DLLs and paths outside those packages are rejected. Per-folder declarations also support a configured external mods directory.
 

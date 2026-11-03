@@ -20,14 +20,16 @@ pub fn timestamp() -> String {
 
 fn civil_date(days_since_epoch: i64) -> (i64, i64, i64) {
     let shifted = days_since_epoch + 719_468;
-    let era = if shifted >= 0 { shifted } else { shifted - 146_096 } / 146_097;
+    let era = if shifted >= 0 {
+        shifted
+    } else {
+        shifted - 146_096
+    } / 146_097;
     let day_of_era = shifted - era * 146_097;
-    let year_of_era = (day_of_era - day_of_era / 1_460 + day_of_era / 36_524
-        - day_of_era / 146_096)
-        / 365;
+    let year_of_era =
+        (day_of_era - day_of_era / 1_460 + day_of_era / 36_524 - day_of_era / 146_096) / 365;
     let mut year = year_of_era + era * 400;
-    let day_of_year = day_of_era
-        - (365 * year_of_era + year_of_era / 4 - year_of_era / 100);
+    let day_of_year = day_of_era - (365 * year_of_era + year_of_era / 4 - year_of_era / 100);
     let month_prime = (5 * day_of_year + 2) / 153;
     let day = day_of_year - (153 * month_prime + 2) / 5 + 1;
     let month = month_prime + if month_prime < 10 { 3 } else { -9 };
@@ -41,7 +43,11 @@ fn single_line(value: &str) -> String {
 
 pub fn format_line(level: char, source: &str, message: &str) -> String {
     let source = single_line(source).replace(']', "_");
-    format!("[{level} {}] [{source}] {}", timestamp(), single_line(message))
+    format!(
+        "[{level} {}] [{source}] {}",
+        timestamp(),
+        single_line(message)
+    )
 }
 
 #[derive(Default)]

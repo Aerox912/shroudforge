@@ -1,4 +1,6 @@
-use crate::collectors::{mod_callbacks, operation_timings, queue_health, runtime_health};
+use crate::collectors::{
+    mod_callbacks, operation_metadata, operation_timings, queue_health, runtime_health,
+};
 use crate::{Session, seconds};
 use serde_json::{Value, json};
 
@@ -7,8 +9,13 @@ impl Session {
         let mut report = json!({"jobId":self.job.as_ref().map(|job| job.id.as_str())});
         let runtime = self.includes_capability("runtime");
         let queue = self.includes_capability("queue");
+        let is_operation_metadata = crate::request_diagnostic_action::is_operation_metadata_job_id(
+            self.job.as_ref().map(|job| job.id.as_str()),
+        );
 
-        if runtime || queue {
+        if is_operation_metadata {
+            report["operationMetadata"] = operation_metadata::snapshot();
+        } else if runtime || queue {
             let observed = runtime_health::snapshot();
             let mut native = if runtime {
                 observed.clone()

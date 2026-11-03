@@ -44,12 +44,56 @@ impl Session {
                     .clamp(500, 60000),
             );
         if self.active {
-            self.sample();
-            if self.started.elapsed().as_secs() >= self.limit()
-                || (self.settings["continuous"] != true
-                    && self.job.as_ref().is_none_or(|job| job.execution.is_none()))
-            {
-                self.complete_diagnostic_job();
+            let operation_metadata_job =
+                crate::request_diagnostic_action::is_operation_metadata_job_id(
+                    self.job.as_ref().map(|job| job.id.as_str()),
+                );
+            let may_sample = if operation_metadata_job {
+                match self.settings["requestId"].as_u64() {
+                    Some(request_id) => {
+                        match crate::request_diagnostic_action::claim_operation_metadata_snapshot(
+                            &self.root, request_id,
+                        ) {
+                            Ok(true) => true,
+                            Ok(false) => {
+                                if let Err(error) = crate::request_diagnostic_action::cancel_operation_metadata_request(
+                                    &self.root,
+                                    request_id,
+                                ) {
+                                    tracing::warn!(
+                                        target:"shroudforge::diagnostics",
+                                        %error,
+                                        "Could not cancel the unclaimed operation metadata Snapshot"
+                                    );
+                                }
+                                false
+                            }
+                            Err(error) => {
+                                tracing::warn!(
+                                    target:"shroudforge::diagnostics",
+                                    %error,
+                                    "Could not claim the operation metadata Snapshot"
+                                );
+                                false
+                            }
+                        }
+                    }
+                    None => false,
+                }
+            } else {
+                true
+            };
+            if may_sample {
+                self.sample();
+                if self.started.elapsed().as_secs() >= self.limit()
+                    || (self.settings["continuous"] != true
+                        && self.job.as_ref().is_none_or(|job| job.execution.is_none()))
+                {
+                    self.complete_diagnostic_job();
+                }
+            } else if operation_metadata_job {
+                self.active = false;
+                self.reason = "stopped";
             }
         }
         crate::collectors::operation_timings::set_enabled(self.operation_timings_enabled());

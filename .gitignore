@@ -49,3 +49,7 @@ Desktop.ini
 # Legacy UI outputs. Current generators write to /build/ui/.
 /modules/modloader/ui/dist/
 /modules/modloader/ui/generated-flags.ts
+
+# codex-workflow-managed-start
+.codex_workflow_hidden_resources/
+# codex-workflow-managed-end

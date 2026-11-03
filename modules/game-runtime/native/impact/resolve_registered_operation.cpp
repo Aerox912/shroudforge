@@ -43,6 +43,24 @@ bool range(std::uintptr_t address, std::size_t size){
     return address && size && size <= UINTPTR_MAX - address;
 }
 
+bool main_image_bounds(std::uintptr_t& base, std::uint32_t& size) {
+    const auto module = GetModuleHandleW(nullptr);
+    base = reinterpret_cast<std::uintptr_t>(module);
+    IMAGE_DOS_HEADER dos{};
+    if (!base || !copy(&dos, module, sizeof(dos)) || dos.e_magic != IMAGE_DOS_SIGNATURE ||
+        dos.e_lfanew < static_cast<LONG>(sizeof(dos)) || dos.e_lfanew > 1024 * 1024)
+        return false;
+    std::uintptr_t header{};
+    if (!add(base, static_cast<std::size_t>(dos.e_lfanew), header)) return false;
+    IMAGE_NT_HEADERS64 nt{};
+    if (!copy(&nt, reinterpret_cast<const void*>(header), sizeof(nt)) ||
+        nt.Signature != IMAGE_NT_SIGNATURE || nt.FileHeader.Machine != IMAGE_FILE_MACHINE_AMD64 ||
+        nt.OptionalHeader.Magic != IMAGE_NT_OPTIONAL_HDR64_MAGIC || !nt.OptionalHeader.SizeOfImage)
+        return false;
+    size = nt.OptionalHeader.SizeOfImage;
+    return true;
+}
+
 bool table(std::uintptr_t service, Table& result){
     return field(service, 0x28, result.bits) && field(service, 0x30, result.buckets) &&
         field(service, 0x48, result.keys) && field(service, 0x60, result.records) &&
@@ -137,7 +155,37 @@ ResolveResult ResolveRegisteredOperationPinned(const NamedServiceImplementation:
         return ResolveResult::RegistryUnavailable;
     if (!selected.record.callback || !NamedServiceImplementation::executable_callback(selected.record.callback))
         return ResolveResult::UnsupportedContract;
-    output = {selected.record.callback, selected.record.arguments};
+    output = {selected.record.callback, selected.record.arguments, selected.record.inline_name};
+    return ResolveResult::Found;
+}
+
+ResolveResult ResolveRegisteredTerraformingMetadataPinned(
+    const NamedServiceImplementation::BindingContract& binding,
+    const EngineContext::EcsView& owner, std::uint64_t session_generation,
+    RegisteredOperationMetadata& output) {
+    if (!session_generation || KfcRuntimeWorldSessionId() != session_generation)
+        return ResolveResult::SessionChanged;
+    RegisteredOperation operation;
+    const auto resolved = ResolveRegisteredOperationPinned(binding, owner, "terraforming", operation);
+    if (resolved != ResolveResult::Found) return resolved;
+    if (std::strcmp(operation.name.data(), "terraforming")) return ResolveResult::UnsupportedContract;
+
+    std::uintptr_t base{};
+    std::uint32_t image_size{};
+    if (!main_image_bounds(base, image_size) || operation.callback < base ||
+        operation.callback - base >= image_size || operation.callback - base > UINT32_MAX)
+        return ResolveResult::UnsupportedContract;
+    if (!NamedServiceImplementation::executable_callback(operation.callback) ||
+        KfcRuntimeWorldSessionId() != session_generation)
+        return ResolveResult::SessionChanged;
+
+    RegisteredOperationMetadata prepared;
+    prepared.callback_rva = static_cast<std::uint32_t>(operation.callback - base);
+    prepared.image_size = image_size;
+    prepared.session_generation = session_generation;
+    prepared.arguments = operation.arguments;
+    prepared.name = operation.name;
+    output = prepared;
     return ResolveResult::Found;
 }
 

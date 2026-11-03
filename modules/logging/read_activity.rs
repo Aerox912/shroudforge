@@ -25,7 +25,8 @@ pub fn read_activity(root: &Path) -> Result<Vec<ActivityLogEntry>, String> {
         .map_err(|error| error.to_string())?;
     let length = file.metadata().map_err(|error| error.to_string())?.len();
     let offset = length.saturating_sub(MAX_ACTIVITY_BYTES);
-    file.seek(SeekFrom::Start(offset)).map_err(|error| error.to_string())?;
+    file.seek(SeekFrom::Start(offset))
+        .map_err(|error| error.to_string())?;
     let mut contents = String::new();
     BufReader::new(file)
         .read_to_string(&mut contents)
@@ -37,7 +38,11 @@ pub fn read_activity(root: &Path) -> Result<Vec<ActivityLogEntry>, String> {
             contents.clear();
         }
     }
-    let lines = contents.lines().rev().take(MAX_ACTIVITY_ENTRIES).collect::<Vec<_>>();
+    let lines = contents
+        .lines()
+        .rev()
+        .take(MAX_ACTIVITY_ENTRIES)
+        .collect::<Vec<_>>();
     let mut items = lines
         .into_iter()
         .rev()

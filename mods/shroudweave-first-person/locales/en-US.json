@@ -1,0 +1,28 @@
+{
+  "$schema": "https://bonsaibauer.github.io/shroudforge/schemas/mod-locale.schema.json",
+  "mod": {
+    "name": "ShroudWeave First Person",
+    "description": "Toggle the first-person camera and corrected stamina gauge with Home."
+  },
+  "settings": {
+    "toggleFirstPerson": {
+      "label": "Toggle First Person",
+      "description": "Press Home to toggle the first-person camera and corrected stamina gauge together."
+    },
+    "cameraDistance": {
+      "label": "Camera Distance",
+      "description": "Camera offset used while first person is enabled."
+    }
+  },
+  "groups": [
+    {
+      "label": "First Person",
+      "description": "The view starts in third person each time this runtime loads."
+    }
+  ],
+  "changelog": [
+    "Adds a loader-owned Home toggle for the camera and stamina gauge.",
+    "Keeps the upstream -0.15 camera distance default and admits only the exact supported client image."
+  ],
+  "strings": {}
+}

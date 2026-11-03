@@ -8,6 +8,9 @@
 --- @field phase "pregame"|"ingame" Whether the game is preparing startup data or is running.
 --- @field is_client boolean True when this mod runs in a player client process.
 --- @field is_server boolean True when this mod runs in a Dedicated Server process.
+--- @field map RuntimeMapApi Bounded client map snapshots from the shared native owner.
+--- @field first_person RuntimeFirstPersonApi Owner-scoped client first-person camera control.
+--- @field notice RuntimeNoticeApi Bounded transient client notices, requires runtime and runtime-notices capabilities.
 --- @field player RuntimePlayerApi Cached local character selection from the main menu.
 --- @field network RuntimeNetworkApi Steam Networking Messages P2P channel on the current client or dedicated-server process.
 --- @field services RuntimeServicesApi Reflected views of original named engine DI services with independently validated plain-data storage contracts.
@@ -622,6 +625,52 @@ function runtime.ecs.query_bounds(bounds, padding, ...) end
 --- @return integer? entity
 --- @return string? reason
 function runtime.ecs.resolve(keen_entity_id) end
+---Resolve a current native player to an ordinary guarded ECS handle. Dedicated
+---authority only; unknown builds, stale sessions and ambiguous bindings return nil.
+---Use the actual transport sender's canonical string, never a client payload ID.
+---A returned handle is not a cached ownership grant for a later flight callback.
+---@param peer_steam_id string Numeric Lua values are refused to preserve Steam64 precision.
+---@return integer? entity
+---@return string? reason
+function runtime.ecs.resolve_peer(peer_steam_id) end
+
+---Set only this transport peer's native glider-flight intent on the exact supported server.
+---Requires runtime ECS write access. No payload UID, numeric coercion, shared ItemInfo or stamina write.
+---True means accepted intent, not observed movement. Off also clears while no world is active.
+---@param peer_steam_id string Use the transport sender's canonical Steam64 string.
+---@param enabled boolean
+---@return boolean accepted
+---@return string? reason
+function runtime.ecs.set_peer_flight(peer_steam_id, enabled) end
+
+---Begin an inactive, current-player-qualified Vein intent lease on a dedicated server.
+---Requires runtime lifecycle and ECS write permission. Use only the transport sender's Steam64.
+---Success is accepted intent control, not mining readiness. No client-provided World or actor ID.
+---@param peer_steam_id string
+---@return table? lease token (32 lowercase hex), ttl_ms (2000), renew_after_ms (500)
+---@return string? reason
+function runtime.ecs.begin_peer_vein(peer_steam_id) end
+
+---Renew/set this exact Vein lease. Native binding, monotonic expiry and sequence are rechecked.
+---Sequence is an integer 1..4294967295 without wrap, tier is 1, 2 or 3, active is a boolean.
+---Off can clear without ECS write permission; nil token and zero durations acknowledge retirement.
+---That empty acknowledgement is not a lease: next On requires a new begin. Old/replayed commands refuse.
+---@param peer_steam_id string
+---@param token string
+---@param sequence integer
+---@param active boolean
+---@param tier integer
+---@return table? lease_or_off_ack
+---@return string? reason
+function runtime.ecs.set_peer_vein(peer_steam_id, token, sequence, active, tier) end
+
+---Idempotently revoke only this peer's matching token. Lifecycle/server permission still applies.
+---No active World or ECS write permission is required; an old token cannot revoke its replacement.
+---@param peer_steam_id string
+---@param token string
+---@return boolean accepted
+---@return string? reason
+function runtime.ecs.revoke_peer_vein(peer_steam_id, token) end
 
 --- Read one live ECS component by an opaque entity handle and real `keen::ecs::*` type.
 --- Returns `nil, reason` until the current game build has a verified ECS provider.
@@ -970,3 +1019,64 @@ function log.error(...) end
 --- @field mod_kind "lua" Runtime package kind for the currently running mod.
 --- @field log ShroudForgeLogApi Write messages to this mod's shared ShroudForge log.
 shroudforge = {}
+
+---@class RuntimeMapMeta
+---@field status integer 0 ready; 1 disabled; 2 unsupported; 3 no session; 4 uncaptured; 5 stale; 6 wrong generation.
+---@field session_generation string Lossless decimal u64.
+---@field revision string Lossless decimal u64.
+---@field clock_domain string Windows monotonic tick domain.
+---@field published_at_ms string
+---@field freshness_limit_ms integer
+---@class RuntimeMapApi
+local RuntimeMapApi = {}
+---Read scalar state, pose, freshness and collection metadata. No grid/marker bulk copy.
+---@return table? frame
+---@return string? reason
+function RuntimeMapApi.get_frame() end
+---Read at most 256 markers. Collection: world, players, deaths, waypoints, pings, discovery.
+---@param collection string
+---@param offset integer Zero-based.
+---@param limit integer 1..256.
+---@param generation string? Expected session generation.
+---@return table? page
+---@return string? reason
+function RuntimeMapApi.get_markers(collection, offset, limit, generation) end
+---Read at most 4096 fog bytes as a binary string. Bytes retain native tile-major 32x32 order.
+---Pass the previous generation/revision to reject changes between chunk reads.
+---@param offset integer Zero-based byte offset.
+---@param count integer 1..4096.
+---@param generation string?
+---@param revision string?
+---@return table? chunk Fields: meta RuntimeMapMeta, bytes string.
+---@return string? reason
+function RuntimeMapApi.get_fog(offset, count, generation, revision) end
+
+---Activate/query this owner's native overlay service status without registering any Lua rendering.
+---Status uses SF_NATIVE_STATUS; reason 1 means recreate the swapchain after interception,
+---reason 2 means a valid device/swapchain recreation is required. Includes action and counters.
+---@return table? status
+---@return string? reason
+function RuntimeMapApi.get_status() end
+
+---@class RuntimeFirstPersonApi
+local RuntimeFirstPersonApi = {}
+---Set this mod owner's first-person camera mode on an admitted client build.
+---cameraDistance must be finite and between -0.5 and 0.5. The native provider
+---validates the exact camera and gauge controls for the current client image.
+---@param enabled boolean
+---@param cameraDistance number Camera offset in the admitted native range [-0.5, 0.5].
+---@return boolean ok
+---@return string? reason
+function RuntimeFirstPersonApi.set_mode(enabled, cameraDistance) end
+
+---@class RuntimeNoticeApi
+local RuntimeNoticeApi = {}
+---Requires capabilities runtime and runtime-notices, opted in before game boot.
+---Show one UTF-8 message of 1..256 bytes with no ASCII control characters.
+---Fixed appearance and 3 seconds. Latest message globally replaces the previous
+---one. Success accepts publication only, actual presentation is not guaranteed.
+---No feed, persistence, render callback or input capture is created.
+---@param message string
+---@return boolean accepted
+---@return string? reason
+function RuntimeNoticeApi.show(message) end

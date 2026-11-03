@@ -109,6 +109,17 @@ impl ModRegistry {
             return Ok(None);
         }
 
+        if !crate::package_lookup::is_admitted_package_directory(
+            root.as_std_path(),
+            path.as_std_path(),
+        ) {
+            debug!(
+                path = path.as_str(),
+                "Skipping package directory outside mods root or through a reparse point"
+            );
+            return Ok(None);
+        }
+
         if !path.join("mod.json").exists() {
             debug!(
                 path = path.as_str(),
@@ -151,10 +162,26 @@ impl ModRegistry {
             .with_id(mod_id));
         }
 
+        let package_binding = crate::package_lookup::capture_admitted_mod_package(
+            root.as_std_path(),
+            &mod_id,
+            path.as_std_path(),
+        )
+        .map_err(|message| {
+            ModErrorReport::new(
+                path.clone(),
+                ModError::Io(IoError {
+                    path: path.to_string(),
+                    source: std::io::Error::new(std::io::ErrorKind::InvalidData, message),
+                }),
+            )
+        })?;
+
         Ok(Some(Mod {
             inner: Arc::new(ModInner {
                 info: mod_info,
                 fs: Mutex::new(fs),
+                package_binding,
             }),
         }))
     }

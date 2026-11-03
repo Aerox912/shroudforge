@@ -1,5 +1,27 @@
 use serde_json::{Value, json};
 
+#[cfg(test)]
+thread_local! {
+    static SNAPSHOT_CALLS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+#[cfg(test)]
+pub(crate) fn reset_snapshot_calls() {
+    SNAPSHOT_CALLS.with(|calls| calls.set(0));
+}
+
+#[cfg(test)]
+pub(crate) fn snapshot_calls() -> usize {
+    SNAPSHOT_CALLS.with(std::cell::Cell::get)
+}
+
+#[cfg(test)]
+pub(crate) fn snapshot() -> Value {
+    SNAPSHOT_CALLS.with(|calls| calls.set(calls.get() + 1));
+    json!({"testRuntimeHealth":true})
+}
+
+#[cfg(not(test))]
 pub(crate) fn snapshot() -> Value {
     native_snapshot()
 }
@@ -11,7 +33,7 @@ pub(crate) fn without_queue_details(mut snapshot: Value) -> Value {
     snapshot
 }
 
-#[cfg(windows)]
+#[cfg(all(windows, not(test)))]
 fn native_snapshot() -> Value {
     use windows_sys::Win32::System::LibraryLoader::{GetModuleHandleW, GetProcAddress};
     let name: Vec<u16> = "kfc-runtime.dll\0".encode_utf16().collect();
@@ -35,7 +57,7 @@ fn native_snapshot() -> Value {
     }
 }
 
-#[cfg(not(windows))]
+#[cfg(all(not(windows), not(test)))]
 fn native_snapshot() -> Value {
     json!({"error":"native-provider-requires-windows"})
 }

@@ -1,7 +1,7 @@
 use super::loader_settings_input::UiSettings;
 use super::record_ui_log::UiLogEvent;
-use shroudforge_package::HotkeyAssessmentTarget;
 use serde::{Deserialize, Serialize};
+use shroudforge_package::HotkeyAssessmentTarget;
 
 #[derive(Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]

@@ -17,7 +17,8 @@ mod tests {
 
     /// A game folder whose loader config holds `config`.
     fn game_dir(config: &[u8]) -> PathBuf {
-        let root = std::env::temp_dir().join(format!("shroudforge-ui-locale-{}", uuid::Uuid::new_v4()));
+        let root =
+            std::env::temp_dir().join(format!("shroudforge-ui-locale-{}", uuid::Uuid::new_v4()));
         let config_path = shroudforge_loader_config::paths::loader_config(&root);
         fs::create_dir_all(config_path.parent().unwrap()).unwrap();
         fs::write(&config_path, config).unwrap();
@@ -33,7 +34,10 @@ mod tests {
         // Without a saved choice, the loader default applies.
         let unset = game_dir(br#"{"schemaVersion":1}"#);
         let default = shroudforge_loader_config::config::read_loader_defaults().unwrap();
-        assert_eq!(read_ui_locale(&unset), default["general"]["locale"].as_str().unwrap());
+        assert_eq!(
+            read_ui_locale(&unset),
+            default["general"]["locale"].as_str().unwrap()
+        );
         fs::remove_dir_all(unset).unwrap();
     }
 

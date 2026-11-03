@@ -11,6 +11,7 @@
   "icon": "icon.svg",
   "dependencies": [],
   "capabilities": [
-    "runtime"
+    "runtime",
+    "runtime-notices"
   ]
 }

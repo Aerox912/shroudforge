@@ -1,4 +1,4 @@
-use shroudforge_logging::{write_activity, LogLevel};
+use shroudforge_logging::{LogLevel, write_activity};
 use std::{
     path::Path,
     time::{SystemTime, UNIX_EPOCH},

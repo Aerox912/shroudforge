@@ -1,5 +1,19 @@
 // Read-only original-image contract inspection. No game function is executed.
 #include <windows.h>
+#include <cstddef>
+#include <cstdint>
+namespace WorldRuntime::RegisteredVoxelGrid {
+namespace {
+std::size_t registered_voxel_engine_invocations{};
+}
+}
+namespace MetadataFixture {
+bool guards_available{};
+std::size_t resolver_lookups{};
+std::uint8_t arguments{8};
+bool stale_on_second_lookup{};
+}
+#define KFC_RUNTIME_TEST_COUNT_REGISTERED_VOXEL_WRITES
 namespace { HMODULE mapped_image{}; HMODULE contract_image(LPCWSTR) { return mapped_image; } }
 #define GetModuleHandleW contract_image
 #include "code-inventory/resolve_original_call_graph.cpp"
@@ -115,8 +129,8 @@ std::optional<BuildingPropSpawnLayout> ConfiguredBuildingPropSpawnLayout() { ret
 struct EcsWriteGuard::State {};
 EcsWriteGuard::EcsWriteGuard() = default;
 EcsWriteGuard::~EcsWriteGuard() = default;
-bool EcsWriteGuard::TryAcquire(const EcsView&, const char**) { return false; }
-bool EcsWriteGuard::Validate() const { return false; }
+bool EcsWriteGuard::TryAcquire(const EcsView&, const char**) { return MetadataFixture::guards_available; }
+bool EcsWriteGuard::Validate() const { return MetadataFixture::guards_available; }
 void EcsWriteGuard::Release() noexcept {}
 bool ResolveEcs(EcsView&, std::string*) { return false; }
 }
@@ -124,7 +138,7 @@ namespace EcsRuntime {
 struct SessionGuard::State {};
 SessionGuard::SessionGuard() = default;
 SessionGuard::~SessionGuard() = default;
-bool SessionGuard::TryAcquire(std::uint64_t) { return false; }
+bool SessionGuard::TryAcquire(std::uint64_t) { return MetadataFixture::guards_available; }
 const EngineContext::EcsView& SessionGuard::View() const { static EngineContext::EcsView view; return view; }
 bool SessionGuard::WritesAllowed() const { return false; }
 void SessionGuard::MarkWriteUncertain(const char*) {}
@@ -135,6 +149,21 @@ bool RereadEntityCommandQueue(const NamedServiceImplementation::BindingContract&
 namespace ImpactRuntime {
 ResolveResult ResolveRegisteredOperation(std::uint64_t, const char*, RegisteredOperation&) { return ResolveResult::RegistryUnavailable; }
 ResolveResult ResolveRegisteredOperationPinned(const NamedServiceImplementation::BindingContract&, const EngineContext::EcsView&, const char*, RegisteredOperation&) { return ResolveResult::RegistryUnavailable; }
+ResolveResult ResolveRegisteredTerraformingMetadataPinned(
+    const NamedServiceImplementation::BindingContract&, const EngineContext::EcsView&,
+    std::uint64_t generation, RegisteredOperationMetadata& output) {
+    ++MetadataFixture::resolver_lookups;
+    RegisteredOperationMetadata found;
+    found.callback_rva = 0x100;
+    found.image_size = 0x1000;
+    found.session_generation = generation;
+    found.arguments = MetadataFixture::arguments;
+    if (MetadataFixture::stale_on_second_lookup && MetadataFixture::resolver_lookups == 2)
+        ++RetryFixture::session;
+    std::memcpy(found.name.data(), "terraforming", sizeof("terraforming"));
+    output = found;
+    return ResolveResult::Found;
+}
 }
 namespace WorldRuntime::Implementation {
 std::atomic<std::uint64_t> context_resets{};
@@ -226,7 +255,117 @@ bool check_public_spawn_retry() {
     return ok;
 }
 
+bool check_operation_metadata_contract() {
+    MetadataFixture::guards_available = true;
+    MetadataFixture::resolver_lookups = 0;
+    WorldRuntime::RegisteredVoxelGrid::registered_voxel_engine_invocations = 0;
+    const auto metadata = WorldRuntime::RegisteredVoxelGrid::InspectOperationMetadata();
+    bool ok = metadata.status == WorldRuntime::RegisteredVoxelGrid::OperationMetadataStatus::Partial &&
+        metadata.writer_status == WorldRuntime::RegisteredVoxelGrid::WriterMetadataStatus::UnsupportedArity &&
+        metadata.operation_found && metadata.argument_count == 8 && metadata.callback_rva == 0x100 &&
+        metadata.session_generation == 5 && MetadataFixture::resolver_lookups == 2 &&
+        WorldRuntime::RegisteredVoxelGrid::registered_voxel_engine_invocations == 0;
+
+    const auto document = WorldRuntime::RegisteredVoxelGrid::MetadataSerialization::ToJson(metadata);
+    const auto text = document.dump();
+    ok = ok && text.size() + 1 <= 64 * 1024 &&
+        document.at("operation").at("name") == "terraforming" &&
+        document.at("operation").at("argumentCount") == 8 &&
+        document.at("operation").at("parameterSchema") == "unknown" &&
+        document.at("operation").at("callbackRva") == 0x100 &&
+        document.at("writerStatus") == "unsupported-arity" && text.find("0x") == std::string::npos;
+
+    auto maximum_path = metadata;
+    maximum_path.status = WorldRuntime::RegisteredVoxelGrid::OperationMetadataStatus::Found;
+    maximum_path.writer_status = WorldRuntime::RegisteredVoxelGrid::WriterMetadataStatus::Found;
+    maximum_path.writer_candidate_rva = 0x106;
+    maximum_path.writer_path_count = WorldRuntime::RegisteredVoxelGrid::maximum_metadata_path;
+    for (std::size_t i = 0; i < maximum_path.writer_path_count; ++i) {
+        maximum_path.writer_path[i].rva = static_cast<std::uint32_t>(0x100 + i);
+        maximum_path.writer_path[i].code_sha256.fill('a');
+        maximum_path.writer_path[i].code_sha256[64] = '\0';
+    }
+    const auto maximum_path_document = WorldRuntime::RegisteredVoxelGrid::MetadataSerialization::ToJson(maximum_path);
+    ok = ok && maximum_path_document.at("writerPath").size() ==
+        WorldRuntime::RegisteredVoxelGrid::maximum_metadata_path &&
+        maximum_path_document.dump().size() + 1 <= 64 * 1024;
+
+    auto invalid_name = metadata;
+    invalid_name.operation_name.fill('\0');
+    constexpr char secret[] = "C:\\private\\scene";
+    std::copy_n(secret, sizeof(secret), invalid_name.operation_name.begin());
+    const auto invalid_document = WorldRuntime::RegisteredVoxelGrid::MetadataSerialization::ToJson(invalid_name);
+    const auto invalid_text = invalid_document.dump();
+    ok = ok && invalid_document.at("resolutionStatus") == "unknown" &&
+        !invalid_document.contains("operation") && invalid_text.find("private") == std::string::npos;
+
+    auto stale = metadata;
+    stale.status = WorldRuntime::RegisteredVoxelGrid::OperationMetadataStatus::Stale;
+    const auto stale_document = WorldRuntime::RegisteredVoxelGrid::MetadataSerialization::ToJson(stale);
+    ok = ok && stale_document.at("resolutionStatus") == "stale" &&
+        !stale_document.contains("sessionGeneration") && !stale_document.contains("operation");
+
+    auto invalid_path = metadata;
+    invalid_path.status = WorldRuntime::RegisteredVoxelGrid::OperationMetadataStatus::Found;
+    invalid_path.writer_status = WorldRuntime::RegisteredVoxelGrid::WriterMetadataStatus::Found;
+    invalid_path.writer_candidate_rva = 0x200;
+    invalid_path.writer_path_count = 1;
+    invalid_path.writer_path[0].rva = invalid_path.callback_rva;
+    invalid_path.writer_path[0].code_sha256.fill('z');
+    invalid_path.writer_path[0].code_sha256[64] = '\0';
+    const auto invalid_path_document = WorldRuntime::RegisteredVoxelGrid::MetadataSerialization::ToJson(invalid_path);
+    ok = ok && invalid_path_document.at("resolutionStatus") == "partial" &&
+        invalid_path_document.at("writerStatus") == "invalid-metadata" &&
+        !invalid_path_document.contains("writerPath");
+
+    MetadataFixture::arguments = 9;
+    MetadataFixture::resolver_lookups = 0;
+    const auto decode_failure = WorldRuntime::RegisteredVoxelGrid::InspectOperationMetadata();
+    const auto decode_failure_document = WorldRuntime::RegisteredVoxelGrid::MetadataSerialization::ToJson(decode_failure);
+    ok = ok && decode_failure.status == WorldRuntime::RegisteredVoxelGrid::OperationMetadataStatus::Partial &&
+        decode_failure.writer_status == WorldRuntime::RegisteredVoxelGrid::WriterMetadataStatus::DecodeFailure &&
+        decode_failure.operation_found && MetadataFixture::resolver_lookups == 2 &&
+        WorldRuntime::RegisteredVoxelGrid::registered_voxel_engine_invocations == 0 &&
+        decode_failure_document.at("writerStatus") == "decode-failure" &&
+        !decode_failure_document.contains("writerPath");
+
+    MetadataFixture::resolver_lookups = 0;
+    WorldRuntime::RegisteredVoxelGrid::OperationMetadata busy;
+    {
+        std::unique_lock resolution_lock(WorldRuntime::RegisteredVoxelGrid::resolution_mutex);
+        busy = WorldRuntime::RegisteredVoxelGrid::InspectOperationMetadata();
+    }
+    const auto busy_document = WorldRuntime::RegisteredVoxelGrid::MetadataSerialization::ToJson(busy);
+    ok = ok && busy.status == WorldRuntime::RegisteredVoxelGrid::OperationMetadataStatus::Partial &&
+        busy.writer_status == WorldRuntime::RegisteredVoxelGrid::WriterMetadataStatus::Busy &&
+        MetadataFixture::resolver_lookups == 2 &&
+        WorldRuntime::RegisteredVoxelGrid::registered_voxel_engine_invocations == 0 &&
+        busy_document.at("writerStatus") == "busy";
+
+    MetadataFixture::arguments = 8;
+    MetadataFixture::resolver_lookups = 0;
+    MetadataFixture::stale_on_second_lookup = true;
+    RetryFixture::session = 5;
+    const auto stale_session = WorldRuntime::RegisteredVoxelGrid::InspectOperationMetadata();
+    const auto stale_session_document = WorldRuntime::RegisteredVoxelGrid::MetadataSerialization::ToJson(stale_session);
+    ok = ok && stale_session.status == WorldRuntime::RegisteredVoxelGrid::OperationMetadataStatus::Stale &&
+        !stale_session.operation_found && MetadataFixture::resolver_lookups == 2 &&
+        WorldRuntime::RegisteredVoxelGrid::registered_voxel_engine_invocations == 0 &&
+        stale_session_document.at("resolutionStatus") == "stale" &&
+        !stale_session_document.contains("operation") && !stale_session_document.contains("sessionGeneration");
+    MetadataFixture::stale_on_second_lookup = false;
+    RetryFixture::session = 5;
+    MetadataFixture::arguments = 8;
+    MetadataFixture::guards_available = false;
+    return ok;
+}
+
 int wmain(int argc, wchar_t** argv) {
+    if (argc == 2 && std::wcscmp(argv[1], L"--metadata-contract") == 0) {
+        const bool ok = check_operation_metadata_contract();
+        std::puts(ok ? "operation-metadata-contract=pass" : "operation-metadata-contract=fail");
+        return ok ? 0 : 1;
+    }
     if (argc < 3 || argc > 5) { std::fprintf(stderr, "usage: native-contract-test <original.exe> <terraforming-analysis-rva> [writer-analysis-rva] [profile.json]\n"); return 2; }
     mapped_image = LoadLibraryExW(argv[1], nullptr, DONT_RESOLVE_DLL_REFERENCES);
     if (!mapped_image) return 2;

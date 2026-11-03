@@ -1,0 +1,7 @@
+{
+  "schemaVersion": 1,
+  "id": "runtime.operation-metadata",
+  "name": "Runtime operation metadata",
+  "description": "One-shot structural metadata for the registered operation and bounded writer path.",
+  "capabilities": ["runtime"]
+}

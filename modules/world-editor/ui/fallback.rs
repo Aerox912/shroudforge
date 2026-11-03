@@ -1,6 +1,6 @@
 pub(crate) fn render_script(last_payload: &str) -> String {
     format!(
-r#"(() => {{
+        r#"(() => {{
                                     const state = {last_payload};
                                     window.__sfPendingState = state;
                                     window.dispatchEvent(new CustomEvent('shroudforge-world-editor-state', {{ detail: state }}));

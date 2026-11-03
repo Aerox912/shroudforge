@@ -1,0 +1,19 @@
+{
+  "schemaVersion": 1,
+  "id": "find-mouse-alignment",
+  "modId": "find",
+  "packageDirectory": "find",
+  "name": "Find Mouse Alignment (Original)",
+  "target": "client",
+  "importFiles": {
+    "native_runtime/find/greeneye/find/find.dll": "greeneye/find/find.dll",
+    "native_runtime/find/greeneye/find/find_upstream.dll": "greeneye/find/find_upstream.dll",
+    "native_runtime/find/greeneye/find/mod.json": "greeneye/find/mod.json"
+  },
+  "files": [
+    {
+      "path": "greeneye/find/find.dll",
+      "mode": "library"
+    }
+  ]
+}
