@@ -108,6 +108,20 @@ defaults blindly. Deployment separately inventories those settings before any
 authorized installation. An unexpected existing private Core container refuses
 new-candidate ownership.
 
+The finite private [XHL tree adapter](../../dev/xhl-tree-adapter/README.md) is
+the concrete caller of this canonical helper. It pins an exact approved input
+map, prepares only a new `mods/xhl-core`, emits actual IDs/hashes and waits for
+the same prepared-receipt transaction ack after Deployment's complete readback.
+Only then does the helper enter its separate Installed terminal state and
+release handles without restoring the seal. The outcome is
+`COMMITTED_SEALED_TREE`, with runtime drift detection rather than permanent byte
+immutability. Rollback explicitly reports retained new paths after canonical
+restoration; deletion remains a separate Deployment operation. Partial creation
+errors retain acquired original objects and list unresolved just-created paths,
+without reopening/adopting them. No game launch/PID, daemon or restart journal is
+part of this adapter. Its README defines the finite schema and actual-ID merge
+steps; staging IDs cannot be substituted for final installed IDs.
+
 ## Provider publication
 
 Only feature-enabled SF dinput8 proxies export
