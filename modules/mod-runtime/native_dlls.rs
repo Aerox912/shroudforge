@@ -27,7 +27,7 @@ pub(crate) struct IntendedNativePlan {
     root_key: String,
     is_server: bool,
     pub(crate) identity: serde_json::Value,
-    ordinary: Vec<DllLoadEntry>,
+    pub(crate) ordinary: Vec<DllLoadEntry>,
     pub(crate) entries: Vec<DeferredNativePlugin>,
 }
 impl IntendedNativePlan {
@@ -236,6 +236,7 @@ pub(crate) fn queue(root: &Path, mut entry: DllLoadEntry) -> Result<(), String> 
             }
         }
     }
+    if crate::current_assets::full_runtime::defer_greeneye(root,&entry).map_err(|e|e.to_string())? {return Ok(());}
     queue_process_library(root, entry)
 }
 fn validate_xhl_queue(root:&Path,entry:&DllLoadEntry,xhl:&crate::current_assets::full_runtime::xhl_selection::Selection)->Result<(),String> {
@@ -572,7 +573,7 @@ pub(crate) fn prepare_full_startup(root:&Path, contract:&crate::current_assets::
     if expected.identity!=contract.dll_plan{return Err("Verified native plan binding differs from full contract".into());}
     apply_plan_impl(root,false,true,Some(&expected))?;
     for status in statuses(){
-        if !matches!(status.state,"loaded"|"deferred"){return Err(format!("Required native DLL {} is {}: {}",status.id,status.state,status.detail));}
+        if !matches!(status.state,"loaded"|"deferred"|"deferred-entrypoint"){return Err(format!("Required native DLL {} is {}: {}",status.id,status.state,status.detail));}
     }
     deferred_native_plugins(root,false)?;
     let environment=mod_loader::ModEnvironment::load(root.to_str().ok_or("nonUTF8 full runtime root")?).map_err(|e|format!("{e:?}"))?;
@@ -680,7 +681,7 @@ pub(crate) fn applied_plan() -> serde_json::Value {
 }
 pub(crate) fn statuses() -> Vec<NativeDllStatus> {
     let Some(Ok(executor)) = EXECUTOR.get() else {
-        return Vec::new();
+        return crate::current_assets::full_runtime::greeneye_status().into_iter().collect();
     };
     let state = executor
         .shared
@@ -722,6 +723,8 @@ pub(crate) fn statuses() -> Vec<NativeDllStatus> {
             },
         );
     }
+    drop(state); // Never acquire admission while holding the executor mutex.
+    if let Some(status)=crate::current_assets::full_runtime::greeneye_status(){statuses.insert(status.id.clone(),status);}
     statuses.into_values().collect()
 }
 
@@ -735,7 +738,7 @@ fn path_key(path: &Path) -> String {
 }
 
 #[cfg(windows)]
-fn load_library(root: &Path, entry: &DllLoadEntry) -> (Option<isize>, Result<(), String>) {
+pub(crate) fn load_library(root: &Path, entry: &DllLoadEntry) -> (Option<isize>, Result<(), String>) {
     use std::os::windows::ffi::OsStrExt;
     use windows_sys::Win32::{
         Foundation::HMODULE,
@@ -817,7 +820,7 @@ fn load_library(root: &Path, entry: &DllLoadEntry) -> (Option<isize>, Result<(),
 }
 
 #[cfg(not(windows))]
-fn load_library(_root: &Path, _entry: &DllLoadEntry) -> (Option<isize>, Result<(), String>) {
+pub(crate) fn load_library(_root: &Path, _entry: &DllLoadEntry) -> (Option<isize>, Result<(), String>) {
     (
         None,
         Err("Native DLL loading is available only on Windows".into()),

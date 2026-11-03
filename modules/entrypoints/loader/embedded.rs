@@ -333,6 +333,32 @@ pub unsafe extern "C" fn shroudforge_commit_full_startup_v2(game:*const u16,
     std::panic::catch_unwind(||startup_path(game).is_some_and(|root|
         shroudforge_api::current_assets::full_runtime::commit_v2(&root,unsafe{&*plan},completed))).unwrap_or(false)
 }
+/// Private post-restore continuation. 0=no work, 1=original ticket, -1=refused.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn shroudforge_take_entry_v1(game:*const u16,
+    output:*mut shroudforge_api::current_assets::full_runtime::EntryTicketV1,capacity:u32)->i32 {
+    if output.is_null()||capacity!=48{return -1;}
+    std::panic::catch_unwind(|| {
+        let Some(root)=startup_path(game)else{return -1;};
+        match shroudforge_api::current_assets::full_runtime::take_entry_v1(&root){
+            Ok(Some(ticket))=>{unsafe{output.write(ticket);}1},Ok(None)=>0,Err(_)=>-1,
+        }
+    }).unwrap_or(-1)
+}
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn shroudforge_load_entry_v1(game:*const u16,
+    ticket:*const shroudforge_api::current_assets::full_runtime::EntryTicketV1)->usize {
+    if ticket.is_null(){return 0;}
+    std::panic::catch_unwind(||startup_path(game).and_then(|root|
+        shroudforge_api::current_assets::full_runtime::load_entry_v1(&root,unsafe{&*ticket}).ok()).unwrap_or(0)).unwrap_or(0)
+}
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn shroudforge_confirm_entry_v1(game:*const u16,
+    ticket:*const shroudforge_api::current_assets::full_runtime::EntryTicketV1,module:usize,witness:bool)->bool {
+    if ticket.is_null(){return false;}
+    std::panic::catch_unwind(||startup_path(game).is_some_and(|root|
+        shroudforge_api::current_assets::full_runtime::confirm_entry_v1(&root,unsafe{&*ticket},module,witness))).unwrap_or(false)
+}
 /// Explicit no-copy entry. Policy removal, verification error or panic cannot
 /// reach the ordinary pregame runner, updater, migrations or baseline recovery.
 #[unsafe(no_mangle)]
