@@ -53,6 +53,29 @@ fn completed_child()->std::process::Child {
     let mut child=Command::new(std::env::current_exe().unwrap()).args(["--exact","owned_child"]).stdout(Stdio::null()).spawn().unwrap();
     assert!(child.wait().unwrap().success());child
 }
+#[test] fn installed_transfer_releases_handles_without_restoring_seal(){
+    use tree::test_faults as faults;faults::reset(&[],&[]);
+    let root=base();let fresh=tree::FreshTree::create(&root,&["one".into()]).unwrap();fresh.write_new("one/data.txt",b"input").unwrap();let sealed=fresh.seal().unwrap();
+    faults::set_identity_fault(true);let failure=sealed.commit_installed().unwrap_err();faults::set_identity_fault(false);
+    assert!(fs::rename(&root,root.with_extension("moved")).is_err());
+    let ids=failure.candidate.commit_installed().unwrap();
+    let lease=tree::TreeLease::validate(&root,&ids,&["one/data.txt".into()]).unwrap();assert!(fs::write(root.join("injected.dll"),b"blocked").is_err());drop(lease);
+    // Installed means ACL seal plus runtime drift detection, not permanent byte
+    // immutability after installer handles release.
+    fs::write(root.join("one/data.txt"),b"changed after release").unwrap();fs::remove_dir_all(root).unwrap();
+}
+#[test] fn partial_creation_retains_known_ids_and_never_adopts_unresolved_paths(){
+    use tree::test_faults as faults;
+    for after in [false,true]{faults::reset(&[],&[]);faults::fail_creation(if after{None}else{Some(2)},if after{Some(2)}else{None});
+        let root=base();let failure=match tree::FreshTree::create(&root,&["one".into()]){Ok(_)=>panic!("injected creation must fail"),Err(e)=>e};
+        assert_eq!(failure.receipt().known.len(),1);assert_eq!(failure.receipt().unresolved_created_paths.len(),usize::from(after));
+        assert!(fs::rename(&root,root.with_extension("moved")).is_err());faults::reset(&[],&[]);
+        if after{fs::write(root.join("one/sentinel"),b"do not adopt or modify").unwrap();}
+        let receipt=failure.release_unmodified().unwrap();assert_eq!(receipt.known.len(),1);
+        if after{assert_eq!(fs::read(root.join("one/sentinel")).unwrap(),b"do not adopt or modify");}
+        fs::remove_dir_all(root).unwrap();
+    }
+}
 #[test] fn running_mid_restore_failure_preserves_progress_and_refuses_identity_or_acl_drift(){
     use tree::{DirectoryProgress as P,test_faults as faults};faults::reset(&[],&[]);
     let root=base();let sealed=tree::FreshTree::create(&root,&["one".into(),"one/nested".into()]).unwrap().seal().unwrap();
