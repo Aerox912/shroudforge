@@ -2,6 +2,10 @@
 //! No Lua runner, asset writer, baseline restore, or publication call is reachable.
 use super::*;
 use std::collections::BTreeSet;
+#[path="hd_forward/mod.rs"]
+mod hd_forward;
+pub(super) fn reject_forward_hold(root:&Path)->Result<()> {hd_forward::reject_hold(root)}
+pub(super) fn verify_forward(root:&Path)->Result<()> {hd_forward::verify(root)}
 
 const GENERATOR_CLOSURE: &str = "1f80b068c67c03e47bdde01360e7adc2886c2f69ef27fb40e3d6dfb916d199ba";
 const MAP_EXTENSION: &str = "mods/esm-real-map/extended.mod.json";
