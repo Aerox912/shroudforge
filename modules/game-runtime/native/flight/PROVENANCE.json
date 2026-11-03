@@ -1,0 +1,95 @@
+{
+  "status": "adapted private SF host candidate, not gameplay accepted",
+  "files": [
+    {
+      "source": "E:\\Worktrees\\Codex\\flight-new-client-20261102\\source\\src\\flight_client_frame.cpp",
+      "target": "E:\\Worktrees\\Codex\\sf177-flight-vein-20261103\\shroudforge\\modules\\game-runtime\\native\\flight\\donor\\src\\flight_client_frame.cpp",
+      "sha256": "2df461b8de9ff77ab8e61dc28084b62f37142e60a6262075ebeee46564e459d6"
+    },
+    {
+      "source": "E:\\Worktrees\\Codex\\flight-new-client-20261102\\source\\src\\flight_glider_gate.cpp",
+      "target": "E:\\Worktrees\\Codex\\sf177-flight-vein-20261103\\shroudforge\\modules\\game-runtime\\native\\flight\\donor\\src\\flight_glider_gate.cpp",
+      "sha256": "d63e7499debef74e2507cad4b8bd96ee15354082e64422361ba28b5e0ae3aa15"
+    },
+    {
+      "source": "E:\\Worktrees\\Codex\\flight-new-client-20261102\\source\\src\\flight_layout.cpp",
+      "target": "E:\\Worktrees\\Codex\\sf177-flight-vein-20261103\\shroudforge\\modules\\game-runtime\\native\\flight\\donor\\src\\flight_layout.cpp",
+      "sha256": "048c5db0dd1ed469dc92b7be9808b31d78fc1c776132e71f8f02f175c0af4ba8"
+    },
+    {
+      "source": "E:\\Worktrees\\Codex\\flight-new-client-20261102\\source\\src\\flight_scalar_sdk.cpp",
+      "target": "E:\\Worktrees\\Codex\\sf177-flight-vein-20261103\\shroudforge\\modules\\game-runtime\\native\\flight\\donor\\src\\flight_scalar_sdk.cpp",
+      "sha256": "be9fa1e67dc0055ba1bf04764d0abaefe9b63d906292555c0c14a608092ba16d"
+    },
+    {
+      "source": "E:\\Worktrees\\Codex\\flight-new-client-20261102\\source\\include\\flight_client_frame.hpp",
+      "target": "E:\\Worktrees\\Codex\\sf177-flight-vein-20261103\\shroudforge\\modules\\game-runtime\\native\\flight\\donor\\include\\flight_client_frame.hpp",
+      "sha256": "bcb22b500f79a2ca26ac1f955fb8cb5cc126461802f50fe7d22b60a0c24bdbcc"
+    },
+    {
+      "source": "E:\\Worktrees\\Codex\\flight-new-client-20261102\\source\\include\\flight_client_profile_pins.hpp",
+      "target": "E:\\Worktrees\\Codex\\sf177-flight-vein-20261103\\shroudforge\\modules\\game-runtime\\native\\flight\\donor\\include\\flight_client_profile_pins.hpp",
+      "sha256": "744cae02e9ff6ae6bdf813e60f4901550dd39f2adc514cc62f7e1cfa1211e429"
+    },
+    {
+      "source": "E:\\Worktrees\\Codex\\flight-new-client-20261102\\source\\include\\flight_glider_gate.hpp",
+      "target": "E:\\Worktrees\\Codex\\sf177-flight-vein-20261103\\shroudforge\\modules\\game-runtime\\native\\flight\\donor\\include\\flight_glider_gate.hpp",
+      "sha256": "cbe8b55494f3b6cae35e59373598d203953c0dc1ae35a20b77fd42f18e983b06"
+    },
+    {
+      "source": "E:\\Worktrees\\Codex\\flight-new-client-20261102\\source\\include\\flight_layout.hpp",
+      "target": "E:\\Worktrees\\Codex\\sf177-flight-vein-20261103\\shroudforge\\modules\\game-runtime\\native\\flight\\donor\\include\\flight_layout.hpp",
+      "sha256": "090784acd7568e56bd83a36d24ec820ac3874138b531b5d385aac8e6cd43e2b4"
+    },
+    {
+      "source": "E:\\Worktrees\\Codex\\flight-new-client-20261102\\source\\include\\flight_scalar_sdk.hpp",
+      "target": "E:\\Worktrees\\Codex\\sf177-flight-vein-20261103\\shroudforge\\modules\\game-runtime\\native\\flight\\donor\\include\\flight_scalar_sdk.hpp",
+      "sha256": "3663e0fc06988f0ebb47c637cafad2e1f2130cdc2a8b1bd80fb1a384639d15ab"
+    },
+    {
+      "source": "E:\\Worktrees\\Codex\\flight-new-client-20261102\\source\\include\\flight_compiler_profile.hpp",
+      "target": "E:\\Worktrees\\Codex\\sf177-flight-vein-20261103\\shroudforge\\modules\\game-runtime\\native\\flight\\donor\\include\\flight_compiler_profile.hpp",
+      "sha256": "66b46d837c626ef9073e95505a55311cea05bf5a45640d15487784b525b447ef"
+    },
+    {
+      "source": "E:\\Worktrees\\Codex\\flight-new-client-20261102\\inputs\\local-context\\include\\local_subject_context.hpp",
+      "target": "E:\\Worktrees\\Codex\\sf177-flight-vein-20261103\\shroudforge\\modules\\game-runtime\\native\\flight\\donor\\include\\local_subject_context.hpp",
+      "sha256": "dec30b16a0d918860bca3777ff067a217ec0d6ae49b3747736786d50da59a66f"
+    },
+    {
+      "source": "E:\\Worktrees\\Codex\\flight-new-client-20261102\\inputs\\local-context\\include\\owned_world_identity.hpp",
+      "target": "E:\\Worktrees\\Codex\\sf177-flight-vein-20261103\\shroudforge\\modules\\game-runtime\\native\\flight\\donor\\include\\owned_world_identity.hpp",
+      "sha256": "11908a91980b31010d259225e6b6c414d7016580f63c16627da946f93e33e64a"
+    },
+    {
+      "source": "E:\\Worktrees\\Codex\\flight-new-client-20261102\\inputs\\local-context\\src\\local_subject_context.cpp",
+      "target": "E:\\Worktrees\\Codex\\sf177-flight-vein-20261103\\shroudforge\\modules\\game-runtime\\native\\flight\\donor\\src\\local_subject_context.cpp",
+      "sha256": "90e152c5c71b9fbb02599fc6bc6a5e6c0b748294c77e663ca09d0bc836df2616"
+    },
+    {
+      "source": "E:\\Worktrees\\Codex\\flight-new-client-20261102\\inputs\\scalar-sdk\\include\\shroudweave_native_scalar_v1.h",
+      "target": "E:\\Worktrees\\Codex\\sf177-flight-vein-20261103\\shroudforge\\modules\\game-runtime\\native\\flight\\donor\\include\\shroudweave_native_scalar_v1.h",
+      "sha256": "331d082422665af2037d86eb822fe5998fb4060de01586ebfcf18fdddb91f9bc"
+    },
+    {
+      "source": "E:\\Worktrees\\Codex\\flight-new-client-20261102\\inputs\\scalar-sdk\\include\\shroudweave_native_scalar_v2.h",
+      "target": "E:\\Worktrees\\Codex\\sf177-flight-vein-20261103\\shroudforge\\modules\\game-runtime\\native\\flight\\donor\\include\\shroudweave_native_scalar_v2.h",
+      "sha256": "c1e00b13d8f564ee2a92ff56692c94ba6f5131980ca9582375a0dee33922b2de"
+    },
+    {
+      "source": "E:\\Build\\flight-new-client-20261102-r1\\green-build\\generated\\flight_scalar_sdk_pin.hpp",
+      "target": "E:\\Worktrees\\Codex\\sf177-flight-vein-20261103\\shroudforge\\modules\\game-runtime\\native\\flight\\donor\\include\\flight_scalar_sdk_pin.hpp",
+      "sha256": "57d348e78020480716b194a9fa863c51e833e6629ba6f32b0d9c75f3cf838cf7"
+    },
+    {
+      "source": "E:\\Worktrees\\Codex\\flight-new-client-20261102\\source\\src\\flight_publisher.hpp",
+      "target": "E:\\Worktrees\\Codex\\sf177-flight-vein-20261103\\shroudforge\\modules\\game-runtime\\native\\flight\\flight_publisher.hpp",
+      "sha256": "45e4e6bdad481624b3d4509d87ae9812268fbebf96408c1ef7c74482ba74070f"
+    },
+    {
+      "source": "E:\\Worktrees\\Codex\\flight-new-client-20261102\\source\\src\\flight_mod.cpp",
+      "sha256": "ee37aab380f4aa8a42beded134f01639954d6781739ca3c777c259402dafe0e1",
+      "role": "profile-and-callback-extraction"
+    }
+  ]
+}

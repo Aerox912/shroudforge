@@ -81,6 +81,13 @@ impl super::AppState {
                     "Lua first-person owner release failed"
                 );
             }
+            if id == "sf-unlimited-flight" {
+                let result = shroudforge_runtime_bridge::flight_retire(generation);
+                if result != 1 {
+                    tracing::warn!(mod_id=id, generation, result,
+                        "Flight owner retirement unconfirmed; native ownership remains fail-closed, restart may be required");
+                }
+            }
         }) else {
             return;
         };

@@ -246,3 +246,9 @@ mod first_person_tests {
         assert!(first_person_release_owner(1).is_ok());
     }
 }
+
+pub fn flight_available() -> bool { false }
+pub fn flight_set_enabled(_token:u64,_enabled:bool) -> i32 { 0 }
+pub fn flight_reset(_token:u64) -> i32 { 0 }
+pub fn flight_retire(_token:u64) -> i32 { 0 }
+pub fn flight_status(_token:u64) -> Option<crate::FlightClientStatus> { None }

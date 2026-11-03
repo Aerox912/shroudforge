@@ -25,7 +25,7 @@ end
 
 local function fixture()
     local f = {
-        settings={}, session=41, writes=0, players={11}, active_item=0,
+        settings={}, native_on=false, native_available=true, pressed=false, notices={}, session=41, writes=0, players={11}, active_item=0,
         pitch_mode="YawSpeedPitchTargetAngle", pitch_input=0, pitch_degrees=0, delta_seconds=1/60,
         action_sets_gliding=false, action_unsets_gliding=false,
         attributes={[11]={StaminaDepletionMod_Glider=0.35}},
@@ -73,8 +73,20 @@ local function fixture()
         local value = f.settings[key]
         if value == nil then return fallback end
         return value
-    end}}
+    end}, input={was_keybind_pressed=function(key)
+        equal(key,"toggleFlight")
+        local pressed=f.pressed;f.pressed=false;return pressed
+    end}, notifications={publish=function(notice) f.notices[#f.notices+1]=notice.message end}}
     runtime = {
+        is_client=true, is_server=false,
+        flight={
+            set_local_enabled=function(on)
+                if not f.native_available then return false,"provider unavailable" end
+                f.native_on=on;return true
+            end,
+            reset_local=function() f.native_on=false;return true end,
+            status=function()return {requested_on=f.native_on,provider_ready=f.native_available} end,
+        },
         overrides=overrides,
         has=function() return true end,
         report_effect=function(state, detail) f.state, f.detail = state, detail end,
@@ -233,107 +245,11 @@ do
     f.active_item, f.pitch_mode, f.pitch_input = f.item_id, "YawSpeedPitchSpeed", -1
     f.action_sets_gliding = true
     f:tick()
-    equal(f.glider.equipment.gliderConfig.pitchAngleSpeed, -70, "active action can supply the effective HangGliding state")
+    equal(f.glider.equipment.gliderConfig.pitchAngleSpeed, 70, "personal controls never write the shared pitch rate")
     equal(f.glider.equipment.gliderConfig.yawAngleSpeed, 110, "effective action state enables original glider controls")
     f.action_unsets_gliding = true
     f:tick()
     equal(f.glider.equipment.gliderConfig.pitchAngleSpeed, 70, "unset mask takes precedence and restores native pitch")
-    f:unload()
-end
-
-do
-    local f = fixture()
-    f.settings.unlimitedFlying = true
-    f.active_item, f.pitch_mode, f.pitch_input = f.item_id, "YawSpeedPitchSpeed", -1
-    f:tick()
-    equal(f.glider.equipment.gliderConfig.pitchAngleSpeed, -70, "upward command uses the native negative rate")
-    f.pitch_input = 0
-    f:tick()
-    equal(f.glider.equipment.gliderConfig.pitchAngleSpeed, 0, "neutral input holds the native pitch")
-    f.pitch_input = 1
-    f:tick()
-    equal(f.glider.equipment.gliderConfig.pitchAngleSpeed, 70, "downward input restores the native positive rate")
-    f.pitch_input, f.pitch_degrees = -1, -84
-    f:tick()
-    assert(f.glider.equipment.gliderConfig.pitchAngleSpeed > -4.01
-        and f.glider.equipment.gliderConfig.pitchAngleSpeed < -3.99, "sampled tilt limit reduces the native rate")
-    f.pitch_degrees = -86
-    f:tick()
-    equal(f.glider.equipment.gliderConfig.pitchAngleSpeed, 0, "sampled limit stops further upward steering")
-    f.active_item = 0
-    f:tick()
-    equal(f.glider.equipment.gliderConfig.pitchAngleSpeed, 70, "landing automatically restores the native rate")
-    f.active_item, f.pitch_input, f.pitch_degrees = f.item_id, -1, 0
-    f:tick()
-    equal(f.glider.equipment.gliderConfig.pitchAngleSpeed, -70)
-    f.pitch_mode = "YawSpeedPitchTargetAngle"
-    f:tick()
-    equal(f.glider.equipment.gliderConfig.pitchAngleSpeed, 70, "unsupported controls restore instead of leaving a negative rate")
-    f.pitch_mode = "YawSpeedPitchSpeed"
-    f:tick()
-    equal(f.glider.equipment.gliderConfig.pitchAngleSpeed, -70)
-    f.players = {11,12}
-    f.attributes[12] = {StaminaDepletionMod_Glider=0.35}
-    f:tick()
-    equal(f.glider.equipment.gliderConfig.pitchAngleSpeed, 70, "shared rate steering stops when another player appears")
-    f:unload()
-end
-
-do
-    -- This is the old controller's arithmetic counterexample, not a model of
-    -- the engine's complete glider physics. asin hides crossing the pole.
-    local pitch, delta = -80, 0.65
-    local old_rate = -(pitch + 85) / 0.25
-    local next_pitch = pitch + old_rate * delta
-    assert(next_pitch < -90, "a 650 ms interval exceeds the old fixed 250 ms horizon")
-    local angle = math.rad(next_pitch)
-    local folded = math.deg(math.asin(math.sin(angle)))
-    assert(math.cos(angle) < 0 and folded > -90,
-        "after crossing vertical the folded pitch conceals the reversed horizontal heading")
-
-    local f = fixture()
-    f.settings.unlimitedFlying = true
-    f.active_item, f.pitch_mode, f.pitch_input = f.item_id, "YawSpeedPitchSpeed", -1
-    f.pitch_degrees, f.delta_seconds = pitch, delta
-    f:tick()
-    local rate = f.glider.equipment.gliderConfig.pitchAngleSpeed
-    assert(math.abs(rate + 5 / 1.3) < 0.00001, "measured interval sets a two-interval steering margin")
-    assert(pitch + rate * delta > -85, "the observed 650 ms interval cannot cross the 85 degree margin")
-    f.delta_seconds = 1/60
-    f:tick()
-    equal(f.glider.equipment.gliderConfig.pitchAngleSpeed, rate, "a shorter next interval retains the active flight's peak")
-    f.active_item = 0
-    f:tick()
-    equal(f.glider.equipment.gliderConfig.pitchAngleSpeed, 70, "landing restores the original rate after a slow interval")
-    f.active_item = f.item_id
-    f:tick()
-    equal(f.glider.equipment.gliderConfig.pitchAngleSpeed, -20, "the next flight starts with a fresh interval history")
-    f:unload()
-end
-
-do
-    local f = fixture()
-    f.settings.unlimitedFlying = true
-    f.active_item, f.pitch_mode, f.pitch_input = f.item_id, "YawSpeedPitchSpeed", -1
-    f.pitch_degrees = -100
-    f:tick()
-    equal(f.glider.equipment.gliderConfig.pitchAngleSpeed, 70, "inverted up vector restores the native positive rate instead of using folded pitch")
-    assert(f.detail:find("inverted recovery", 1, true), "recovery is reported")
-    f.pitch_degrees = -80
-    f:tick()
-    equal(f.glider.equipment.gliderConfig.pitchAngleSpeed, 70, "holding climb cannot immediately restart the negative rate after inversion")
-    f.pitch_input = 0
-    f:tick()
-    equal(f.glider.equipment.gliderConfig.pitchAngleSpeed, 0, "releasing climb while upright clears the recovery latch")
-    f.pitch_input = -1
-    f:tick()
-    equal(f.glider.equipment.gliderConfig.pitchAngleSpeed, -20, "a new climb command uses the bounded rate again")
-    f.delta_seconds = 0
-    f:tick()
-    equal(f.glider.equipment.gliderConfig.pitchAngleSpeed, 70, "an invalid measured interval restores rather than retaining a negative rate")
-    f.delta_seconds = 0/0
-    f:tick()
-    equal(f.glider.equipment.gliderConfig.pitchAngleSpeed, 70, "a nonfinite interval cannot authorize steering")
     f:unload()
 end
 
@@ -349,7 +265,7 @@ do
     f.settings.descendSpeed = 50
     f.active_item = f.item_id
     f:tick()
-    equal(f.attributes[11].StaminaDepletionMod_Glider, 0, "original glider stamina input")
+    equal(f.attributes[11].StaminaDepletionMod_Glider, 0.35, "stamina remains normal even for an old saved On value")
     equal(f.glider.equipment.gliderConfig.yawAngleSpeed, 110, "turn multiplier")
     equal(f.glider.equipment.gliderConfig.accelerationForward, 1.5, "move multiplier")
     equal(f.glider.equipment.gliderConfig.airResistanceLongitudinal, string.unpack("f", string.pack("f", 0.15500000119209 * 2)), "lift coefficient multiplier")
@@ -408,12 +324,12 @@ do
     f.settings.turnSpeed = 200
     f.active_item = f.item_id
     f:tick()
-    equal(f.attributes[11].StaminaDepletionMod_Glider, 0, "stamina setting works before a glider action")
-    equal(f.writes, 2)
+    equal(f.attributes[11].StaminaDepletionMod_Glider, 0.35, "stamina is excluded from the private candidate")
+    equal(f.writes, 1)
     f.session = f.session + 1
     f:tick()
     equal(f.state, "write-failed", "shared item setting cannot cross sessions")
-    equal(f.writes, 2, "no write is authorized against the old session")
+    equal(f.writes, 1, "no write is authorized against the old session")
 end
 
 do
@@ -429,4 +345,29 @@ do
     equal(applied, false, "a retained target cannot restore or change a later world's resource")
     equal(f.writes, 0, "generic target session guard runs before the writer")
     equal(f.glider.equipment.gliderConfig.yawAngleSpeed, 55)
+end
+
+do
+    local f=fixture()
+    f.settings.unlimitedFlying=true
+    f:tick()
+    equal(f.native_on,false,"default Off is independent of saved feature availability")
+    f.pressed=true;f:tick()
+    equal(f.native_on,true,"declared F6 routes personal intent through the native controller")
+    equal(f.notices[1],"Unlimited Glider Flight On")
+    equal(f.writes,0,"personal On does not write shared pitch or stamina")
+    f.players={11,12};f:tick()
+    equal(f.glider.equipment.gliderConfig.pitchAngleSpeed,70,"two players never authorize a shared negative pitch rate")
+    f.pressed=true;f:tick()
+    equal(f.native_on,false,"F6 Off clears the personal route")
+    equal(f.notices[2],"Unlimited Glider Flight Off")
+    f.native_available=false;f.pressed=true;f:tick()
+    equal(f.native_on,false,"unavailable native provider refuses On")
+    equal(#f.notices,2,"a refused On must not display an On notice")
+    f.native_available=true;f.pressed=true;f:tick()
+    equal(f.native_on,true)
+    f.session=f.session+1;f:tick()
+    equal(f.native_on,false,"world change resets personal state")
+    f.pressed=true;f:tick();equal(f.native_on,true)
+    f:unload();equal(f.native_on,false,"unload clears personal selection")
 end

@@ -1,0 +1,13 @@
+# Third-party notices and license scope
+
+The MIT license in `LICENSE` applies only to original project material authored
+for this repository, excluding any file that carries its own license or
+provenance notice.
+
+It does not cover Enshrouded, other third-party software, game files or assets,
+third-party mods, SDKs, or binaries distributed under separate terms. Reused
+material must retain its original license and attribution, and its provenance
+and terms must be recorded before distribution.
+
+This source repository is not intended to contain game files, saved worlds, raw
+memory dumps, or third-party mod binaries.

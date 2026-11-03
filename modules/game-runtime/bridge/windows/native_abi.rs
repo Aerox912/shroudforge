@@ -149,6 +149,10 @@ pub(super) type FirstPersonConfigure = unsafe extern "C" fn(u64, f64) -> u32;
 pub(super) type FirstPersonSetMode = unsafe extern "C" fn(u64, bool) -> u32;
 pub(super) type FirstPersonReleaseOwner = unsafe extern "C" fn(u64) -> u32;
 pub(super) struct Provider {
+    pub(super) flight_set: Option<unsafe extern "C" fn(u64,u32)->i32>,
+    pub(super) flight_reset: Option<unsafe extern "C" fn(u64)->i32>,
+    pub(super) flight_retire: Option<unsafe extern "C" fn(u64)->i32>,
+    pub(super) flight_status: Option<unsafe extern "C" fn(u64,*mut crate::FlightClientStatus)->i32>,
     pub(super) read_input_keys: Option<ReadInputKeys>,
     pub(super) query_map_overlay_service: Option<QueryMapOverlayService>,
     pub(super) revoke_map_overlay_services: Option<RevokeMapOverlayServices>,

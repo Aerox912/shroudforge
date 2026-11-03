@@ -11,11 +11,17 @@
 --- @field player RuntimePlayerApi Cached local character selection from the main menu.
 --- @field first_person RuntimeFirstPersonApi Owner-scoped client first-person camera control.
 --- @field map RuntimeMapApi Bounded client map snapshots from the shared native owner.
+--- @field flight RuntimeFlightApi Owner-bound private control plane for sf-unlimited-flight.
 --- @field network RuntimeNetworkApi Steam Networking Messages P2P channel on the current client or dedicated-server process.
 --- @field services RuntimeServicesApi Reflected views of original named engine DI services with independently validated plain-data storage contracts.
 --- @field impact RuntimeImpactApi Checked semantic calls to original named Impact operations.
 --- @field overrides RuntimeOverridesApi Typed reversible changes with shared storage claims and automatic mod-scope cleanup.
 --- @field report_effect fun(state:'waiting'|'no-target'|'no-change'|'write-confirmed'|'write-failed', detail:string?):boolean,string? Report an observed ECS action state. A confirmed write means typed memory was written, not that the gameplay effect was independently verified.
+
+--- @class RuntimeFlightApi
+--- @field set_local_enabled fun(enabled:boolean):boolean,string? Set local intent, never server acknowledgement. Token is host-owned.
+--- @field reset_local fun():boolean Clear this mod generation's selection without retiring Vein.
+--- @field status fun():table Fields requested_on, local_ready, provider_ready, server_acknowledged (always false).
 
 --- @class RuntimeLifecycle
 --- @field on_load fun()? Called when the runtime mod starts.

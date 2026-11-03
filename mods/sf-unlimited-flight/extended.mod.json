@@ -13,19 +13,20 @@
     "support-patreon": "https://www.patreon.com/cw/bonsaibauer"
   },
   "changelog": [
+    "Private native per-player F6 candidate. Starts Off; stamina disabled. Shared glider speed scope retained; gameplay parity awaits testing.",
     "Separates upward gliding from unlimited glider stamina. Restores original game values when the mod is disabled."
   ],
   "settings": {
     "unlimitedFlying": {
       "value": true,
       "label": "Upward Gliding",
-      "description": "Allows the glider to tilt upward while glider stamina depletes normally.",
+      "description": "Allows personal F6 activation. Each session starts Off. Requires the matched native multiplayer provider; stamina is unchanged.",
       "control": "checkbox"
     },
     "unlimitedGliderStamina": {
-      "value": true,
+      "value": false,
       "label": "Unlimited Glider Stamina",
-      "description": "Prevents stamina drain while gliding.",
+      "description": "Deferred in this private candidate. Stamina remains unchanged even if an older saved value is On.",
       "control": "checkbox"
     },
     "turnSpeed": {
@@ -63,6 +64,12 @@
       "min": 25,
       "max": 400,
       "step": 5
+    },
+    "toggleFlight": {
+      "value": "SDL:63",
+      "control": "keybind",
+      "label": "Toggle personal glider flight",
+      "applyAt": "live"
     }
   },
   "groups": [
@@ -71,6 +78,7 @@
       "description": "Speed changes affect the active glider and every player using the same glider type.",
       "settings": [
         "unlimitedFlying",
+        "toggleFlight",
         "unlimitedGliderStamina",
         "turnSpeed",
         "moveSpeed",
