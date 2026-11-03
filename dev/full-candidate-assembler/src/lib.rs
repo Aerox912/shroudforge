@@ -10,7 +10,7 @@ use shroudforge_api::{
     API_VERSION,
     current_assets::full_runtime::{Contract, NativeFile},
 };
-use shroudforge_package::{ModEnvironment, dll_manager};
+use shroudforge_package::{ModEnvironment, dll_manager, parse_manifest};
 use std::{
     collections::{BTreeMap, BTreeSet},
     fs::{self, File, OpenOptions},
@@ -27,6 +27,14 @@ const MAX_SCRIPTS: usize = 4096;
 const REQUIRED_FEATURES: usize = 20;
 const REQUIRED_ASSET_PROVIDERS: usize = 13;
 const MAX_DEPLOYMENT_UNITS: usize = 64;
+const PRESERVED_PATCH_CONFIG_PROVIDERS: [(&str, u8); 2] =
+    [("xhl-rested-enhanced", 13), ("xhl-workshop-speed-20x", 14)];
+const PRESERVED_PATCH_CONFIG_FIELDS: [&str; 3] = [
+    "all original config bytes and actual file identity",
+    "effective values equal immutable generation",
+    "exact leaf inventory preserved; no action",
+];
+const PRESERVED_PATCH_CONFIG_DISPOSITION: &str = "Preserve observed target config unchanged; requiredPoststate is a desired installation condition, not an observed after-state. No payload write or runtime-contract binding. Controller must freshly validate exact leaf before/after and reject every action touching it.";
 const GREENEYE_PROFILE_ID: &str = "greeneye-entry-continuation-v1";
 const GREENEYE_PROFILE_VERSION: u32 = 1;
 const GREENEYE_PROFILE_SHA256: &str =
@@ -419,6 +427,87 @@ pub struct PreservedRuntimeFile {
     pub stamp: Stamp,
     pub evidence: EvidencePin,
 }
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct PatchFileIdentity {
+    pub volume: u64,
+    pub id: [u8; 16],
+}
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct PatchFilePin {
+    pub bytes: u64,
+    pub sha256: String,
+    pub identity: PatchFileIdentity,
+}
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RestedPatchEffectiveValues {
+    pub enabled: bool,
+}
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct WorkshopPatchEffectiveValues {
+    pub enabled: bool,
+    pub multiplier: u64,
+}
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(untagged)]
+pub enum PreservedPatchEffectiveValues {
+    Rested(RestedPatchEffectiveValues),
+    Workshop(WorkshopPatchEffectiveValues),
+}
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct PreservedPatchConfig {
+    /// Selected deployment-unit ID, resolved to its pinned package below.
+    pub component_id: String,
+    /// Case-insensitive target path. Actual directory spelling comes from the target evidence.
+    pub target: String,
+    /// Exact generated source-file stamp from the complete package inventory.
+    pub source_stamp: Stamp,
+    /// Finite selected semantic values, checked against the source and target projections.
+    pub effective_values: PreservedPatchEffectiveValues,
+    /// Actual target state observed before installation, including full FileIdInfo.
+    pub observed_target_before: PatchFilePin,
+    /// Required post-install state, equal to the before pin; this is a desired postcondition,
+    /// not evidence of an observed post-install read.
+    pub required_poststate: PatchFilePin,
+    pub evidence: EvidencePin,
+}
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct PatchConfigQualification {
+    schema_version: u32,
+    target_root: PathBuf,
+    rows: Vec<PatchConfigQualificationRow>,
+}
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct PatchConfigQualificationRow {
+    component_id: String,
+    relative_path: String,
+    source: PatchConfigSourceProjection,
+    selected: PatchConfigValueProjection,
+    target: PatchConfigTargetProjection,
+}
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct PatchConfigSourceProjection {
+    stamp: Stamp,
+    effective_values: PreservedPatchEffectiveValues,
+}
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct PatchConfigValueProjection {
+    effective_values: PreservedPatchEffectiveValues,
+}
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct PatchConfigTargetProjection {
+    observed_before: PatchFilePin,
+    effective_values: PreservedPatchEffectiveValues,
+}
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct MissingRequirement {
@@ -455,6 +544,8 @@ pub struct InputManifest {
     pub preservation: Vec<PreservationEntry>,
     #[serde(default)]
     pub preserved_runtime_files: Vec<PreservedRuntimeFile>,
+    #[serde(default)]
+    pub preserved_patch_configs: Vec<PreservedPatchConfig>,
     pub missing_requirements: Vec<MissingRequirement>,
 }
 
@@ -534,6 +625,8 @@ pub struct Template {
     pub preservation: Vec<PreservationEntry>,
     #[serde(default)]
     pub preserved_runtime_files: Vec<PreservedRuntimeFile>,
+    #[serde(default)]
+    pub preserved_patch_configs: Vec<PreservedPatchConfig>,
     pub payload_files: BTreeMap<String, FileBinding>,
 }
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -556,6 +649,8 @@ pub struct ReviewManifest {
     pub preservation: Vec<PreservationEntry>,
     #[serde(default)]
     pub preserved_runtime_files: Vec<PreservedRuntimeFile>,
+    #[serde(default)]
+    pub preserved_patch_configs: Vec<PreservedPatchConfig>,
     pub asset_postimages: BTreeMap<String, AssetPostimage>,
     pub xhl_plan_sha256: String,
     pub xhl_transaction: String,
@@ -1744,6 +1839,8 @@ fn validate_greeneye_template(template: &Template, contract: &Contract) -> Resul
 fn collect_staged_sources(
     manifest: &InputManifest,
     request: &AssetRequest,
+    receipt: &AssetReceipt,
+    xhl_files: &BTreeMap<String, FileBinding>,
 ) -> Result<Vec<StagedSource>> {
     validate_feature_unit_mapping(manifest)?;
     ensure!(
@@ -1779,6 +1876,30 @@ fn collect_staged_sources(
         }
     }
     check_exclusions(manifest)?;
+    let _provider_by_component = validate_preserved_patch_config_inputs(manifest, request)?;
+    let preserved_patch_targets: BTreeSet<_> = manifest
+        .preserved_patch_configs
+        .iter()
+        .map(|entry| normalized_contract_path(&entry.target))
+        .collect();
+    for entry in &manifest.preserved_patch_configs {
+        let target = normalized_contract_path(&entry.target);
+        ensure!(
+            !receipt
+                .staged
+                .keys()
+                .any(|path| normalized_contract_path(path) == target),
+            "preserved patch config collides with a generated asset postimage: {}",
+            entry.target
+        );
+        ensure!(
+            !xhl_files
+                .keys()
+                .any(|path| normalized_contract_path(path) == target),
+            "preserved patch config collides with an XHL-owned target: {}",
+            entry.target
+        );
+    }
     let expected_asset_ids: Vec<_> = manifest
         .components
         .iter()
@@ -1913,6 +2034,19 @@ fn collect_staged_sources(
             }
             let source = source_root.join(relative.replace('/', "\\"));
             let target = format!("{prefix}{relative}");
+            if preserved_patch_targets.contains(&normalized_contract_path(&target)) {
+                ensure!(
+                    relative == "config.txt"
+                        && package.origin == PackageOrigin::AssetEnvironment
+                        && component.kind == ComponentKind::AssetProvider,
+                    "only the selected patch config.txt leaf can be omitted from the write payload"
+                );
+                ensure!(
+                    package.source_files.get("config.txt") == Some(file_stamp),
+                    "preserved patch config is not bound by the complete source inventory"
+                );
+                continue;
+            }
             ensure!(
                 !is_forbidden_target(&target, &manifest.exclusions),
                 "excluded package path staged: {target}"
@@ -3395,6 +3529,505 @@ fn validate_preserved_runtime_files(
     }
     Ok(())
 }
+
+fn patch_config_provider_feature(provider_id: &str) -> Result<u8> {
+    PRESERVED_PATCH_CONFIG_PROVIDERS
+        .iter()
+        .find_map(|(id, row)| (*id == provider_id).then_some(*row))
+        .context("patch config provider is outside the two selected preserve-only modules")
+}
+
+fn validate_patch_config_values(
+    provider_id: &str,
+    values: &PreservedPatchEffectiveValues,
+) -> Result<()> {
+    match (provider_id, values) {
+        ("xhl-rested-enhanced", PreservedPatchEffectiveValues::Rested(values)) => ensure!(
+            values.enabled,
+            "selected Rested config must preserve enabled=true"
+        ),
+        ("xhl-workshop-speed-20x", PreservedPatchEffectiveValues::Workshop(values)) => ensure!(
+            values.enabled && values.multiplier == 20,
+            "selected Workshop config must preserve enabled=true and integer multiplier=20"
+        ),
+        _ => bail!("patch config effective-value shape/provider mismatch"),
+    }
+    Ok(())
+}
+
+fn validate_patch_file_pin(pin: &PatchFilePin) -> Result<()> {
+    ensure!(
+        pin.bytes > 0,
+        "preserved patch config must be a nonempty file"
+    );
+    ensure!(
+        valid_digest(&pin.sha256),
+        "invalid preserved patch config digest"
+    );
+    ensure!(
+        pin.identity.volume > 0 && pin.identity.id.iter().any(|byte| *byte != 0),
+        "preserved patch config requires full nonzero FileIdInfo"
+    );
+    Ok(())
+}
+
+fn package_manifest_id(source_root: &Path) -> Result<String> {
+    validate_e_path(&source_root, true, true)?;
+    let manifest_path = source_root.join("mod.json");
+    validate_e_path(&manifest_path, true, false)?;
+    let bytes = fs::read(&manifest_path)
+        .with_context(|| format!("read pinned package manifest {}", manifest_path.display()))?;
+    ensure!(
+        bytes.len() <= 16 * 1024 * 1024,
+        "package manifest is oversized"
+    );
+    let value: Value = serde_json::from_slice(&bytes).context("parse selected package manifest")?;
+    let parsed = parse_manifest(&source_root, value).map_err(anyhow::Error::msg)?;
+    Ok(parsed.id)
+}
+
+fn validate_package_manifest_id(
+    source_root: &Path,
+    expected_stamp: &Stamp,
+    target: &str,
+) -> Result<String> {
+    let manifest_path = source_root.join("mod.json");
+    check_stamp(&stamp(&manifest_path)?, expected_stamp, target)?;
+    package_manifest_id(source_root)
+}
+
+fn validate_preserved_patch_config_evidence(
+    entries: &[PreservedPatchConfig],
+    provider_by_component: &BTreeMap<String, String>,
+    target_root: &Path,
+    preservation: &[PreservationEntry],
+) -> Result<()> {
+    ensure!(
+        entries.len() == PRESERVED_PATCH_CONFIG_PROVIDERS.len(),
+        "both selected patch config leaves require explicit preserve-only bindings"
+    );
+    let mut component_ids = BTreeSet::new();
+    let mut targets = BTreeSet::new();
+    let mut providers = BTreeSet::new();
+    let first_evidence = entries
+        .first()
+        .context("preserved patch config bindings are missing")?
+        .evidence
+        .clone();
+    for entry in entries {
+        ensure!(
+            component_ids.insert(entry.component_id.clone()),
+            "duplicate preserved patch config component"
+        );
+        ensure!(
+            targets.insert(entry.target.to_ascii_lowercase()),
+            "case-insensitive preserved patch config target collision"
+        );
+        let provider_id = provider_by_component
+            .get(&entry.component_id)
+            .context("preserved patch config does not resolve to a selected package provider")?;
+        ensure!(
+            providers.insert(provider_id.clone()),
+            "duplicate preserved patch config provider"
+        );
+        patch_config_provider_feature(provider_id)?;
+        validate_patch_config_values(provider_id, &entry.effective_values)?;
+        ensure!(
+            valid_digest(&entry.source_stamp.sha256) && entry.source_stamp.bytes > 0,
+            "preserved patch source stamp is invalid"
+        );
+        validate_patch_file_pin(&entry.observed_target_before)?;
+        ensure!(
+            entry.required_poststate == entry.observed_target_before,
+            "preserved patch config poststate must equal its observed before pin"
+        );
+        safe_relative(&entry.target)?;
+        ensure!(
+            entry.target.to_ascii_lowercase().ends_with("/config.txt"),
+            "preserved patch target must be the selected config.txt leaf"
+        );
+        ensure!(
+            entry.evidence.path == first_evidence.path
+                && entry.evidence.sha256 == first_evidence.sha256,
+            "both patch config rows must share one pinned qualification receipt"
+        );
+        let records: Vec<_> = preservation
+            .iter()
+            .filter(|item| {
+                item.component_id == entry.component_id
+                    && item.target.eq_ignore_ascii_case(&entry.target)
+            })
+            .collect();
+        ensure!(
+            records.len() == 1
+                && records[0].evidence_sha256 == entry.evidence.sha256
+                && records[0]
+                    .fields
+                    .iter()
+                    .map(String::as_str)
+                    .collect::<Vec<_>>()
+                    == PRESERVED_PATCH_CONFIG_FIELDS
+                && records[0].disposition == PRESERVED_PATCH_CONFIG_DISPOSITION,
+            "patch config lacks its exact selected-value preservation record"
+        );
+        ensure!(
+            entries
+                .iter()
+                .filter(|candidate| candidate.evidence.path == entry.evidence.path)
+                .count()
+                == entries.len(),
+            "patch config evidence reference is inconsistent"
+        );
+    }
+    let expected_providers: BTreeSet<_> = PRESERVED_PATCH_CONFIG_PROVIDERS
+        .iter()
+        .map(|(id, _)| (*id).to_owned())
+        .collect();
+    ensure!(
+        providers == expected_providers,
+        "preserved patch config provider set differs from the two selected providers"
+    );
+    let bytes = check_raw_evidence(
+        &first_evidence.path,
+        &first_evidence.sha256,
+        4 * 1024 * 1024,
+    )?;
+    let qualification: PatchConfigQualification = serde_json::from_slice(&bytes)
+        .context("parse strict patch config qualification evidence")?;
+    ensure!(
+        qualification.schema_version == 1 && same_path(&qualification.target_root, target_root),
+        "patch config qualification receipt has a different schema or target root"
+    );
+    ensure!(
+        qualification.rows.len() == entries.len(),
+        "patch config qualification must contain exactly the selected rows"
+    );
+    let mut evidence_components = BTreeSet::new();
+    let mut evidence_targets = BTreeSet::new();
+    for row in &qualification.rows {
+        ensure!(
+            evidence_components.insert(row.component_id.clone())
+                && evidence_targets.insert(row.relative_path.to_ascii_lowercase()),
+            "qualification receipt has duplicate component or target rows"
+        );
+    }
+    for entry in entries {
+        let provider_id = provider_by_component
+            .get(&entry.component_id)
+            .context("patch config provider mapping disappeared")?;
+        let rows: Vec<_> = qualification
+            .rows
+            .iter()
+            .filter(|row| row.component_id == entry.component_id)
+            .collect();
+        ensure!(
+            rows.len() == 1,
+            "patch config qualification row is missing or ambiguous"
+        );
+        let row = rows[0];
+        ensure!(
+            row.relative_path.eq_ignore_ascii_case(&entry.target)
+                && row.source.stamp == entry.source_stamp
+                && row.source.effective_values == entry.effective_values
+                && row.selected.effective_values == entry.effective_values
+                && row.target.effective_values == entry.effective_values
+                && row.target.observed_before == entry.observed_target_before,
+            "source, selected, and target patch config projections or pins differ"
+        );
+        validate_patch_config_values(provider_id, &row.source.effective_values)?;
+        validate_patch_config_values(provider_id, &row.selected.effective_values)?;
+        validate_patch_config_values(provider_id, &row.target.effective_values)?;
+    }
+    Ok(())
+}
+
+fn validate_preserved_patch_config_inputs(
+    manifest: &InputManifest,
+    request: &AssetRequest,
+) -> Result<BTreeMap<String, String>> {
+    ensure!(
+        manifest.preserved_patch_configs.len() == PRESERVED_PATCH_CONFIG_PROVIDERS.len(),
+        "both selected patch config leaves require explicit preserve-only bindings"
+    );
+    let mut provider_by_component = BTreeMap::new();
+    let mut targets = BTreeSet::new();
+    for entry in &manifest.preserved_patch_configs {
+        let component = manifest
+            .components
+            .iter()
+            .find(|component| component.id == entry.component_id)
+            .context("preserved patch config component is not selected")?;
+        ensure!(
+            component.kind == ComponentKind::AssetProvider
+                && component.enabled
+                && component.package_directory.is_some(),
+            "preserved patch config must belong to an enabled asset-provider unit"
+        );
+        let package = manifest
+            .packages
+            .iter()
+            .find(|package| package.component_id == entry.component_id)
+            .context("preserved patch config component has no exact package input")?;
+        ensure!(
+            package.origin == PackageOrigin::AssetEnvironment
+                && package.package_directory == component.package_directory.as_deref().unwrap(),
+            "preserved patch config package does not match its selected unit"
+        );
+        let source_root = request
+            .environment_root
+            .join("mods")
+            .join(&package.package_directory);
+        let provider_id = validate_package_manifest_id(
+            &source_root,
+            package
+                .source_files
+                .get("mod.json")
+                .context("preserved patch package lacks mod.json in its source inventory")?,
+            "mod.json",
+        )?;
+        let expected_feature = patch_config_provider_feature(&provider_id)?;
+        ensure!(
+            component.feature_rows.contains(&expected_feature)
+                && request
+                    .selected_ids
+                    .iter()
+                    .filter(|id| **id == provider_id)
+                    .count()
+                    == 1
+                && manifest
+                    .asset_provider_ids
+                    .iter()
+                    .filter(|id| **id == provider_id)
+                    .count()
+                    == 1,
+            "preserved patch config provider is not mapped to the exact selected feature and request"
+        );
+        let directory = component.package_directory.as_deref().unwrap();
+        let target = format!("mods/{directory}/config.txt");
+        safe_relative(&target)?;
+        ensure!(
+            target.eq_ignore_ascii_case(&entry.target),
+            "preserved patch config target differs from its selected package"
+        );
+        let source_stamp = package
+            .source_files
+            .get("config.txt")
+            .context("preserved patch config is missing from the complete source inventory")?;
+        ensure!(
+            source_stamp == &entry.source_stamp,
+            "preserved patch config source stamp differs from the full package inventory"
+        );
+        ensure!(
+            targets.insert(target.to_ascii_lowercase()),
+            "selected patch config target is duplicated"
+        );
+        let component_key = entry.component_id.clone();
+        ensure!(
+            provider_by_component
+                .insert(component_key, provider_id)
+                .is_none(),
+            "duplicate preserved patch config component"
+        );
+        for other in [
+            manifest
+                .root_files
+                .iter()
+                .any(|item| item.target.eq_ignore_ascii_case(&target)),
+            manifest
+                .contract_file_paths
+                .iter()
+                .any(|path| path.eq_ignore_ascii_case(&target)),
+            manifest
+                .greeneye_paths
+                .iter()
+                .any(|path| path.eq_ignore_ascii_case(&target)),
+            manifest
+                .preserved_runtime_files
+                .iter()
+                .any(|item| item.target.eq_ignore_ascii_case(&target)),
+            manifest.packages.iter().any(|item| {
+                item.overlays.iter().any(|overlay| {
+                    format!("mods/{}/{}", item.package_directory, overlay.path)
+                        .eq_ignore_ascii_case(&target)
+                })
+            }),
+        ] {
+            ensure!(
+                !other,
+                "preserved patch config target collides with another target declaration"
+            );
+        }
+    }
+    ensure!(
+        manifest.preserved_patch_configs.len() == provider_by_component.len(),
+        "preserved patch config component rows are ambiguous"
+    );
+    for entry in &manifest.preserved_patch_configs {
+        ensure!(
+            manifest
+                .preservation_evidence
+                .iter()
+                .filter(|pin| pin.path == entry.evidence.path && pin.sha256 == entry.evidence.sha256)
+                .count()
+                == 1,
+            "patch config qualification receipt must appear exactly once in preservationEvidence"
+        );
+    }
+    validate_preserved_patch_config_evidence(
+        &manifest.preserved_patch_configs,
+        &provider_by_component,
+        &manifest.target_root,
+        &manifest.preservation,
+    )?;
+    Ok(provider_by_component)
+}
+
+fn validate_preserved_patch_config_template(
+    template: &Template,
+    request: &AssetRequest,
+) -> Result<()> {
+    ensure!(
+        template.preserved_patch_configs.len() == PRESERVED_PATCH_CONFIG_PROVIDERS.len(),
+        "template must bind both selected patch config leaves"
+    );
+    let mut provider_by_component = BTreeMap::new();
+    let mut targets = BTreeSet::new();
+    for entry in &template.preserved_patch_configs {
+        let component = template
+            .selected_components
+            .iter()
+            .find(|component| component.id == entry.component_id)
+            .context("preserved patch config component is absent from template selection")?;
+        ensure!(
+            component.kind == ComponentKind::AssetProvider
+                && component.enabled
+                && component.target == "client",
+            "preserved patch config must belong to an enabled selected client asset provider"
+        );
+        let directory = component
+            .package_directory
+            .as_deref()
+            .context("preserved patch config selected package directory is missing")?;
+        safe_relative(directory)?;
+        ensure!(
+            directory.split('/').count() == 1,
+            "preserved patch config package directory is not one segment"
+        );
+        let prefix = format!("mods/{directory}/");
+        let manifest_rel = format!("{prefix}mod.json");
+        let manifest_stamp = request
+            .environment_files
+            .iter()
+            .filter(|(path, _)| path.eq_ignore_ascii_case(&manifest_rel))
+            .map(|(_, stamp)| stamp)
+            .collect::<Vec<_>>();
+        ensure!(
+            manifest_stamp.len() == 1,
+            "preserved patch package manifest is absent or aliased in the immutable environment"
+        );
+        let source_root = request.environment_root.join("mods").join(directory);
+        let provider_id =
+            validate_package_manifest_id(&source_root, manifest_stamp[0], "mod.json")?;
+        let feature_row = patch_config_provider_feature(&provider_id)?;
+        ensure!(
+            component.feature_rows.contains(&feature_row)
+                && request
+                    .selected_ids
+                    .iter()
+                    .filter(|id| **id == provider_id)
+                    .count()
+                    == 1
+                && template
+                    .asset_provider_ids
+                    .iter()
+                    .filter(|id| **id == provider_id)
+                    .count()
+                    == 1
+                && template
+                    .asset_request_selected_ids
+                    .iter()
+                    .filter(|id| **id == provider_id)
+                    .count()
+                    == 1,
+            "preserved patch provider does not resolve through the selected feature, unit, and immutable request"
+        );
+        let expected_target = format!("{prefix}config.txt");
+        ensure!(
+            entry.target.eq_ignore_ascii_case(&expected_target)
+                && targets.insert(entry.target.to_ascii_lowercase()),
+            "preserved patch target differs from its selected package or is duplicated"
+        );
+        let source_rows = request
+            .environment_files
+            .iter()
+            .filter(|(path, _)| path.eq_ignore_ascii_case(&expected_target))
+            .map(|(_, stamp)| stamp)
+            .collect::<Vec<_>>();
+        ensure!(
+            source_rows.len() == 1 && source_rows[0] == &entry.source_stamp,
+            "preserved patch source stamp is absent or differs from the immutable request"
+        );
+        let source_path = source_root.join("config.txt");
+        validate_e_path(&source_path, true, false)?;
+        check_stamp(&stamp(&source_path)?, &entry.source_stamp, &expected_target)?;
+        ensure!(
+            provider_by_component
+                .insert(entry.component_id.clone(), provider_id)
+                .is_none(),
+            "duplicate preserved patch config component"
+        );
+        let target = normalized_contract_path(&entry.target);
+        ensure!(
+            !template
+                .payload_files
+                .keys()
+                .any(|path| normalized_contract_path(path) == target)
+                && !template
+                    .asset_postimages
+                    .keys()
+                    .any(|path| normalized_contract_path(path) == target)
+                && !template
+                    .contract_file_paths
+                    .iter()
+                    .any(|path| normalized_contract_path(path) == target)
+                && !template
+                    .greeneye_paths
+                    .iter()
+                    .any(|path| normalized_contract_path(path) == target)
+                && !template
+                    .xhl_files
+                    .keys()
+                    .any(|path| normalized_contract_path(path) == target)
+                && !template
+                    .preserved_runtime_files
+                    .iter()
+                    .any(|item| normalized_contract_path(&item.target) == target)
+                && template.contract.as_ref().is_none_or(|contract| {
+                    contract
+                        .files
+                        .keys()
+                        .all(|path| normalized_contract_path(path) != target)
+                }),
+            "preserved patch config entered another payload, contract, or action-owned input map"
+        );
+    }
+    let provider_set: BTreeSet<_> = provider_by_component.values().cloned().collect();
+    ensure!(
+        provider_set
+            == PRESERVED_PATCH_CONFIG_PROVIDERS
+                .iter()
+                .map(|(id, _)| (*id).to_owned())
+                .collect(),
+        "preserved patch config provider set differs from the two selected providers"
+    );
+    validate_preserved_patch_config_evidence(
+        &template.preserved_patch_configs,
+        &provider_by_component,
+        &template.target_root,
+        &template.preservation,
+    )
+}
+
 fn file_map_for_contract(
     root: &Path,
     manifest: &InputManifest,
@@ -3718,7 +4351,7 @@ pub fn prepare_template(manifest_bytes: &[u8], expected_manifest_sha256: &str) -
         manifest.runtime_source_closure.len() == 64,
         "runtime source closure is malformed"
     );
-    let sources = collect_staged_sources(&manifest, &request)?;
+    let sources = collect_staged_sources(&manifest, &request, &receipt, &xhl_files)?;
     let payload_root = manifest.output_root.join("payload");
     fs::create_dir(&manifest.output_root).with_context(|| {
         format!(
@@ -3805,8 +4438,10 @@ pub fn prepare_template(manifest_bytes: &[u8], expected_manifest_sha256: &str) -
         xhl_files,
         preservation: manifest.preservation.clone(),
         preserved_runtime_files: manifest.preserved_runtime_files.clone(),
+        preserved_patch_configs: manifest.preserved_patch_configs.clone(),
         payload_files: payload_files.clone(),
     };
+    validate_preserved_patch_config_template(&template, &request)?;
     if let Some(contract) = &template.contract {
         validate_greeneye_template(&template, contract)?;
     }
@@ -3827,6 +4462,7 @@ pub fn prepare_template(manifest_bytes: &[u8], expected_manifest_sha256: &str) -
         missing_requirements: template.missing_requirements.clone(),
         preservation: template.preservation.clone(),
         preserved_runtime_files: template.preserved_runtime_files.clone(),
+        preserved_patch_configs: template.preserved_patch_configs.clone(),
         asset_postimages: template.asset_postimages.clone(),
         xhl_plan_sha256: template.xhl_plan_sha256.clone(),
         xhl_transaction: template.xhl_transaction.clone(),
@@ -4065,6 +4701,17 @@ pub fn finalize_policy(
             .as_ref()
             .context("template has no complete runtime contract")?,
     )?;
+    let request: AssetRequest =
+        serde_json::from_str(&template.request_json).context("template request JSON is invalid")?;
+    ensure!(
+        digest(template.request_json.as_bytes()) == template.request_raw_sha256,
+        "template raw request digest differs"
+    );
+    ensure!(
+        digest(&serde_json::to_vec(&request)?) == template.request_canonical_sha256,
+        "template canonical request digest differs"
+    );
+    validate_preserved_patch_config_template(&template, &request)?;
     validate_preserved_runtime_files(
         &template.preserved_runtime_files,
         &template.target_root,
@@ -4122,6 +4769,15 @@ pub fn finalize_policy(
         &template.target_root,
     )?;
     let mut contract = contract_with_xhl(&template, &plan, &receipt)?;
+    for entry in &template.preserved_patch_configs {
+        ensure!(
+            contract
+                .files
+                .keys()
+                .all(|path| !path.eq_ignore_ascii_case(&entry.target)),
+            "preserved patch config must stay outside the runtime contract"
+        );
+    }
     ensure!(
         contract.files.contains_key("dinput8.dll"),
         "matching ShroudForge DirectInput host is not runtime-bound"
@@ -4131,18 +4787,8 @@ pub fn finalize_policy(
         "XHL Core or disabled chain is not runtime-bound"
     );
     // Re-parse immutable generation evidence; keep raw and typed digests distinct.
-    let request: AssetRequest =
-        serde_json::from_str(&template.request_json).context("template request JSON is invalid")?;
     let asset_receipt: AssetReceipt = serde_json::from_str(&template.receipt_json)
         .context("template asset receipt JSON is invalid")?;
-    ensure!(
-        digest(template.request_json.as_bytes()) == template.request_raw_sha256,
-        "template raw request digest differs"
-    );
-    ensure!(
-        digest(&serde_json::to_vec(&request)?) == template.request_canonical_sha256,
-        "template canonical request digest differs"
-    );
     ensure!(
         asset_receipt.request_sha256 == template.request_canonical_sha256,
         "prepared asset receipt binds another canonical request"
