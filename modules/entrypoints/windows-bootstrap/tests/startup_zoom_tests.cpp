@@ -2,19 +2,30 @@
 #include <iostream>
 using namespace StartupZoom;
 using namespace ZoomFixture;
-int main() {
+int main(int argc, char** argv) {
+    if (argc==2 && !std::strcmp(argv[1],"--independent-admission")) {
+        auto* image=Create(); Protect(image);
+        Result result;
+        { Cap cap; result=cap.TestApply(image,ObservedZoomFixture::ImageSize,1,true,EngineHooks::ReplaceExecutableBytes);
+          if(result==Result::Applied)cap.Commit(); }
+        VirtualFree(image,0,MEM_RELEASE);
+        std::cout << (result==Result::Applied?"PASS":"FAIL") << " independent observed current fixture admission" << std::endl;
+        return result==Result::Applied?0:1;
+    }
     unsigned cases=0;
-    assert(Profile::ImageSize==0x02A40000u);
-    assert(Profile::Timestamp==0x6AE4601Eu);
-    const std::uint32_t expectedSites[]={0x00C2E3C0u,0x00D54420u,0x00D52170u,0x00D95316u};
-    const std::uint32_t expectedBegins[]={0x00C2E304u,0x00D54420u,0x00D51F5Fu,0x00D95042u};
-    const std::uint32_t expectedEnds[]={0x00C2EDA7u,0x00D5457Du,0x00D5223Eu,0x00D9548Fu};
-    const std::uint32_t expectedUnwinds[]={0x01F41480u,0x01F42048u,0x01F4225Cu,0x01F42138u};
+    assert(Profile::ImageSize==0x02A3F000u);
+    assert(Profile::Timestamp==0x6AE9B2ACu);
+    const std::uint32_t expectedSites[]={0x00C2E3A0u,0x00D54400u,0x00D52150u,0x00D952F6u};
+    const std::uint32_t expectedBegins[]={0x00C2E2E4u,0x00D54400u,0x00D51F3Fu,0x00D95022u};
+    const std::uint32_t expectedEnds[]={0x00C2ED87u,0x00D5455Du,0x00D5221Eu,0x00D9546Fu};
+    const std::uint32_t expectedUnwinds[]={0x01F40480u,0x01F41048u,0x01F4125Cu,0x01F41138u};
     for (unsigned i=0;i<4;++i) {
         assert(Profile::Signatures[i].rva==expectedSites[i]);
         assert(Profile::Signatures[i].begin==expectedBegins[i]);
         assert(Profile::Signatures[i].end==expectedEnds[i]);
         assert(Profile::Signatures[i].unwind==expectedUnwinds[i]);
+        assert(Profile::Signatures[i].length==64);
+        assert(!std::memcmp(Profile::Signatures[i].bytes.data(),ObservedZoomFixture::Signatures[i].bytes,64));
     }
     {
         auto* image=Create(); Protect(image);
@@ -29,7 +40,7 @@ int main() {
         }
         VirtualFree(image,0,MEM_RELEASE); ++cases;
     }
-    for (unsigned mutation=0;mutation<19;++mutation) {
+    for (unsigned mutation=0;mutation<20;++mutation) {
         auto* image=Create(); auto* nt=reinterpret_cast<IMAGE_NT_HEADERS64*>(image+0x100);
         auto* fn=reinterpret_cast<RUNTIME_FUNCTION*>(image+0x1000);
         switch(mutation) {
@@ -52,9 +63,16 @@ int main() {
         case 16: image[Profile::Signatures[3].rva+10]^=1;break;
         case 17: image[Profile::Signatures[1].rva+10]^=1;break;
         case 18: nt->FileHeader.TimeDateStamp=1792507660;break; // prior d64966e2 profile identity
+        case 19: nt->FileHeader.TimeDateStamp=1793351710;nt->OptionalHeader.SizeOfImage=44302336;break; // prior0403 identity
         }
         std::vector<unsigned char> before(image,image+Profile::ImageSize); Protect(image);
         { Cap cap; assert(cap.TestApply(image,Profile::ImageSize,1,true,EngineHooks::ReplaceExecutableBytes)==Result::Unavailable); }
+        assert(!std::memcmp(before.data(),image,before.size())); VirtualFree(image,0,MEM_RELEASE); ++cases;
+    }
+    for(unsigned i=0;i<4;++i) {
+        auto* image=Create(); image[ObservedZoomFixture::Signatures[i].rva+63]^=1;
+        std::vector<unsigned char> before(image,image+ObservedZoomFixture::ImageSize); Protect(image);
+        { Cap cap; assert(cap.TestApply(image,ObservedZoomFixture::ImageSize,1,true,EngineHooks::ReplaceExecutableBytes)==Result::Unavailable); }
         assert(!std::memcmp(before.data(),image,before.size())); VirtualFree(image,0,MEM_RELEASE); ++cases;
     }
     {
@@ -99,5 +117,5 @@ int main() {
         if(mode==6)assert(!std::memcmp(reinterpret_cast<void*>(target),Profile::Replacement,4));
         VirtualFree(image,0,MEM_RELEASE); ++cases;
     }
-    std::cout << "PASS current 0x0403981f profile 4->5; " << cases << " cap validation/ownership cases" << std::endl;
+    std::cout << "PASS current ce6f independent observed profile 4->5; " << cases << " cap validation/ownership cases" << std::endl;
 }

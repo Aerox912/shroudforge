@@ -1,0 +1,4 @@
+// This translation unit must fail specifically on the explicit guard-count assertion.
+#include "../startup_zoom_profile.h"
+constexpr unsigned char MissingLastByte[63]={};
+constexpr auto MustNotPad=StartupZoom::Profile::GuardBytes(MissingLastByte);
