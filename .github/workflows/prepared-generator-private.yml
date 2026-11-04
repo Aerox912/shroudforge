@@ -2,7 +2,7 @@ name: Private prepared generator
 
 on:
   push:
-    branches: [codex/sf178-prepared-source-admission]
+    branches: [codex/sf178-sdk-padding-integration]
   workflow_dispatch:
 
 permissions:
@@ -10,7 +10,7 @@ permissions:
 
 jobs:
   generator:
-    if: github.event.repository.private == true && github.ref == 'refs/heads/codex/sf178-prepared-source-admission'
+    if: github.event.repository.private == true && github.repository == 'Aerox912/shroudforge-private' && github.ref == 'refs/heads/codex/sf178-sdk-padding-integration'
     runs-on: windows-2025
     timeout-minutes: 45
     env:
@@ -24,8 +24,36 @@ jobs:
       - uses: actions/checkout@v7
         with:
           fetch-depth: 0
-          submodules: recursive
+          submodules: false
           persist-credentials: false
+      - name: Check out the exact private SDK dependency
+        shell: pwsh
+        env:
+          PRIVATE_BUILD_TOKEN: ${{ github.token }}
+        run: |
+          $keys = @('GIT_CONFIG_COUNT', 'GIT_CONFIG_KEY_0', 'GIT_CONFIG_VALUE_0', 'GIT_TERMINAL_PROMPT')
+          $previous = @{}
+          foreach ($key in $keys) { $previous[$key] = [Environment]::GetEnvironmentVariable($key, 'Process') }
+          try {
+            if ($previous['GIT_CONFIG_COUNT'] -notin @($null, '', '0')) { throw 'Unexpected inherited Git config environment.' }
+            $env:GIT_CONFIG_COUNT = '1'
+            $env:GIT_CONFIG_KEY_0 = 'http.https://github.com/.extraheader'
+            $basic = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes("x-access-token:$env:PRIVATE_BUILD_TOKEN"))
+            $env:GIT_CONFIG_VALUE_0 = "AUTHORIZATION: basic $basic"
+            $env:GIT_TERMINAL_PROMPT = '0'
+            git config submodule.kfc-parser.url https://github.com/Aerox912/shroudforge-private.git
+            if ($LASTEXITCODE) { throw 'Private SDK URL binding failed.' }
+            git submodule update --init --recursive
+            if ($LASTEXITCODE) { throw 'Exact dependency checkout failed.' }
+            $expectedSdk = 'dd88a42fc51156170c8ba0dde4906c9a540db8b8'
+            $actualSdk = git -C kfc-parser rev-parse HEAD
+            if ($LASTEXITCODE -or $actualSdk -cne $expectedSdk) { throw 'Unexpected SDK commit.' }
+          }
+          finally {
+            foreach ($key in $keys) { [Environment]::SetEnvironmentVariable($key, $previous[$key], 'Process') }
+            Remove-Item Env:PRIVATE_BUILD_TOKEN -ErrorAction SilentlyContinue
+            $basic = $null
+          }
       - name: Verify accepted compile input bytes
         shell: pwsh
         run: |
@@ -37,6 +65,18 @@ jobs:
             if ($LASTEXITCODE) { throw "Missing accepted source: $path" }
             $actual = git hash-object --no-filters -- $path
             if ($LASTEXITCODE -or $actual -cne $expected) { throw "Compile input bytes differ: $path" }
+          }
+          $sdk = 'dd88a42fc51156170c8ba0dde4906c9a540db8b8'
+          $sdkParent = git -C kfc-parser rev-parse "${sdk}^"
+          if ($LASTEXITCODE -or $sdkParent -cne '5a6d6e030d5b37c17ae40b6fd98cc18d6fe12bee') { throw 'Unexpected SDK parent.' }
+          $sdkPaths = @('Cargo.lock', 'crates/kfc-resource/Cargo.toml', 'crates/kfc-resource/src/value/write.rs', 'crates/kfc-resource/tests/structured_padding.rs')
+          $changedSdkPaths = @(git -C kfc-parser diff-tree --no-commit-id --name-only -r $sdk)
+          if ($LASTEXITCODE -or @(Compare-Object $sdkPaths $changedSdkPaths).Count) { throw 'SDK source inventory differs.' }
+          foreach ($path in $sdkPaths) {
+            $expected = git -C kfc-parser rev-parse "${sdk}:$path"
+            if ($LASTEXITCODE) { throw "Missing accepted SDK source: $path" }
+            $actual = git -C kfc-parser hash-object --no-filters -- $path
+            if ($LASTEXITCODE -or $actual -cne $expected) { throw "SDK compile input bytes differ: $path" }
           }
       - name: Install pinned Rust toolchain
         shell: pwsh
