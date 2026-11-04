@@ -1,0 +1,71 @@
+name: Private prepared generator
+
+on:
+  push:
+    branches: [codex/sf178-prepared-source-admission]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  generator:
+    if: github.event.repository.private == true && github.ref == 'refs/heads/codex/sf178-prepared-source-admission'
+    runs-on: windows-2025
+    timeout-minutes: 45
+    env:
+      CARGO_INCREMENTAL: '0'
+      CARGO_TARGET_DIR: ${{ runner.temp }}/prepared-generator-target
+    steps:
+      - name: Preserve committed source bytes on Windows
+        shell: pwsh
+        run: git config --global core.autocrlf false
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          submodules: recursive
+          persist-credentials: false
+      - name: Verify accepted compile input bytes
+        shell: pwsh
+        run: |
+          $accepted = '15cb1273f3854f101a785bad59b610fe522750af'
+          $paths = @(git diff-tree --no-commit-id --name-only -r $accepted)
+          if ($LASTEXITCODE -or $paths.Count -ne 31) { throw 'Accepted source inventory mismatch.' }
+          foreach ($path in $paths) {
+            $expected = git rev-parse "${accepted}:$path"
+            if ($LASTEXITCODE) { throw "Missing accepted source: $path" }
+            $actual = git hash-object --no-filters -- $path
+            if ($LASTEXITCODE -or $actual -cne $expected) { throw "Compile input bytes differ: $path" }
+          }
+      - name: Install pinned Rust toolchain
+        shell: pwsh
+        run: |
+          rustup toolchain install 1.98.0 --profile minimal --no-self-update
+          if ($LASTEXITCODE) { throw 'Rust toolchain installation failed.' }
+      - name: Bind clean committed source
+        shell: pwsh
+        run: |
+          $output = Join-Path $env:RUNNER_TEMP 'prepared-generator-artifact'
+          New-Item -ItemType Directory -Path $output -Force | Out-Null
+          & ./dev/build/compute_prepared_source_closure.ps1 -OutputPath "$output/source-closure.schema1.json" -GitHubEnvPath $env:GITHUB_ENV
+          if ($LASTEXITCODE) { throw 'Source closure failed.' }
+      - name: Build linked Windows generator
+        shell: pwsh
+        run: |
+          $output = Join-Path $env:RUNNER_TEMP 'prepared-generator-artifact'
+          rustc +1.98.0 -vV | Set-Content "$output/rustc.txt"
+          cargo +1.98.0 --version | Set-Content "$output/cargo.txt"
+          cmake --version | Set-Content "$output/cmake.txt"
+          $command = 'cargo +1.98.0 build --locked --release --target x86_64-pc-windows-msvc --manifest-path dev/hdmap-prepared-generator/Cargo.toml'
+          $command | Set-Content "$output/command.txt"
+          & cargo +1.98.0 build --locked --release --target x86_64-pc-windows-msvc --manifest-path dev/hdmap-prepared-generator/Cargo.toml 2>&1 | Tee-Object "$output/build.log"
+          if ($LASTEXITCODE) { throw 'Generator build failed.' }
+          if (@(git status --porcelain=v1 --untracked-files=all).Count) { throw 'Build changed source tree.' }
+          Copy-Item "$env:CARGO_TARGET_DIR/x86_64-pc-windows-msvc/release/hdmap-prepared-generator.exe" $output
+          Get-ChildItem $output -File | Get-FileHash -Algorithm SHA256 | Select-Object @{n='file';e={Split-Path $_.Path -Leaf}},Hash | ConvertTo-Json | Set-Content "$output/SHA256.json"
+      - uses: actions/upload-artifact@v7
+        with:
+          name: private-prepared-generator-${{ github.sha }}
+          path: ${{ runner.temp }}/prepared-generator-artifact
+          if-no-files-found: error
+          retention-days: 7
