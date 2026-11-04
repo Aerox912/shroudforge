@@ -1618,8 +1618,8 @@ fn greeneye_profile_and_runtime_artifact_identity_are_typed_gates() {
         .iter()
         .find(|file| file.target == "winmm.dll")
         .unwrap();
-    let profile = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../../docs/runtime/GREENEYE-ENTRY-CONTINUATION.md");
+    let profile = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap().parent().unwrap()
+        .join("docs/runtime/GREENEYE-ENTRY-CONTINUATION.md");
     let route = GreeneyeRouteEvidence {
         profile_id: GREENEYE_PROFILE_ID.into(),
         profile_version: GREENEYE_PROFILE_VERSION + 1,
@@ -1655,12 +1655,14 @@ fn greeneye_profile_and_runtime_artifact_identity_are_typed_gates() {
     };
     fixture.manifest.greeneye_route = Some(route);
     let bytes = serde_json::to_vec_pretty(&fixture.manifest).unwrap();
-    assert!(prepare_template(&bytes, &digest(&bytes)).is_err());
+    assert!(format!("{:#}", prepare_template(&bytes, &digest(&bytes)).unwrap_err())
+        .contains("unsupported exact Greeneye route profile"));
 
     let route = fixture.manifest.greeneye_route.as_mut().unwrap();
     route.profile_version = GREENEYE_PROFILE_VERSION;
     let bytes = serde_json::to_vec_pretty(&fixture.manifest).unwrap();
-    assert!(prepare_template(&bytes, &digest(&bytes)).is_err());
+    assert!(format!("{:#}", prepare_template(&bytes, &digest(&bytes)).unwrap_err())
+        .contains("Greeneye artifact stamp differs from its declared runtime binding"));
 }
 
 #[test]
@@ -1700,7 +1702,8 @@ fn latest_greeneye_route_binds_original_files_and_refuses_mixed_or_unbound_input
     let route = GreeneyeRouteEvidence {
         profile_id: profile.id.into(), profile_version: profile.version,
         profile_definition: EvidencePin {
-            path: PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../docs/runtime/GREENEYE-ENTRY-CONTINUATION-V2.md"),
+            path: Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap().parent().unwrap()
+                .join("docs/runtime/GREENEYE-ENTRY-CONTINUATION-V2.md"),
             sha256: profile.definition_sha256.into(),
         },
         runtime_source_closure: fixture.manifest.runtime_source_closure.clone(),
