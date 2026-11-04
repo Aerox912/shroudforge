@@ -1655,13 +1655,13 @@ fn greeneye_profile_and_runtime_artifact_identity_are_typed_gates() {
     };
     fixture.manifest.greeneye_route = Some(route);
     let bytes = serde_json::to_vec_pretty(&fixture.manifest).unwrap();
-    assert!(format!("{:#}", prepare_template(&bytes, &digest(&bytes)).unwrap_err())
+    assert!(format!("{:#}", prepare_template(&bytes, &digest(&bytes)).err().unwrap())
         .contains("unsupported exact Greeneye route profile"));
 
     let route = fixture.manifest.greeneye_route.as_mut().unwrap();
     route.profile_version = GREENEYE_PROFILE_VERSION;
     let bytes = serde_json::to_vec_pretty(&fixture.manifest).unwrap();
-    assert!(format!("{:#}", prepare_template(&bytes, &digest(&bytes)).unwrap_err())
+    assert!(format!("{:#}", prepare_template(&bytes, &digest(&bytes)).err().unwrap())
         .contains("Greeneye artifact stamp differs from its declared runtime binding"));
 }
 
