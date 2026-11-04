@@ -1,0 +1,100 @@
+{
+  "schemaVersion": 1,
+  "status": "VERIFIED_TERMINAL_CURRENT5D_PHASE_A_REFUSAL_UNSUPPORTED_SCHEMA_PRESENCE",
+  "actualRefusalEvidenceAccepted": true,
+  "derivativeIntegrityAccepted": true,
+  "qualificationReady": false,
+  "operationSpent": true,
+  "retryApproved": false,
+  "sourceOperationCanonicalSha256": "7017d0b8d609ca75d21e81f710fa4b7e94d83b2904668ed3eb97d72fd9d9c69c",
+  "operatorSelectionSha256": "467aee99f58422a9bba20b34d7802fbbb010e6a52df7dec2474fa30ab8c871e9",
+  "evidenceIndex": {
+    "path": "E:\\Build\\tester-sf178-current5d-phasea-actual-refusal-20261104-r1\\EVIDENCE.json",
+    "sha256": "f97740acfefc36e1655186603d0b947f5b19ea5cef375e1ddc48a532227d57e1"
+  },
+  "reviewerCheckNotes": {
+    "path": "E:\\Build\\tester-sf178-current5d-phasea-actual-refusal-20261104-r1\\RETAINED-CHECK-NOTES.json",
+    "sha256": "6ceceac75e0227b250f8e74169623787471615fa576034dc392a617ba893966f"
+  },
+  "report": {
+    "path": "E:\\Build\\sf178-current5d-phasea-observation-20261104-r1\\current-acquisition-v1\\PHASE-A-REPORT.json",
+    "bytes": 6676036,
+    "sha256": "5214c61adede2699258d40bdceaff7ef262a26acdf042e964ec6ef7a5d0f62f3"
+  },
+  "registry": {
+    "path": "E:\\Build\\sf178-current5d-phasea-observation-20261104-r1\\current-acquisition-v1\\types-enshrouded.json",
+    "bytes": 11106802,
+    "sha256": "3a24dd8be7b795e65331cfa4ab26534f6b27d04d24fc002c8b294e139914d92a"
+  },
+  "complete": {
+    "path": "E:\\Build\\sf178-current5d-phasea-observation-20261104-r1\\current-acquisition-v1\\COMPLETE.json",
+    "bytes": 858,
+    "sha256": "f82ad5eea3990c6d99c85a1afd3b353b4c22a0eb59da9486831ebc2606a62947"
+  },
+  "identity": {
+    "path": "E:\\Build\\sf178-current5d-phasea-observation-20261104-r1\\current-acquisition-v1\\types-enshrouded.identity.json",
+    "bytes": 635,
+    "sha256": "1d9868d88889127c3207681ee6f5f5fd377f7f440935850757fb9c9eda58a4f6"
+  },
+  "execution": {
+    "processExit": 2,
+    "invocations": 1,
+    "invocationException": null,
+    "stdoutBytes": 0,
+    "stderrBytes": 331,
+    "admittedCompleteReadPhases": 8,
+    "resourcesParseInputAdmitted": false,
+    "requestedBytes": 564721368,
+    "returnedBytes": 564721368,
+    "readCalls": 8622,
+    "EOFProbe": false,
+    "requestsDebitedBeforeIO": true,
+    "terminalReadError": false
+  },
+  "schemaObservation": {
+    "reportStatus": "unsupported_schema_presence",
+    "registryTypes": 12658,
+    "baselineTypes": 12658,
+    "representedTypeDigestsIndependentlyCompared": 12658,
+    "representedTypeDigestMismatches": 0,
+    "wholeSDKRepresentedSchemaEqual": true,
+    "attributeNameCollisionRecords": 18,
+    "identicalAuditPairs": 2,
+    "differingAuditPairs": 16,
+    "unresolvedNonzeroOptionalTypeReferences": 0,
+    "referencePresenceIssues": 0,
+    "qualificationReady": false
+  },
+  "failureClassification": "Nonempty attribute-name collision audit causes the reviewed ready predicate to be false. Source writes bounded COMPLETE with qualificationReadyfalse before explicit refusal. Generic stderr stage output_write is last diagnostic stage, not evidence of output I/O failure.",
+  "verifiedEvidence": [
+    "Ten exact retained operation/selection/output evidence pins and selected request/canonical/accepted/artifact/contract/procedure bindings checked. Normal current5d artifact1c4 invoked once with exacttwo flags; contemporaneous preflight reports heldartifact/fourparents,24sourcepins/freshoutput/space/closedwindow. No originalprehash or test/operation replay byTester.",
+    "Process exit2/noinvocationexception/empty stdout/331B bounded stderr, spent/no retry. COMPLETE statuscomplete_outputs_not_compatibility_acceptance andqualificationReadyfalse joins report unsupported_schema_presence; allthreeCOMPLETE member hashes/lengths verified and exactlyfouroutputmembers present.",
+    "Identity exactregistry3a24/sourceclosure2de4/currentEXE5d/KFC2093 and pairedKFC1287369version join report/currentcontract; allthreeheldsourceobservations hashes/sizes/readlease metadata verified. No 128bit identity claim added to this helper64bitWin32identity representation.",
+    "All8admitted file/phase byte andceil64KiBcallcounts independently checked, resourcesparseunadmittedzero. Aggregate564721368requested=returned/8622calls, predebittrue/noEOF/terminalfalse. Normal completion of I/O is separate from refusal of schema qualification.",
+    "All12658current represented type objects canonicalSHA256 independently equal retained baselinefingerprints, matching wholeSchemaEqual/zerochanged/removed. This comparison excludes pairedregistryversion and does not clear extraction audit or qualify universalraw/native metadata.",
+    "18collisions retained with both records, including2identicalpairs and16differingpairs;0unresolvednonzerooptional/0referenceissues. Initial reviewer-only assumption allpairsdiffer corrected in separate notes, not candidatecode/test changes.",
+    "All128DATnamespace rows canonical/ordered/existing-size match accepted retained wholeinput observation, metadataOnlyHandletrue/DATContentOpenedfalse/hashUNOBSERVED. KFC55containers/101492content/91909resource/58chunk metadata observations and21selectedfamilies retained; no resource/provider/DAT payload or nativecontenthash verification."
+  ],
+  "next": "Developer diagnoses retained collision/schema evidence offline and selects any next bounded action separately. Preserve refusal and all derivatives; do not rerun originals or autoactivate historical c9/8a69 registry.",
+  "limitations": [
+    "Verified refusal is not a successful PhaseA qualification. COMPLETE proves bounded derivative completion only.",
+    "Represented metadata equality does not prove rawdescriptor/type/ABI/native ownership, provider/HD/full8K/runtime compatibility.",
+    "No producerI/O/storage/composition/postimage/request/receipt/stage admission, installation, launch or publication."
+  ],
+  "originalBodyReadsByTester": 0,
+  "candidateExecutedByTester": false,
+  "testsReplayedByTester": false,
+  "schemaPresenceQualified": false,
+  "historicalRegistryActivated": false,
+  "producerUseApproved": false,
+  "nativeProfilesQualified": false,
+  "phaseB": "HELD",
+  "phaseC": "HELD",
+  "installationApproved": false,
+  "launchApproved": false,
+  "publicationApproved": false,
+  "mainChanged": false,
+  "backupsCreated": false,
+  "autoLootIncluded": false,
+  "createdUtc": "2026-11-04T22:32:43.658796+00:00"
+}

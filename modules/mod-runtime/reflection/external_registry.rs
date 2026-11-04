@@ -490,6 +490,62 @@ fn same_hash(m: &Manifest, role: &str, v: &Value, key: &str) -> Result<()> {
     );
     Ok(())
 }
+
+/// Validate the actual review's declared format without rewriting its history.
+/// Acceptance here concerns refusal evidence, not schema or producer readiness.
+fn validate_actual_refusal(m: &Manifest, refusal: &Value) -> Result<()> {
+    match text(refusal, "status")? {
+        "VERIFIED_TERMINAL_REFUSAL_UNSUPPORTED_SCHEMA_PRESENCE" => {
+            ensure!(
+                refusal["wrapperExit"] == 3 && refusal["childExit"] == 2,
+                "external actual refusal identity"
+            );
+            for (role, key) in [
+                ("complete", "completeSha256"),
+                ("registry", "registrySha256"),
+                ("identity", "identitySha256"),
+                ("report", "reportSha256"),
+            ] {
+                same_hash(m, role, refusal, key)?;
+            }
+        }
+        "VERIFIED_TERMINAL_CURRENT5D_PHASE_A_REFUSAL_UNSUPPORTED_SCHEMA_PRESENCE" => {
+            ensure!(
+                refusal["actualRefusalEvidenceAccepted"] == true
+                    && refusal["derivativeIntegrityAccepted"] == true
+                    && refusal["qualificationReady"] == false
+                    && refusal["schemaPresenceQualified"] == false
+                    && refusal["historicalRegistryActivated"] == false
+                    && refusal["producerUseApproved"] == false
+                    && refusal["nativeProfilesQualified"] == false
+                    && refusal["operationSpent"] == true
+                    && refusal["retryApproved"] == false
+                    && refusal["execution"]["processExit"].as_i64() == Some(2)
+                    && refusal["execution"]["invocations"].as_u64() == Some(1),
+                "external current refusal identity or qualification differs"
+            );
+            for role in ["complete", "registry", "identity", "report"] {
+                matches_ref(m, role, field(refusal, role)?)?;
+            }
+        }
+        _ => anyhow::bail!("external actual refusal format is unsupported"),
+    }
+    Ok(())
+}
+
+fn validate_refusal_contract(
+    m: &Manifest, refusal: &Value, report: &Value, complete: &Value, receipt: &Value,
+) -> Result<()> {
+    validate_actual_refusal(m, refusal)?;
+    ensure!(
+        report["qualificationReady"] == false
+            && complete["qualificationReady"] == false
+            && receipt["historicalRefusalPreserved"]["childExit"] == 2
+            && receipt["historicalRefusalPreserved"]["qualificationReady"] == false,
+        "external historical refusal changed"
+    );
+    Ok(())
+}
 fn manifest_members(m: &Manifest, doc: &Value, pairs: &[(&str, &str)]) -> Result<()> {
     let files = array(doc, "files")?;
     ensure!(files.len() == pairs.len(), "external member count");
@@ -601,19 +657,7 @@ fn validate(m: &Manifest, d: &BTreeMap<&str, Value>) -> Result<TypeRegistry> {
         ensure!(complete_names.insert(name), "external COMPLETE duplicate");
         matches_ref(m, role, row)?;
     }
-    ensure!(
-        d["actual_refusal"]["status"] == "VERIFIED_TERMINAL_REFUSAL_UNSUPPORTED_SCHEMA_PRESENCE"
-            && d["actual_refusal"]["wrapperExit"] == 3,
-        "external actual refusal identity"
-    );
-    for (role, key) in [
-        ("complete", "completeSha256"),
-        ("registry", "registrySha256"),
-        ("identity", "identitySha256"),
-        ("report", "reportSha256"),
-    ] {
-        same_hash(m, role, &d["actual_refusal"], key)?;
-    }
+    validate_refusal_contract(m, &d["actual_refusal"], &d["report"], &d["complete"], r)?;
     ensure!(
         d["diagnosis_assessment"]["status"]
             == "PASS_COMPLETE_DIAGNOSIS_CONDITIONAL_REPRESENTED_DATA_BOUNDARY",
@@ -701,14 +745,6 @@ fn validate(m: &Manifest, d: &BTreeMap<&str, Value>) -> Result<TypeRegistry> {
             "external source artifact provenance differs"
         );
     }
-    ensure!(
-        d["report"]["qualificationReady"] == false
-            && d["complete"]["qualificationReady"] == false
-            && d["actual_refusal"]["childExit"] == 2
-            && r["historicalRefusalPreserved"]["childExit"] == 2
-            && r["historicalRefusalPreserved"]["qualificationReady"] == false,
-        "external historical refusal changed"
-    );
     ensure!(
         d["report"]["unresolvedNonzeroOptionalTypeReferences"] == 0
             && array(&d["report"], "referencePresenceIssues")?.is_empty(),
@@ -873,4 +909,93 @@ fn validate_collisions(m: &Manifest, d: &BTreeMap<&str, Value>) -> Result<()> {
         "external classified counts differ"
     );
     Ok(())
+}
+
+#[cfg(test)]
+mod refusal_format_tests {
+    use super::*;
+
+    fn current() -> (Manifest, Value) {
+        let verdict: Value = serde_json::from_str(include_str!("fixtures/current5d-refusal.json")).unwrap();
+        let files = ["registry", "identity", "report", "complete"]
+            .into_iter()
+            .map(|role| (role.to_owned(), EvidencePin {
+                path: format!("evidence/{role}.json"),
+                bytes: verdict[role]["bytes"].as_u64().unwrap(),
+                sha256: verdict[role]["sha256"].as_str().unwrap().to_owned(),
+            }))
+            .collect();
+        (Manifest { schema_version: 1, source_inputs: BTreeMap::new(), generation: String::new(), files }, verdict)
+    }
+
+    #[test]
+    fn current_retained_refusal_format_accepts_only_bound_unqualified_evidence() {
+        let (manifest, verdict) = current();
+        validate_actual_refusal(&manifest, &verdict).unwrap();
+        for key in ["qualificationReady", "schemaPresenceQualified", "historicalRegistryActivated",
+                    "producerUseApproved", "nativeProfilesQualified", "retryApproved"] {
+            let mut changed = verdict.clone();
+            changed[key] = json!(true);
+            assert!(validate_actual_refusal(&manifest, &changed).is_err(), "accepted {key}");
+        }
+        for key in ["actualRefusalEvidenceAccepted", "derivativeIntegrityAccepted", "operationSpent"] {
+            let mut changed = verdict.clone();
+            changed.as_object_mut().unwrap().remove(key);
+            assert!(validate_actual_refusal(&manifest, &changed).is_err(), "missing {key}");
+        }
+        for (key, value) in [("processExit", json!(0)), ("processExit", json!(2.0)), ("invocations", json!(2))] {
+            let mut changed = verdict.clone(); changed["execution"][key] = value;
+            assert!(validate_actual_refusal(&manifest, &changed).is_err());
+        }
+    }
+
+    #[test]
+    fn current_refusal_rejects_changed_or_missing_output_bindings() {
+        let (manifest, verdict) = current();
+        for role in ["registry", "identity", "report", "complete"] {
+            for key in ["bytes", "sha256"] {
+                let mut changed = verdict.clone();
+                changed[role].as_object_mut().unwrap().remove(key);
+                assert!(validate_actual_refusal(&manifest, &changed).is_err(), "missing {role}.{key}");
+            }
+            let mut changed = verdict.clone(); changed[role]["sha256"] = json!("0".repeat(64));
+            assert!(validate_actual_refusal(&manifest, &changed).is_err(), "changed {role}");
+        }
+        let mut changed = verdict; changed["status"] = json!("UNKNOWN_REFUSAL_FORMAT");
+        assert!(validate_actual_refusal(&manifest, &changed).is_err());
+    }
+
+    #[test]
+    fn public_refusal_contract_uses_current_exit_without_flat_field_and_retains_refusals() {
+        let (manifest, verdict) = current();
+        assert!(verdict.get("childExit").is_none());
+        let report = json!({"qualificationReady":false});
+        let complete = report.clone();
+        let receipt = json!({"historicalRefusalPreserved":{"childExit":2,"qualificationReady":false}});
+        validate_refusal_contract(&manifest, &verdict, &report, &complete, &receipt).unwrap();
+        let mut promoted = report.clone(); promoted["qualificationReady"] = json!(true);
+        assert!(validate_refusal_contract(&manifest, &verdict, &promoted, &complete, &receipt).is_err());
+        assert!(validate_refusal_contract(&manifest, &verdict, &report, &promoted, &receipt).is_err());
+        for (key, value) in [("childExit", json!(0)), ("qualificationReady", json!(true))] {
+            let mut changed = receipt.clone(); changed["historicalRefusalPreserved"][key] = value;
+            assert!(validate_refusal_contract(&manifest, &verdict, &report, &complete, &changed).is_err());
+        }
+    }
+
+    #[test]
+    fn legacy_refusal_flat_hashes_and_wrapper_exit_remain_supported() {
+        let (manifest, _) = current();
+        let mut legacy = json!({"status":"VERIFIED_TERMINAL_REFUSAL_UNSUPPORTED_SCHEMA_PRESENCE", "wrapperExit":3, "childExit":2});
+        for (role, key) in [("registry", "registrySha256"), ("identity", "identitySha256"),
+                            ("report", "reportSha256"), ("complete", "completeSha256")] {
+            legacy[key] = json!(manifest.files[role].sha256);
+        }
+        validate_actual_refusal(&manifest, &legacy).unwrap();
+        legacy["wrapperExit"] = json!(2);
+        assert!(validate_actual_refusal(&manifest, &legacy).is_err());
+        legacy["wrapperExit"] = json!(3); legacy["childExit"] = json!(0);
+        assert!(validate_actual_refusal(&manifest, &legacy).is_err());
+        legacy["childExit"] = json!(2); legacy["reportSha256"] = json!("0".repeat(64));
+        assert!(validate_actual_refusal(&manifest, &legacy).is_err());
+    }
 }
