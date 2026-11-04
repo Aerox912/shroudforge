@@ -408,6 +408,7 @@ impl Fixture {
             selected_ids: provider_ids.clone(),
             inputs: input_files,
             environment_files: environment_files.clone(),
+            external_registry: None,
         };
         let request_bytes = serde_json::to_vec_pretty(&request).unwrap();
         let request_canonical_sha = digest(&serde_json::to_vec(&request).unwrap());
@@ -444,6 +445,7 @@ impl Fixture {
             prepared_marker: stamp(&stage.join("prepared-only.json")).unwrap(),
             source_dat_membership: membership.clone(),
             source_dat_membership_sha256: digest(&serde_json::to_vec(&membership).unwrap()),
+            external_registry: None,
         };
         let asset_receipt_bytes = serde_json::to_vec_pretty(&asset_receipt).unwrap();
         let asset_receipt_path = base.join("asset-receipt.json");
