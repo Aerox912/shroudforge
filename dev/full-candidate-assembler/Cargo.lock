@@ -793,6 +793,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "kfc",
+ "prepared-source-admission",
  "serde",
  "serde_json",
  "sha2 0.10.9",
@@ -1597,6 +1598,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "prepared-source-admission"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "camino",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "shroudforge-package",
+]
+
+[[package]]
 name = "proc-macro2"
 version = "1.0.107"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2122,6 +2135,7 @@ dependencies = [
  "cmake",
  "serde",
  "serde_json",
+ "sha2 0.10.9",
  "tracing",
  "windows-sys",
 ]
