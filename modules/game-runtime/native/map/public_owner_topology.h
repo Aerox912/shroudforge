@@ -42,7 +42,7 @@ namespace FiniteGraph
             for(unsigned i=0;i<visits;++i)if(visited[i]==at)return false;
             visited[visits++]=at;return true;
         }
-        static bool New(const Profile* p){return p==&Find125 || p==&Teleport117;}
+        static bool New(const Profile* p){return p==&Find125 || p==&Teleport117 || p==&Find128 || p==&Teleport1110;}
         static bool Mov(const unsigned char* p)
         {
             if(p[0]!=0x48 || p[1]!=0xb8 || p[10]!=0xff || p[11]!=0xe0)return false;
@@ -62,14 +62,14 @@ namespace FiniteGraph
                 static_cast<std::size_t>(dos.e_lfanew)>4096-sizeof(nt) ||
                 !Read(m.base+dos.e_lfanew,&nt,sizeof(nt),false) || nt.Signature!=IMAGE_NT_SIGNATURE ||
                 nt.FileHeader.Machine!=IMAGE_FILE_MACHINE_AMD64 || nt.OptionalHeader.Magic!=IMAGE_NT_OPTIONAL_HDR64_MAGIC)return nullptr;
-            if(creative)m.profile=SelectCreativeProfile(m.base,callback);
-            else for(const auto* p:{&Find112,&Find125,&Teleport116,&Teleport117})
+            if(creative)m.profile=SelectCreativeProfile(m.base,callback,nt.FileHeader.TimeDateStamp);
+            else for(const auto* p:{&Find112,&Find125,&Find128,&Teleport116,&Teleport117,&Teleport1110})
                 if(callback>=m.base && callback-m.base==p->callback && nt.OptionalHeader.SizeOfImage==p->imageSize){m.profile=p;break;}
             if(!m.profile || !Range(m.base,m.profile->imageSize) || nt.OptionalHeader.SizeOfImage!=m.profile->imageSize)return nullptr;
             if(creative){if(stats.greenCount && !SupportsFiniteCreativeProfile(m.profile))return nullptr;m.cache=&fileCache;}
             else
             {
-                m.family=(m.profile==&Find112 || m.profile==&Find125)?1:2;
+                m.family=(m.profile==&Find112 || m.profile==&Find125 || m.profile==&Find128)?1:2;
                 if(families&m.family || (requireNewGreen && !New(m.profile)))return nullptr;
                 families|=m.family;allGreenNew=allGreenNew&&New(m.profile);
                 m.cache=m.family==1?&findFileCache:&teleportFileCache;

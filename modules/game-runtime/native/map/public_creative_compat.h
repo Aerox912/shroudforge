@@ -94,6 +94,15 @@ namespace PublicCreativeCompat
         "c4f5966a62763de379262f93a3e2bd10cf0065b4dd510780ad9eadf390b423b0",
         "9bd210d8b2de6e7a775340ccb3b4060f199eb9c7361fb5ebfafdb9db9ba1e714",
         {0xe9,0x64,0x8d,0x1c,0x00}};
+    // 3.1.2 retains the exact 3.1.1 HUD thunk, body and template. Its distinct
+    // file identity is admitted only through the finite graph's observed PE
+    // timestamp route; timestamp selection never replaces the full-file hash.
+    constexpr Profile Creative312{
+        0x5cd000,6006272,0x4e67,0x1cdbd0,0x43d080,0x57c208,0x103,0x160,
+        "4badee09d1329d1f246d4b38eee2d30f8bc90b6fc38c2c662c3d2b7d1d23fd05",
+        "9bd210d8b2de6e7a775340ccb3b4060f199eb9c7361fb5ebfafdb9db9ba1e714",
+        {0xe9,0x64,0x8d,0x1c,0x00}};
+    constexpr std::uint32_t Creative312Timestamp=0x6aea306f;
     // Original Find 1.1.2, supplied through the existing Greeneye loader.
     // Only its reached HUD callback and original-renderer continuation are used.
     constexpr Profile Find112{
@@ -113,18 +122,31 @@ namespace PublicCreativeCompat
         0x74000,444928,0x2650,0x2650,0,0x6a4b8,0x58,0,
         "9138d31acab0623a63824390ab0418fb18183709df9758f7f4c89670cc836c78",
         "c9c9fb1776b54ba436a3a4b16071658b7d1598e5e52bba3102ffa63809d2b0ac",{}};
+    // Exact latest original callback bodies and continuation slots. Existing
+    // profiles stay available; unknown bodies, owners and graph forms reject.
+    constexpr Profile Find128{
+        0x113000,522752,0xe290,0xe290,0,0x7b6f0,0x5e,0,
+        "1660249c2312258600f7bd7c9ce2469e3bc8c7e27f71896d77fb77c9e50669b0",
+        "a4d50dafdb5d7e92c06b5e4d460773b9e2aaf5ccddd872799c5a2c86d196a24c",{}};
+    constexpr Profile Teleport1110{
+        0x74000,448512,0x3110,0x3110,0,0x6a4b8,0x58,0,
+        "438610671f1dfe0ce4b9d24f45a878664a5d9d504e6f797e21b44aa3d39a6630",
+        "6318965292a22a9c05a8d50848cbb1a02b0b72d36472786efe2bf49c4ba0a50e",{}};
     static_assert(Find112.bodySize<=0x5e && Find125.bodySize<=0x5e &&
-        Teleport116.bodySize<=0x5e && Teleport117.bodySize<=0x5e);
+        Teleport116.bodySize<=0x5e && Teleport117.bodySize<=0x5e &&
+        Find128.bodySize<=0x5e && Teleport1110.bodySize<=0x5e);
     constexpr std::size_t BodySize = 0x13e, BlockSize = 0x187;
     static_assert(Creative214.bodySize <= BodySize && Creative300.bodySize <= BodySize &&
-        Creative301.bodySize <= BodySize && Creative310.bodySize <= BodySize && Creative311.bodySize <= BodySize);
+        Creative301.bodySize <= BodySize && Creative310.bodySize <= BodySize &&
+        Creative311.bodySize <= BodySize && Creative312.bodySize <= BodySize);
     inline constexpr bool SupportsFiniteCreativeProfile(const Profile* profile) noexcept
-    { return profile==&Creative310 || profile==&Creative311; }
+    { return profile==&Creative310 || profile==&Creative311 || profile==&Creative312; }
     inline constexpr const Profile* SelectCreativeProfile(std::uintptr_t base,
-        std::uintptr_t callback) noexcept
+        std::uintptr_t callback,std::uint32_t observedTimestamp=0) noexcept
     {
         if(callback<base)return nullptr;
         const auto rva=callback-base;
+        if(rva==Creative312.callback && observedTimestamp==Creative312Timestamp)return &Creative312;
         if(rva==Creative301.callback)return &Creative301;
         if(rva==Creative310.callback)return &Creative310;
         if(rva==Creative311.callback)return &Creative311;

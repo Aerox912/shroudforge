@@ -215,6 +215,12 @@ if(MSVC)
 endif()
 
 # Development tools never run from the game or from the modloader.
+add_executable(kfc-runtime-test-public-mod-profile EXCLUDE_FROM_ALL ../tests/public_mod_profile_test.cpp)
+target_include_directories(kfc-runtime-test-public-mod-profile PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
+target_compile_features(kfc-runtime-test-public-mod-profile PRIVATE cxx_std_20)
+target_compile_definitions(kfc-runtime-test-public-mod-profile PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX)
+target_link_libraries(kfc-runtime-test-public-mod-profile PRIVATE bcrypt)
+set_property(TARGET kfc-runtime-test-public-mod-profile PROPERTY MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
 add_executable(kfc-runtime-test-resource EXCLUDE_FROM_ALL
     ../tests/loaded_resource_access_test.cpp engine-context/resolve_engine_owners.cpp engine-context/resolve_registered_scene.cpp
     engine-context/configure_engine_layout.cpp engine-context/hold_resource_lifetime.cpp engine-context/lock_scene_access.cpp
