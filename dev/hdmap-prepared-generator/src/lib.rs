@@ -6,6 +6,7 @@ use std::{collections::{BTreeMap, BTreeSet}, fs::{self, File, OpenOptions}, io::
 
 pub const SOURCE_CLOSURE: Option<&str> = option_env!("HD_PREPARED_SOURCE_CLOSURE");
 const STEM: &str = "enshrouded";
+pub mod effective;
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]

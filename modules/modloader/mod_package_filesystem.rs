@@ -20,10 +20,15 @@ impl<R: Read> FileRead for R {}
 pub enum FileSystem {
     Disk(DiskFileSystem),
     Zip(ZipFileSystem),
+    Prepared(crate::prepared_package_view::PreparedPackageView),
     Empty,
 }
 
 impl FileSystem {
+    pub fn new_prepared(view:crate::prepared_package_view::PreparedPackageView) -> Self { Self::Prepared(view) }
+
+    pub fn is_prepared(&self) -> bool {matches!(self,Self::Prepared(_))}
+
     pub fn new_disk<P: AsRef<Path>>(root: P) -> Result<Self> {
         DiskFileSystem::new(root.as_ref()).map(Self::Disk)
     }
@@ -36,6 +41,7 @@ impl FileSystem {
         match self {
             Self::Disk(fs) => fs.root(),
             Self::Zip(fs) => fs.root(),
+            Self::Prepared(fs) => fs.root(),
             Self::Empty => Path::new(""),
         }
     }
@@ -44,6 +50,7 @@ impl FileSystem {
         let mut files = match self {
             Self::Disk(fs) => fs.files(),
             Self::Zip(fs) => fs.files(),
+            Self::Prepared(fs) => fs.files(),
             Self::Empty => Vec::new(),
         };
         if let Self::Disk(fs) = self {
@@ -70,6 +77,7 @@ impl FileSystem {
         let mut files = match self {
             Self::Disk(fs) => fs.read_directory(path.as_ref()),
             Self::Zip(fs) => fs.read_directory(path.as_ref()),
+            Self::Prepared(fs) => fs.read_directory(path.as_ref()),
             Self::Empty => Err(Error::new(ErrorKind::NotFound, "No file system available")),
         };
         if let (Self::Disk(fs), Ok(entries)) = (self, &mut files) {
@@ -130,6 +138,7 @@ impl FileSystem {
                 fs.read_file(path.as_ref())
             }
             Self::Zip(fs) => fs.read_file(path.as_ref()),
+            Self::Prepared(fs) => fs.read_file(path.as_ref()).map(|reader|Box::new(reader) as Box<dyn FileRead>),
             Self::Empty => Err(Error::new(ErrorKind::NotFound, "No file system available")),
         }
     }
@@ -145,6 +154,7 @@ impl FileSystem {
                         .any(|item| item.starts_with(path.as_ref()))
             }
             Self::Zip(fs) => fs.exists(path.as_ref()),
+            Self::Prepared(fs) => fs.exists(path.as_ref()),
             Self::Empty => false,
         };
 
@@ -162,6 +172,7 @@ impl FileSystem {
         let result = match self {
             Self::Disk(fs) => fs.overrides.contains_key(path.as_ref()) || fs.is_file(path.as_ref()),
             Self::Zip(fs) => fs.is_file(path.as_ref()),
+            Self::Prepared(fs) => fs.is_file(path.as_ref()),
             Self::Empty => false,
         };
 
@@ -185,6 +196,7 @@ impl FileSystem {
                     || fs.is_directory(path.as_ref())
             }
             Self::Zip(fs) => fs.is_directory(path.as_ref()),
+            Self::Prepared(fs) => fs.is_directory(path.as_ref()),
             Self::Empty => false,
         };
 
@@ -203,6 +215,7 @@ impl FileSystem {
         let abs_path = match self {
             Self::Disk(fs) => Some(sanitize_path(fs.root(), path.as_ref())?),
             Self::Zip(_) => None,
+            Self::Prepared(_) => None,
             Self::Empty => None,
         };
 

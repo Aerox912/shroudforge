@@ -15,3 +15,4 @@ kfc = { path = "../../kfc-parser/crates/kfc", features = ["resource", "content"]
 shroudforge-api = { path = "../../modules/mod-runtime" }
 shroudforge-package = { path = "../../modules/modloader" }
 shroudforge-game-assets = { path = "../../modules/game-files" }
+prepared-source-admission = { path = "../prepared-source-admission" }

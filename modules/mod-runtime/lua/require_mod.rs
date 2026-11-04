@@ -177,6 +177,12 @@ impl RunnerState {
 
 fn validate_prepared_source(lua:&mlua::Lua,id:&str,package:&std::path::Path,path:&str,source:&[u8])->mlua::Result<()> {
     if let Some(state)=lua.app_data_ref::<crate::env::AppState>() {
+        if state.prepared_controls().is_some() {
+            crate::current_assets::full_runtime::require_no_runtime_admission().map_err(mlua::Error::external)?;
+            // Bytes came through the immutable admitted package reader and its
+            // retained source lease. An absent runtime admission is not that seal.
+            return Ok(());
+        }
         crate::current_assets::full_runtime::validate_script(state.env().game_dir().as_std_path(),id,package,path,source)
             .map_err(mlua::Error::external)?;
     }
@@ -185,6 +191,12 @@ fn validate_prepared_source(lua:&mlua::Lua,id:&str,package:&std::path::Path,path
 fn read_prepared_source(lua:&mlua::Lua,id:&str,path:&str,reader:impl std::io::Read)->mlua::Result<String> {
     use std::io::Read;
     let bound=if let Some(state)=lua.app_data_ref::<crate::env::AppState>() {
+        if state.prepared_controls().is_some() {
+            crate::current_assets::full_runtime::require_no_runtime_admission().map_err(mlua::Error::external)?;
+            let source=std::io::read_to_string(reader.take(8*1024*1024+1)).map_err(|error|LuaError::module_load(path,error))?;
+            if source.len()>8*1024*1024 {return Err(mlua::Error::runtime("prepared Lua source exceeds8MiB"));}
+            return Ok(source);
+        }
         crate::current_assets::full_runtime::script_size_bound(state.env().game_dir().as_std_path(),id,path).map_err(mlua::Error::external)?
     }else{None};
     match bound {

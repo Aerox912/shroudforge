@@ -13,6 +13,21 @@ fn read_package_json(fs: &mut FileSystem, name: &str) -> Result<Value, String> {
 }
 
 pub fn read_manifest(root: &Path, fs: &mut FileSystem) -> Result<ModManifest, String> {
+    if fs.is_prepared() { return Err("prepared source requires explicit RejectAmbientProfiles admission".into()); }
+    read_manifest_impl(root,fs,None)
+}
+
+#[derive(Debug,Clone,Copy,PartialEq,Eq)]
+pub struct PreparedManifestPolicy {pub allow_unknown_manifest_fields:bool}
+
+/// Prepared admission has already fixed the effective package. Never consult
+/// ambient compatibility-profile catalogs or saved selections on this route.
+pub fn read_prepared_manifest(root:&Path,fs:&mut FileSystem,policy:PreparedManifestPolicy) -> Result<ModManifest,String> {
+    if !fs.is_prepared() {return Err("prepared manifest requires immutable source view".into());}
+    read_manifest_impl(root,fs,Some(policy))
+}
+
+fn read_manifest_impl(root:&Path,fs:&mut FileSystem,prepared:Option<PreparedManifestPolicy>) -> Result<ModManifest,String> {
     let mut value = read_package_json(fs, "mod.json")?;
     let mut extended = match fs.read_file("extended.mod.json") {
         Ok(reader) => Some(
@@ -22,8 +37,11 @@ pub fn read_manifest(root: &Path, fs: &mut FileSystem) -> Result<ModManifest, St
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
         Err(error) => return Err(format!("extended.mod.json: {error}")),
     };
-    apply_manifest_profile(root, fs, &mut value, &mut extended);
-    let mut manifest = parse_manifest_with_extension(root, value, extended)?;
+    if prepared.is_none() {apply_manifest_profile(root, fs, &mut value, &mut extended);}
+    let mut manifest = match prepared {
+        Some(policy)=>crate::parse_mod_manifest::parse_manifest_with_admitted_policy(root,value,extended,policy.allow_unknown_manifest_fields)?,
+        None=>parse_manifest_with_extension(root, value, extended)?,
+    };
     let mut source = String::new();
     collect_lua_sources(fs, camino::Utf8Path::new("src"), &mut source)?;
     infer_api_contract(&mut manifest, &source);

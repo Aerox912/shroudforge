@@ -8,6 +8,33 @@ use parking_lot::Mutex;
 use std::{collections::HashMap, fs::DirEntry, sync::Arc};
 
 impl ModRegistry {
+    /// Strict prepared route. Every package view exists before its manifest or
+    /// source inference is read. No directory creation, discovery or skipped
+    /// package errors; the caller owns complete graph/identity admission.
+    pub(crate) fn from_prepared(
+        root:&Path,
+        views:Vec<crate::prepared_package_view::PreparedPackageView>,
+        policy:crate::PreparedManifestPolicy,
+    ) -> Result<Self,ModEnvironmentErrorReport> {
+        let mut mods=HashMap::new();
+        for view in views {
+            let path=view.root().to_owned();
+            let mut fs=FileSystem::new_prepared(view);
+            let info=crate::read_prepared_manifest(root.as_std_path(),&mut fs,policy).map_err(|message| {
+                ModEnvironmentErrorReport::with_mod_errors(vec![ModErrorReport::new(&path,ModError::Json {
+                    path:path.join("mod.json").to_string(),
+                    source:serde_json::Error::io(std::io::Error::new(std::io::ErrorKind::InvalidData,message)),
+                })],Self::default())
+            })?;
+            let id=info.id.clone();
+            if mods.contains_key(&id) {
+                return Err(ModEnvironmentErrorReport::with_mod_errors(vec![ModErrorReport::new(&path,ModError::DuplicateModId(id))],Self::default()));
+            }
+            mods.insert(id,Mod {inner:Arc::new(ModInner {info,fs:Mutex::new(fs)})});
+        }
+        Ok(Self {mods})
+    }
+
     pub(crate) fn load(mods_dir: impl AsRef<Path>) -> Result<Self, ModEnvironmentErrorReport> {
         let mods_dir = mods_dir.as_ref().to_path_buf();
         let mut mods = HashMap::new();

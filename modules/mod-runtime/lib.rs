@@ -10,6 +10,8 @@ mod lua;
 mod native_dlls;
 pub mod reflection;
 mod session;
+mod prepared_controls;
+pub use prepared_controls::PreparedControls;
 mod startup;
 pub mod current_assets;
 mod type_aliases;
@@ -173,3 +175,4 @@ pub use reflection::external_registry::{ExternalRegistryInput, EvidencePin, Sour
 pub use startup::run_startup_mods::run_prepared_with_external_registry;
 
 pub use startup::run_startup_mods::run_prepared_with_verified_registry;
+pub use startup::run_startup_mods::run_prepared_effective_sources;

@@ -33,7 +33,7 @@ pub(crate) use game::resolve_type as registry;
 pub(crate) use game::resolve_type as type_lookup;
 pub(crate) mod runtime_networking {
     pub(crate) fn create(lua: &mlua::Lua, owner: &mod_loader::Mod) -> mlua::Result<mlua::Table> {
-        shroudforge_steam_networking::lua::create(
+        let table=shroudforge_steam_networking::lua::create(
             lua,
             owner,
             shroudforge_steam_networking::lua::RuntimeContext {
@@ -51,7 +51,11 @@ pub(crate) mod runtime_networking {
                     super::loader::runtime_denial_reason(&state, owner, operation)
                 },
             },
-        )
+        )?;
+        if lua.app_data_ref::<super::AppState>().unwrap().prepared_controls().is_some() {
+            crate::PreparedControls::refuse_functions(lua,&table,"runtime.network")?;
+        }
+        Ok(table)
     }
 }
 

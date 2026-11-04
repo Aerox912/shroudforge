@@ -6,7 +6,7 @@ impl AppState {
         args: RunArgs,
         cache_diff: &CacheDiff,
     ) -> Result<Self, ()> {
-        Self::new_with_prepared_roots(env, api, args, cache_diff, None, None)
+        Self::new_with_prepared_roots(env, api, args, cache_diff, None, None, None)
     }
 
     pub(crate) fn new_prepared(
@@ -24,17 +24,49 @@ impl AppState {
             cache_diff,
             Some((asset_input_root, output_root)),
             None,
+            None,
         )
     }
 
     pub(crate) fn new_prepared_with_registry(
-        env: ModEnvironment, api: Option<ShroudForgeApi>, args: RunArgs,
-        cache_diff: &CacheDiff, asset_input_root: &std::path::Path,
+        env: ModEnvironment,
+        api: Option<ShroudForgeApi>,
+        args: RunArgs,
+        cache_diff: &CacheDiff,
+        asset_input_root: &std::path::Path,
         output_root: &std::path::Path,
         registry: crate::reflection::external_registry::VerifiedExternalRegistry,
     ) -> Result<Self, ()> {
-        Self::new_with_prepared_roots(env, api, args, cache_diff,
-            Some((asset_input_root, output_root)), Some(registry))
+        Self::new_with_prepared_roots(
+            env,
+            api,
+            args,
+            cache_diff,
+            Some((asset_input_root, output_root)),
+            Some(registry),
+            None,
+        )
+    }
+
+    pub(crate) fn new_prepared_effective(
+        env: ModEnvironment,
+        api: Option<ShroudForgeApi>,
+        args: RunArgs,
+        cache_diff: &CacheDiff,
+        asset_input_root: &std::path::Path,
+        output_root: &std::path::Path,
+        registry: crate::reflection::external_registry::VerifiedExternalRegistry,
+        controls: crate::PreparedControls,
+    ) -> Result<Self, ()> {
+        Self::new_with_prepared_roots(
+            env,
+            api,
+            args,
+            cache_diff,
+            Some((asset_input_root, output_root)),
+            Some(registry),
+            Some(controls),
+        )
     }
 
     fn new_with_prepared_roots(
@@ -44,6 +76,7 @@ impl AppState {
         cache_diff: &CacheDiff,
         prepared_roots: Option<(&std::path::Path, &std::path::Path)>,
         external_registry: Option<crate::reflection::external_registry::VerifiedExternalRegistry>,
+        prepared_controls: Option<crate::PreparedControls>,
     ) -> Result<Self, ()> {
         let game_dir = env.game_dir();
         let cache_dir = env.cache_dir();
@@ -54,6 +87,17 @@ impl AppState {
         let options = args.options;
         let generated_assets = options.current_asset_mods.is_some();
         let prepared_asset_output = prepared_roots.is_some();
+        if env.has_prepared_sources() != prepared_controls.is_some() {
+            error!("Prepared source views require their explicit admitted controls");
+            return Err(());
+        }
+        if prepared_controls
+            .as_ref()
+            .is_some_and(|controls| controls.expected_generation().is_none())
+        {
+            error!("Prepared source generation identity is missing");
+            return Err(());
+        }
         if options.defer_current_commit && !generated_assets {
             error!("Deferred publication requires current-composition mode");
             return Err(());
@@ -72,7 +116,9 @@ impl AppState {
                 || options.export
                 || options.export_dir.is_some())
         {
-            error!("Prepared asset generation requires a selected deferred patch plan without exports");
+            error!(
+                "Prepared asset generation requires a selected deferred patch plan without exports"
+            );
             return Err(());
         }
         let environment_root = game_dir.as_std_path();
@@ -102,9 +148,10 @@ impl AppState {
                 environment_root.to_path_buf(),
             ),
         };
-        let default_export_dir = PathBuf::from_path_buf(
-            shroudforge_loader_config::paths::export_dir(environment_root),
-        )
+        let default_export_dir = PathBuf::from_path_buf(match &prepared_controls {
+            Some(controls) => controls.export_directory(environment_root),
+            None => shroudforge_loader_config::paths::export_dir(environment_root),
+        })
         .expect("a UTF-8 game path joined with fixed loader paths remains UTF-8");
         let configured_export_dir = options.export_dir.and_then(|directory| {
             use std::path::Component;
@@ -185,7 +232,10 @@ impl AppState {
             Some(external) => (external.registry.clone(), false),
             None => {
                 let (registry, dirty) = crate::reflection::load_type_registry::load_type_registry(
-                    &asset_game_dir, cache_dir, file_name)?;
+                    &asset_game_dir,
+                    cache_dir,
+                    file_name,
+                )?;
                 (Rc::new(registry), dirty)
             }
         };
@@ -219,9 +269,18 @@ impl AppState {
                 crate::game_files::create_reader(&asset_game_dir, file_name)?,
             )
         };
-        if external_registry.is_some() && ref_file.game_version()!=type_registry.version {
+        if external_registry.is_some() && ref_file.game_version() != type_registry.version {
             error!("External registry generation differs from prepared KFC input");
             return Err(());
+        }
+        if let Some(expected) = prepared_controls
+            .as_ref()
+            .and_then(crate::PreparedControls::expected_generation)
+        {
+            if ref_file.game_version() != expected {
+                error!("Prepared KFC generation differs from the exact source operation");
+                return Err(());
+            }
         }
         let api = match api {
             Some(api) => api,
@@ -303,6 +362,7 @@ impl AppState {
 
         Ok(Self {
             _external_registry: external_registry,
+            prepared_controls,
             runtime_configured: Cell::new(false),
             runtime_active_mods: RefCell::new(HashSet::new()),
             map_lua_owners: RefCell::new(HashMap::new()),

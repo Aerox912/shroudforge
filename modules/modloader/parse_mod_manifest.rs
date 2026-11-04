@@ -104,11 +104,17 @@ pub fn parse_manifest(root: &Path, value: Value) -> Result<ModManifest, String> 
 
 pub fn parse_manifest_with_extension(
     root: &Path,
-    mut value: Value,
+    value: Value,
     external: Option<Value>,
 ) -> Result<ModManifest, String> {
-    let had_extension = external.is_some();
     let allow_unknown = unknown_manifest_fields_allowed(root)?;
+    parse_manifest_with_admitted_policy(root,value,external,allow_unknown)
+}
+
+pub(crate) fn parse_manifest_with_admitted_policy(
+    root:&Path,mut value:Value,external:Option<Value>,allow_unknown:bool,
+) -> Result<ModManifest,String> {
+    let had_extension=external.is_some();
     let extension = external
         .map(|extension| {
             validate_extended_mod_document_with_policy(root, &extension, allow_unknown)

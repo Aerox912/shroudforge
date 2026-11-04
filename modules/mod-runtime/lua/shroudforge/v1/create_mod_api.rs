@@ -209,7 +209,10 @@ pub fn create(lua: &mlua::Lua, r#mod: &Mod) -> mlua::Result<Table> {
     let locale_dir = game_dir.clone();
     table.raw_set(
         "locale",
-        lua.create_function(move |_, ()| Ok(read_ui_locale(&locale_dir)))?,
+        lua.create_function(move |lua, ()| {
+            let state=lua.app_data_ref::<crate::session::AppState>().unwrap();
+            Ok(match state.prepared_controls() {Some(controls)=>controls.locale(),None=>read_ui_locale(&locale_dir)})
+        })?,
     )?;
 
     let locales = r#mod.info().locales.clone();
@@ -266,6 +269,13 @@ pub fn create(lua: &mlua::Lua, r#mod: &Mod) -> mlua::Result<Table> {
         })?,
     )?;
     table.raw_set("notifications", notifications)?;
+
+    if lua.app_data_ref::<crate::session::AppState>().unwrap().prepared_controls().is_some() {
+        for domain in ["input","ui","notifications"] {
+            let child=table.raw_get::<Table>(domain)?;
+            crate::PreparedControls::refuse_functions(lua,&child,domain)?;
+        }
+    }
 
     Ok(table)
 }

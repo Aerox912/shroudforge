@@ -28,7 +28,15 @@ pub fn run_prepared(
     asset_input_root: &Path,
     output_root: &Path,
 ) -> anyhow::Result<PathBuf> {
-    run_prepared_with_api(env, Some(api), args, asset_input_root, output_root, None)
+    run_prepared_with_api(
+        env,
+        Some(api),
+        args,
+        asset_input_root,
+        output_root,
+        None,
+        None,
+    )
 }
 
 /// Local-schema form of [`run_prepared`].
@@ -38,26 +46,71 @@ pub fn run_prepared_with_local_schema(
     asset_input_root: &Path,
     output_root: &Path,
 ) -> anyhow::Result<PathBuf> {
-    run_prepared_with_api(env, None, args, asset_input_root, output_root, None)
+    run_prepared_with_api(env, None, args, asset_input_root, output_root, None, None)
 }
 
 /// Explicit prepared-only admission. Evidence is validated before source/cache/root access.
 pub fn run_prepared_with_external_registry(
-    env: &ModEnvironment, args: RunArgs, asset_input_root: &Path, output_root: &Path,
+    env: &ModEnvironment,
+    args: RunArgs,
+    asset_input_root: &Path,
+    output_root: &Path,
     input: &crate::ExternalRegistryInput,
-    source_inputs: &std::collections::BTreeMap<String,crate::SourceStamp>,
+    source_inputs: &std::collections::BTreeMap<String, crate::SourceStamp>,
 ) -> anyhow::Result<PathBuf> {
     validate_prepared_options(&args)?;
-    let registry=crate::admit_external_registry(env.game_dir().as_std_path(),input,source_inputs)?;
-    run_prepared_with_verified_registry(env,args,asset_input_root,output_root,registry)
+    let registry =
+        crate::admit_external_registry(env.game_dir().as_std_path(), input, source_inputs)?;
+    run_prepared_with_verified_registry(env, args, asset_input_root, output_root, registry)
 }
 
 /// Consume an opaque verified token; retaining it keeps all evidence leases alive.
 pub fn run_prepared_with_verified_registry(
-    env:&ModEnvironment,args:RunArgs,asset_input_root:&Path,output_root:&Path,
-    registry:crate::VerifiedExternalRegistry,
-)->anyhow::Result<PathBuf> {
-    run_prepared_with_api(env,None,args,asset_input_root,output_root,Some(registry))
+    env: &ModEnvironment,
+    args: RunArgs,
+    asset_input_root: &Path,
+    output_root: &Path,
+    registry: crate::VerifiedExternalRegistry,
+) -> anyhow::Result<PathBuf> {
+    run_prepared_with_api(
+        env,
+        None,
+        args,
+        asset_input_root,
+        output_root,
+        Some(registry),
+        None,
+    )
+}
+
+/// Distinct source/control-sealed private route. The caller retains and finally
+/// verifies the raw/effective lease, current assets and independently read stage.
+pub fn run_prepared_effective_sources(
+    env: &ModEnvironment,
+    args: RunArgs,
+    asset_input_root: &Path,
+    output_root: &Path,
+    registry: crate::VerifiedExternalRegistry,
+    mut controls: crate::PreparedControls,
+    expected_generation: &str,
+) -> anyhow::Result<PathBuf> {
+    anyhow::ensure!(
+        env.has_prepared_sources(),
+        "effective producer requires admitted package views"
+    );
+    crate::current_assets::full_runtime::require_no_runtime_admission()?;
+    controls
+        .bind_generation(expected_generation)
+        .map_err(anyhow::Error::msg)?;
+    run_prepared_with_api(
+        env,
+        None,
+        args,
+        asset_input_root,
+        output_root,
+        Some(registry),
+        Some(controls),
+    )
 }
 
 fn run_prepared_with_api(
@@ -67,8 +120,13 @@ fn run_prepared_with_api(
     asset_input_root: &Path,
     output_root: &Path,
     external_registry: Option<crate::reflection::external_registry::VerifiedExternalRegistry>,
+    controls: Option<crate::PreparedControls>,
 ) -> anyhow::Result<PathBuf> {
     validate_prepared_options(&args)?;
+    anyhow::ensure!(
+        env.has_prepared_sources() == controls.is_some(),
+        "prepared source/control route differs"
+    );
     let stem = args.file_name.clone();
     args.options.skip_cache = true;
     let (asset_input_root, output_root) =
@@ -78,7 +136,14 @@ fn run_prepared_with_api(
             output_root,
             &args.file_name,
         )?;
-    run_with_api_and_output(env, api, args, Some((&asset_input_root, &output_root)), external_registry)?;
+    run_with_api_and_output(
+        env,
+        api,
+        args,
+        Some((&asset_input_root, &output_root)),
+        external_registry,
+        controls,
+    )?;
     Ok(shroudforge_game_assets::transaction::directory(
         &output_root,
         &stem,
@@ -111,7 +176,7 @@ fn run_with_api(
     api: Option<ShroudForgeApi>,
     args: RunArgs,
 ) -> anyhow::Result<()> {
-    run_with_api_and_output(env, api, args, None, None)
+    run_with_api_and_output(env, api, args, None, None, None)
 }
 
 fn run_with_api_and_output(
@@ -120,7 +185,13 @@ fn run_with_api_and_output(
     mut args: RunArgs,
     prepared_roots: Option<(&Path, &Path)>,
     external_registry: Option<crate::reflection::external_registry::VerifiedExternalRegistry>,
+    controls: Option<crate::PreparedControls>,
 ) -> anyhow::Result<()> {
+    anyhow::ensure!(
+        !env.has_prepared_sources()
+            || (prepared_roots.is_some() && external_registry.is_some() && controls.is_some()),
+        "immutable prepared packages require the distinct source/control-sealed entrypoint"
+    );
     debug!("Running lua with options: {:?}", args);
     if prepared_roots.is_some() {
         validate_prepared_options(&args)?;
@@ -130,9 +201,14 @@ fn run_with_api_and_output(
     let selective_generation = selected.is_some();
     if let Some(ids) = &selected {
         let unique: std::collections::HashSet<_> = ids.iter().collect();
-        anyhow::ensure!(!ids.is_empty() && unique.len() == ids.len(), "empty or duplicate current asset mod selection");
-        anyhow::ensure!(args.options.phase == crate::RuntimePhase::Pregame && args.options.patch,
-            "current asset selection requires a writing pregame session");
+        anyhow::ensure!(
+            !ids.is_empty() && unique.len() == ids.len(),
+            "empty or duplicate current asset mod selection"
+        );
+        anyhow::ensure!(
+            args.options.phase == crate::RuntimePhase::Pregame && args.options.patch,
+            "current asset selection requires a writing pregame session"
+        );
         // This mode is invoked only after the caller's exact prepared-state check.
         args.options.force_patch = true;
     }
@@ -163,10 +239,31 @@ fn run_with_api_and_output(
 
     // create a new app state
 
-    let created_app_state = match (prepared_roots,external_registry) {
-        (Some((asset_input_root, output_root)),Some(registry)) => AppState::new_prepared_with_registry(
-            env.clone(),api,args,&cache_diff,asset_input_root,output_root,registry),
-        (Some((asset_input_root, output_root)),None) => AppState::new_prepared(
+    let created_app_state = match (prepared_roots, external_registry, controls) {
+        (Some((asset_input_root, output_root)), Some(registry), Some(controls)) => {
+            AppState::new_prepared_effective(
+                env.clone(),
+                api,
+                args,
+                &cache_diff,
+                asset_input_root,
+                output_root,
+                registry,
+                controls,
+            )
+        }
+        (Some((asset_input_root, output_root)), Some(registry), None) => {
+            AppState::new_prepared_with_registry(
+                env.clone(),
+                api,
+                args,
+                &cache_diff,
+                asset_input_root,
+                output_root,
+                registry,
+            )
+        }
+        (Some((asset_input_root, output_root)), None, None) => AppState::new_prepared(
             env.clone(),
             api,
             args,
@@ -174,8 +271,8 @@ fn run_with_api_and_output(
             asset_input_root,
             output_root,
         ),
-        (None,None) => AppState::new(env.clone(), api, args, &cache_diff),
-        (None,Some(_)) => anyhow::bail!("external registry requires prepared roots"),
+        (None, None, None) => AppState::new(env.clone(), api, args, &cache_diff),
+        _ => anyhow::bail!("registry/controls require the matching prepared roots"),
     };
     let app_state = match created_app_state {
         Ok(context) => context,
@@ -189,8 +286,12 @@ fn run_with_api_and_output(
     let is_server = runner.lua.app_data_ref::<AppState>().unwrap().is_server();
     let mut plan = env.plan(is_server, API_VERSION);
     if let Some(ids) = selected {
-        anyhow::ensure!(ids.iter().all(|id| plan.iter().any(|m| &m.info().id == id && m.info().requires_pregame())),
-            "current asset selection contains an unavailable pregame mod");
+        anyhow::ensure!(
+            ids.iter().all(|id| plan
+                .iter()
+                .any(|m| &m.info().id == id && m.info().requires_pregame())),
+            "current asset selection contains an unavailable pregame mod"
+        );
         plan.retain(|m| ids.contains(&m.info().id));
     }
     match runner.setup(plan) {

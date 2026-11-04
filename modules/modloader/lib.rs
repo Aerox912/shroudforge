@@ -25,6 +25,7 @@ mod validate_mod_manifest;
 pub use validate_mod_manifest::validate_manifest;
 mod mod_package_filesystem;
 pub use mod_package_filesystem::FileSystem;
+pub mod prepared_package_view;
 mod mod_manifest_types;
 pub use mod_manifest_types::*;
 mod read_mod_manifest;

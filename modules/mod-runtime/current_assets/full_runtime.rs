@@ -161,6 +161,11 @@ fn snapshot(root:&Path)->Result<Option<(Contract,BTreeMap<String,PackageBinding>
     ensure!(fs::canonicalize(root)?==a.root&&a.phase==Phase::Running,"full runtime composition is not live or is closed");
     Ok(Some((a.contract.clone(),a.packages.clone())))
 }
+/// Effective-source preparation is a separate process-local admission class.
+/// Refuse an existing runtime lease before any canonicalize/path/hash access.
+pub(crate) fn require_no_runtime_admission()->Result<()> {
+    ensure!(lock().is_none(),"active runtime admission cannot authorize prepared source generation");Ok(())
+}
 pub(crate) fn select_runtime_plan<'a>(env:&'a mod_loader::ModEnvironment,plan:&mut Vec<&'a mod_loader::Mod>)->Result<()> {
     let Some((c,bindings))=snapshot(env.game_dir().as_std_path())?else{return Ok(());};
     projected_runtime_plan(env,&c)?;

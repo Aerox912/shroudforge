@@ -59,6 +59,22 @@ pub struct ModEnvironment {
 }
 
 impl ModEnvironment {
+    /// Additive private-preparation construction; roots and complete held file
+    /// graph must have passed the producer's effective-source admission first.
+    pub fn from_prepared_packages(
+        game_dir:PathBuf,cache_dir:PathBuf,mods_dir:PathBuf,
+        views:Vec<crate::prepared_package_view::PreparedPackageView>,
+        policy:crate::PreparedManifestPolicy,
+    ) -> Result<Self,ModEnvironmentErrorReport> {
+        if views.is_empty() || views.iter().any(|view|view.root().parent()!=Some(mods_dir.as_path())) {
+            return Err(ModEnvironmentErrorReport::base_io(crate::IoError {
+                path:mods_dir.to_string(),source:std::io::Error::new(std::io::ErrorKind::InvalidInput,"prepared package root mismatch"),
+            }));
+        }
+        let registry=ModRegistry::from_prepared(&game_dir,views,policy)?;
+        Ok(Self {inner:Arc::new(ModEnvironmentInner {game_dir,cache_dir,mods_dir,registry})})
+    }
+
     pub fn load(game_dir: impl AsRef<Path>) -> Result<Self, ModEnvironmentErrorReport> {
         let game_dir = game_dir.as_ref().to_path_buf();
         let cache_dir = PathBuf::from_path_buf(shroudforge_loader_config::paths::cache_dir(
@@ -91,6 +107,11 @@ impl ModEnvironment {
 
     pub fn game_dir(&self) -> &Path {
         &self.inner.game_dir
+    }
+    /// Route marker only, not provenance or operation approval. Prepared views
+    /// must use the distinct control-sealed generator entrypoint.
+    pub fn has_prepared_sources(&self)->bool {
+        self.inner.registry.values().any(|package|package.fs().is_prepared())
     }
 
     pub fn cache_dir(&self) -> &Path {

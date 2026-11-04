@@ -30,7 +30,11 @@ struct EvidenceFixture {
 }
 impl EvidenceFixture {
     fn new() -> Self {
-        let root = std::env::temp_dir().join(format!(
+        Self::new_under(&std::env::temp_dir())
+    }
+    fn new_under(parent: &Path) -> Self {
+        fs::create_dir_all(parent).unwrap();
+        let root = parent.join(format!(
             "external-registry-{}-{}",
             std::process::id(),
             std::time::SystemTime::now()
@@ -288,6 +292,57 @@ fn external_registry_public_admission_keeps_caches_absent_and_holds_evidence_rea
             .is_ok()
     );
 }
+
+#[test]
+fn effective_registry_closure_matches_every_actual_held_evidence_pin_and_refuses_omission_change_extra()
+ {
+    let f = EvidenceFixture::new_under(Path::new(
+        "E:/Scratch/sf178-effective-evidence-closure-tests",
+    ));
+    let admitted = f.admit().unwrap();
+    assert_eq!(admitted.evidence_files().len(), f.pins.len());
+    for pin in f.pins.values() {
+        let s = &admitted.evidence_files()[&pin.path];
+        assert_eq!(
+            (s.bytes, s.sha256.as_str()),
+            (pin.bytes, pin.sha256.as_str())
+        );
+    }
+    // Pure exact join exercises the verified token, without manufacturing an
+    // EffectiveUseApproval or invoking the real-use producer gate.
+    let join = |files: &BTreeMap<String, prepared_source_admission::Stamp>| {
+        super::effective::validate_verified_registry_files(files, &admitted).is_ok()
+    };
+    let files: BTreeMap<_, _> = admitted
+        .evidence_files()
+        .iter()
+        .map(|(n, s)| {
+            (
+                n.clone(),
+                prepared_source_admission::Stamp {
+                    bytes: s.bytes,
+                    sha256: s.sha256.clone(),
+                },
+            )
+        })
+        .collect();
+    assert!(join(&files));
+    let mut bad = files.clone();
+    bad.pop_first();
+    assert!(!join(&bad));
+    let mut bad = files.clone();
+    bad.values_mut().next().unwrap().sha256 = "0".repeat(64);
+    assert!(!join(&bad));
+    let mut bad = files;
+    bad.insert(
+        "unrelated".into(),
+        prepared_source_admission::Stamp {
+            bytes: 1,
+            sha256: "a".repeat(64),
+        },
+    );
+    assert!(!join(&bad));
+}
 #[test]
 fn external_registry_missing_changed_extra_or_unbound_inputs_refuse() {
     for mode in [
@@ -492,7 +547,7 @@ fn external_registry_prepared_positive_uses_verified_registry_without_cache_fall
         guid::{Guid, ResourceId},
         reflection::TypeRegistry,
     };
-    let mut f = EvidenceFixture::new();
+    let mut f = EvidenceFixture::new_under(Path::new("E:/Scratch/sf178-external-registry-tests"));
     let source = f.root.with_extension("source");
     let output = f.root.with_extension("output");
     fs::create_dir(&source).unwrap();
@@ -604,4 +659,222 @@ fn external_registry_boolean_review_without_bound_producer_review_is_not_approva
         f.admit().is_err(),
         "producer review booleans were accepted without a bound review record"
     );
+}
+
+// Exercises the real KFC/Lua runtime with tiny fictional data, never current game
+// bodies or a test bypass in the production effective-use approval gate.
+#[test]
+fn effective_sources_real_session_uses_overlay_and_refuses_wrong_generation_or_lua_failure() {
+    use kfc::{
+        container::{KFCFile, KFCReader, KFCWriter},
+        guid::{Guid, ResourceId},
+        reflection::TypeRegistry,
+    };
+    use prepared_source_admission::{
+        ProfilePolicy, ReadLimits, Replacement, SourceLease, SourcePlan, Stamp as SourceStamp,
+    };
+    fn entries(root: &Path, path: &Path, out: &mut Vec<String>) {
+        for entry in fs::read_dir(path).unwrap() {
+            let p = entry.unwrap().path();
+            out.push(
+                p.strip_prefix(root)
+                    .unwrap()
+                    .to_str()
+                    .unwrap()
+                    .replace('\\', "/"),
+            );
+            if p.is_dir() {
+                entries(root, &p, out);
+            }
+        }
+    }
+    for mode in [
+        "success",
+        "wrong-generation",
+        "lua-failure",
+        "unadmitted-network",
+    ] {
+        let mut f =
+            EvidenceFixture::new_under(Path::new("E:/Scratch/sf178-effective-session-tests"));
+        let source = f.root.with_extension("source");
+        let output = f.root.with_extension("output");
+        fs::create_dir(&source).unwrap();
+        fs::create_dir(&output).unwrap();
+        fs::write(
+            source.join("enshrouded.exe"),
+            b"FICTIONAL STATIC INPUT; NOT EXECUTABLE",
+        )
+        .unwrap();
+        fs::write(source.join("enshrouded.kfc"), []).unwrap();
+        fs::write(source.join("enshrouded.kfc_resources"), []).unwrap();
+        let registry: TypeRegistry = serde_json::from_value(f.docs["registry"].clone()).unwrap();
+        let id = ResourceId::new(
+            Guid::parse("00000000-0000-0000-0000-000000000001").unwrap(),
+            kfc::hash::fnv("fixture::U32"),
+            0,
+        );
+        let mut writer =
+            KFCWriter::<KFCFile, _>::new(&source, STEM, &registry, "fictional-generation").unwrap();
+        writer.write_resource(&id, &7u32.to_le_bytes()).unwrap();
+        writer.finalize().unwrap();
+        let package = f.root.join("mods/fixture");
+        fs::create_dir_all(package.join("src")).unwrap();
+        fs::write(package.join("mod.json"),br#"{"id":"fixture","name":"Fixture","version":"1.0.0","dependencies":[],"capabilities":["patch"]}"#).unwrap();
+        fs::write(
+            package.join("extended.mod.json"),
+            br#"{"schemaVersion":1,"enabled":true,"targets":["client"]}"#,
+        )
+        .unwrap();
+        fs::write(
+            package.join("src/mod.lua"),
+            b"error('raw source must never run')",
+        )
+        .unwrap();
+        let replacement = f.root.with_extension("replacement.lua");
+        let lua = match mode {
+            "lua-failure" => "error('selected synthetic failure')",
+            "unadmitted-network" => "runtime.network.status(); return {}",
+            _ => {
+                "assert(shroudforge.locale()=='en-GB', 'admitted default locale'); local r=game.assets.get_resource('00000000-0000-0000-0000-000000000001','fixture::U32'); assert(r.data==7); r.data=29; return {}"
+            }
+        };
+        fs::write(&replacement, lua).unwrap();
+        for name in [
+            "enshrouded.exe",
+            "enshrouded.kfc",
+            "enshrouded.kfc_resources",
+        ] {
+            let s = stamp(&source.join(name)).unwrap();
+            f.sources.insert(
+                name.into(),
+                shroudforge_api::SourceStamp {
+                    bytes: s.bytes,
+                    sha256: s.sha256,
+                },
+            );
+        }
+        f.docs.get_mut("identity").unwrap()["executableSha256"] =
+            json!(f.sources["enshrouded.exe"].sha256);
+        f.docs.get_mut("identity").unwrap()["pairedKfcSha256"] =
+            json!(f.sources["enshrouded.kfc"].sha256);
+        f.refresh();
+        let source_before = inventory(&source).unwrap();
+        let before = inventory(&f.root).unwrap();
+        let registry = f.admit().unwrap();
+        let convert = |s: Stamp| SourceStamp {
+            bytes: s.bytes,
+            sha256: s.sha256,
+        };
+        let mut order = vec![String::new()];
+        entries(&f.root, &f.root, &mut order);
+        let mut plan = SourcePlan {
+            schema: 1,
+            kind: "prepared_effective_source_plan_v1".into(),
+            environment_root: f.root.clone(),
+            raw_files: before
+                .iter()
+                .map(|(n, s)| (n.clone(), convert(s.clone())))
+                .collect(),
+            entries: order,
+            package_roots: vec!["mods/fixture".into()],
+            replacements: vec![Replacement {
+                logical_path: "mods/fixture/src/mod.lua".into(),
+                raw: convert(before["mods/fixture/src/mod.lua"].clone()),
+                path: replacement.clone(),
+                replacement: convert(stamp(&replacement).unwrap()),
+            }],
+            profile_policy: ProfilePolicy::RejectAmbientProfiles,
+            allow_unknown_manifest_fields: true,
+            raw_inventory_sha256: String::new(),
+            effective_inventory_sha256: String::new(),
+        };
+        plan.raw_inventory_sha256 = plan.inventory_digest(false).unwrap();
+        plan.effective_inventory_sha256 = plan.inventory_digest(true).unwrap();
+        let bytes = plan.required_final_bytes().unwrap();
+        let calls = plan.required_final_calls().unwrap();
+        let mut lease = SourceLease::admit(
+            plan,
+            ReadLimits {
+                max_bytes: bytes * 10 + 100_000,
+                max_calls: calls * 10 + 100,
+                final_reserve_bytes: bytes,
+                final_reserve_calls: calls,
+            },
+        )
+        .unwrap();
+        let controls = shroudforge_api::PreparedControls::from_admitted_bytes(
+            lease
+                .read_control("shroudforge/config/modloader-config.json", 1024 * 1024)
+                .unwrap()
+                .as_deref(),
+        )
+        .unwrap();
+        let env = shroudforge_package::ModEnvironment::from_prepared_packages(
+            f.root.to_str().unwrap().into(),
+            f.root.join("shroudforge/cache").to_str().unwrap().into(),
+            f.root.join("mods").to_str().unwrap().into(),
+            lease.package_views().unwrap(),
+            lease.manifest_policy(),
+        )
+        .unwrap();
+        let args = shroudforge_api::RunArgs {
+            file_name: STEM.into(),
+            options: shroudforge_api::RunOptions {
+                current_asset_mods: Some(vec!["fixture".into()]),
+                defer_current_commit: true,
+                patch: true,
+                skip_cache: true,
+                force_patch: true,
+                is_server: Some(false),
+                phase: shroudforge_api::RuntimePhase::Pregame,
+                ..Default::default()
+            },
+        };
+        let generation = if mode == "wrong-generation" {
+            "wrong-generation"
+        } else {
+            "fictional-generation"
+        };
+        let result = shroudforge_api::run_prepared_effective_sources(
+            &env, args, &source, &output, registry, controls, generation,
+        );
+        assert_eq!(result.is_ok(), mode == "success", "{mode}: {result:?}");
+        if mode == "lua-failure" {
+            assert!(
+                format!("{:#}", result.as_ref().unwrap_err())
+                    .contains("selected synthetic failure")
+            );
+        } else if mode == "unadmitted-network" {
+            assert!(format!("{:#}", result.as_ref().unwrap_err()).contains("not admitted"));
+        }
+        if let Ok(stage) = result {
+            let mut reader = KFCReader::new(&stage, STEM).unwrap().into_cursor().unwrap();
+            assert_eq!(
+                reader.read_resource(&id).unwrap().unwrap(),
+                29u32.to_le_bytes()
+            );
+            assert!(shroudforge_game_assets::transaction::commit_generated(&output, STEM).is_err());
+        } else if mode == "wrong-generation" {
+            assert!(
+                !shroudforge_game_assets::transaction::directory(&output, STEM).exists(),
+                "generation mismatch created a writer stage"
+            );
+        }
+        assert!(lease.finalize().unwrap().verified, "{mode}");
+        // Read leases survive finalization until the owner serializes its result.
+        assert!(
+            OpenOptions::new()
+                .write(true)
+                .open(package.join("src/mod.lua"))
+                .is_err()
+        );
+        assert!(OpenOptions::new().write(true).open(&replacement).is_err());
+        assert_eq!(inventory(&source).unwrap(), source_before);
+        assert_eq!(inventory(&f.root).unwrap(), before);
+        assert!(!f.root.join("shroudforge/cache").exists());
+        assert!(!f.root.join("shroudforge/exports").exists());
+        drop(env);
+        drop(lease);
+        assert!(OpenOptions::new().write(true).open(&replacement).is_ok());
+    }
 }

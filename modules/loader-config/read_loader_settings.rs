@@ -14,14 +14,27 @@ pub fn read_loader(root: &Path) -> Result<Value, String> {
 
 pub(crate) fn read_loader_unvalidated(root: &Path) -> Result<Value, String> {
     let path = document_path(root, crate::documents::LOADER);
-    let mut result = read_loader_defaults()?;
-    let mut loaded = match fs::read(&path) {
+    let loaded = match fs::read(&path) {
         Ok(bytes) => {
             Some(serde_json::from_slice::<Value>(&bytes).map_err(|error| error.to_string())?)
         }
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
         Err(error) => return Err(error.to_string()),
     };
+    assemble_loader(loaded)
+}
+
+/// Pure prepared-control parsing. None means the caller proved the exact
+/// control path absent; errors in present bytes never become defaults.
+pub fn read_loader_from_admitted(bytes:Option<&[u8]>) -> Result<Value,String> {
+    let loaded=bytes.map(serde_json::from_slice).transpose().map_err(|error|error.to_string())?;
+    let result=assemble_loader(loaded)?;
+    validate_document(Path::new(""),crate::documents::LOADER,&result)?;
+    Ok(result)
+}
+
+fn assemble_loader(mut loaded:Option<Value>) -> Result<Value,String> {
+    let mut result=read_loader_defaults()?;
     if let Some(loaded) = loaded.as_mut() {
         if let Some(modules) = loaded
             .pointer_mut("/modules")

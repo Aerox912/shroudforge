@@ -33,6 +33,7 @@ use crate::{
 };
 
 pub struct AppState {
+    prepared_controls:Option<crate::PreparedControls>,
     _external_registry: Option<crate::reflection::external_registry::VerifiedExternalRegistry>,
     pub(crate) runtime_configured: Cell<bool>,
     runtime_active_mods: RefCell<HashSet<String>>,
@@ -93,6 +94,8 @@ bitflags! {
 
 impl AppState {
     #[inline]
+    pub(crate) fn prepared_controls(&self)->Option<&crate::PreparedControls> {self.prepared_controls.as_ref()}
+
     pub fn env(&self) -> &ModEnvironment {
         &self.env
     }

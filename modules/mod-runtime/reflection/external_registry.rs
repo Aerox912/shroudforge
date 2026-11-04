@@ -187,6 +187,7 @@ struct Bundle {
     handles: Vec<File>,
     total: u64,
     paths: BTreeSet<String>,
+    files: BTreeMap<String, SourceStamp>,
 }
 impl Bundle {
     fn hold_dir(&mut self, p: &Path) -> Result<()> {
@@ -288,6 +289,13 @@ impl Bundle {
             "external evidence changed"
         );
         self.handles.push(f);
+        self.files.insert(
+            pin.path.clone(),
+            SourceStamp {
+                bytes: pin.bytes,
+                sha256: pin.sha256.clone(),
+            },
+        );
         Ok(bytes)
     }
 }
@@ -331,6 +339,11 @@ impl VerifiedExternalRegistry {
     pub fn provenance(&self) -> &Value {
         &self.provenance
     }
+    /// Exact relative evidence files already verified and retained by admission,
+    /// including its manifest, producer-use approval and producer review.
+    pub fn evidence_files(&self) -> &BTreeMap<String, SourceStamp> {
+        &self._leases.files
+    }
 }
 /// Validate only explicitly pinned E/evidence inputs, before the prepared caller touches source/cache.
 /// The caller must obtain manifest/approval pins from its separately authorized prepared request.
@@ -367,6 +380,7 @@ fn load(
         handles: Vec::new(),
         total: 0,
         paths: BTreeSet::new(),
+        files: BTreeMap::new(),
     };
     for p in root.ancestors().collect::<Vec<_>>().into_iter().rev() {
         b.hold_dir(p)?;
