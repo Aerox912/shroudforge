@@ -260,6 +260,32 @@ mod tests {
     use std::fs;
 
     #[test]
+    fn admitted_controls_keep_discovery_and_saved_settings_consistent() {
+        let root = tempfile::tempdir().unwrap();
+        let path = crate::paths::loader_config(root.path());
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        for bytes in [
+            br#"{}"#.as_slice(),
+            br#"{"modules":{"gameProfileDiscovery":{"enabled":false},"network":{"enabled":false},"updates":{"automatic":{"enabled":false}}}}"#.as_slice(),
+            br#"{"modules":{"gameProfileDiscovery":{"enabled":true}}}"#.as_slice(),
+        ] {
+            fs::write(&path, bytes).unwrap();
+            let disk = read_loader(root.path()).unwrap();
+            let admitted = read_loader_from_admitted(Some(bytes)).unwrap();
+            assert_eq!(admitted, disk);
+            if bytes.windows(5).any(|part| part == b"false") {
+                assert_eq!(admitted["modules"]["gameProfileDiscovery"]["enabled"], false);
+                assert_eq!(admitted["modules"]["network"]["enabled"], false);
+                assert_eq!(admitted["modules"]["updates"]["automatic"]["enabled"], false);
+            }
+        }
+        fs::remove_file(path).unwrap();
+        assert_eq!(read_loader_from_admitted(None).unwrap(), read_loader(root.path()).unwrap());
+        assert!(read_loader_from_admitted(Some(br#"{"modules":{"gameProfileDiscovery":{"enabled":"false"}}}"#)).is_err());
+        assert!(read_loader_from_admitted(Some(b"{")).is_err());
+    }
+
+    #[test]
     fn modules_are_enabled_by_default_and_windows_start_closed() {
         let root = tempfile::tempdir().unwrap();
         let updater = crate::paths::updater_executable(root.path());
@@ -307,5 +333,55 @@ mod tests {
         ] {
             assert_eq!(config["modules"][module]["enabled"], true, "{module}");
         }
+    }
+    #[test]
+    fn game_profile_discovery_defaults_to_on_for_missing_and_existing_documents() {
+        let root = tempfile::tempdir().unwrap();
+        assert_eq!(
+            read_loader(root.path()).unwrap()["modules"]["gameProfileDiscovery"]["enabled"],
+            true
+        );
+        let config_path = crate::paths::loader_config(root.path());
+        fs::create_dir_all(config_path.parent().unwrap()).unwrap();
+        fs::write(
+            &config_path,
+            br#"{"schemaVersion":1,"modules":{"network":{"enabled":false}}}"#,
+        )
+        .unwrap();
+        let config = read_loader(root.path()).unwrap();
+        assert_eq!(config["modules"]["gameProfileDiscovery"]["enabled"], true);
+        assert_eq!(config["modules"]["network"]["enabled"], false);
+        fs::write(
+            &config_path,
+            br#"{"modules":{"gameProfileDiscovery":{}}}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            read_loader(root.path()).unwrap()["modules"]["gameProfileDiscovery"]["enabled"],
+            true
+        );
+    }
+
+    #[test]
+    fn game_profile_discovery_preserves_explicit_boolean_and_rejects_invalid_type() {
+        let root = tempfile::tempdir().unwrap();
+        let config_path = crate::paths::loader_config(root.path());
+        fs::create_dir_all(config_path.parent().unwrap()).unwrap();
+        for enabled in [serde_json::json!(true), serde_json::json!(false)] {
+            fs::write(
+                &config_path,
+                serde_json::json!({"modules":{"gameProfileDiscovery":{"enabled":enabled}}})
+                    .to_string(),
+            )
+            .unwrap();
+            let config = read_loader(root.path()).unwrap();
+            assert_eq!(config["modules"]["gameProfileDiscovery"]["enabled"], enabled);
+        }
+        fs::write(
+            config_path,
+            br#"{"modules":{"gameProfileDiscovery":{"enabled":"true"}}}"#,
+        )
+        .unwrap();
+        assert!(read_loader(root.path()).is_err());
     }
 }
