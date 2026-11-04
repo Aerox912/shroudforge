@@ -26,9 +26,9 @@ std::uintptr_t __cdecl Load(const wchar_t* root,const GreeneyeEntry::TicketV1* t
     unsigned char jump[12]{0x48,0xb8};
     auto target=&MockGreeneyeEntry;std::memcpy(jump+2,&target,8);jump[10]=0xff;jump[11]=0xe0;
     if(scenario!=2)std::memcpy(code,jump,12); // Missing hook must fail, not scan-ready.
-    if(scenario==3)code[13]^=1; // Trailing-byte ownership is part of the witness.
+    if(scenario==3 || scenario==7)code[13]^=1; // Trailing-byte ownership is part of the witness.
     FlushInstructionCache(GetCurrentProcess(),code,14);
-    module=reinterpret_cast<std::uintptr_t>(target)-0x2050;
+    module=reinterpret_cast<std::uintptr_t>(target)-(scenario>=5 && scenario!=6?0x2080:0x2050);
     return module;
 }
 bool __cdecl Confirm(const wchar_t*,const GreeneyeEntry::TicketV1*,std::uintptr_t actual,bool witness) {
@@ -46,6 +46,7 @@ int main(int argc,char** argv) {
     assert(WaitForSingleObject(StartupGate::entered,5000)==WAIT_OBJECT_0);
     const auto parked=StartupGate::parked_thread_id.load();assert(StartupGate::IsHeld(parked));
     GreeneyeEntry::Context context{L"inert original root",{48,1,1,0,{}},&Load,&Confirm};
+    if(scenario>=5)context.ticket.kind=scenario==8?99:2;
     if(scenario) {
         if(scenario==4) {code[0]^=1;assert(!StartupGate::ArmPostRestore(parked,&GreeneyeEntry::Continue,&context));}
         else {
@@ -54,8 +55,8 @@ int main(int argc,char** argv) {
         }
     }
     StartupGate::Complete(true);
-    if(scenario==1)assert(StartupGate::AwaitPostRestore()); // Worker barrier before create.
-    if(scenario==2||scenario==3){if(StartupGate::AwaitPostRestore())return 95;entry.join();return 96;}
+    if(scenario==1||scenario==5)assert(StartupGate::AwaitPostRestore()); // Worker barrier before create.
+    if(scenario==2||scenario==3||scenario>=6){if(StartupGate::AwaitPostRestore())return 95;entry.join();return 96;}
     entry.join();
     assert(result==77);
     assert(scenario?(calls==1&&confirms==1&&entries==1):(calls==0&&confirms==0&&entries==0));

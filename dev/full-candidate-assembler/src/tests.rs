@@ -10,6 +10,19 @@ fn greeneye_profile_pin_matches_reviewed_definition() {
     let definition = include_bytes!("../../../docs/runtime/GREENEYE-ENTRY-CONTINUATION.md");
     assert!(valid_digest(GREENEYE_PROFILE_SHA256));
     assert_eq!(digest(definition), GREENEYE_PROFILE_SHA256);
+    let latest = include_bytes!("../../../docs/runtime/GREENEYE-ENTRY-CONTINUATION-V2.md");
+    assert_eq!(digest(latest), greeneye_profiles::LATEST.definition_sha256);
+}
+
+#[test]
+fn greeneye_versioned_route_rejects_mixed_documents() {
+    for p in [&greeneye_profiles::LEGACY,&greeneye_profiles::LATEST] {
+        assert_eq!(greeneye_profiles::for_route(p.id,p.version,p.definition_sha256).unwrap().ticket_kind,p.ticket_kind);
+        let other=if p.version==1{&greeneye_profiles::LATEST}else{&greeneye_profiles::LEGACY};
+        assert!(greeneye_profiles::for_route(p.id,other.version,p.definition_sha256).is_none());
+        assert!(greeneye_profiles::for_route(p.id,p.version,other.definition_sha256).is_none());
+        assert!(greeneye_profiles::for_host(p.host_bytes,other.host_sha256).is_none());
+    }
 }
 
 struct Fixture {
@@ -1648,6 +1661,76 @@ fn greeneye_profile_and_runtime_artifact_identity_are_typed_gates() {
     route.profile_version = GREENEYE_PROFILE_VERSION;
     let bytes = serde_json::to_vec_pretty(&fixture.manifest).unwrap();
     assert!(prepare_template(&bytes, &digest(&bytes)).is_err());
+}
+
+#[test]
+fn latest_greeneye_route_binds_original_files_and_refuses_mixed_or_unbound_inputs() {
+    let mut fixture = Fixture::new(false);
+    let host_target = add_greeneye_host(&mut fixture);
+    let originals = PathBuf::from(std::env::var_os("SF_GREENEYE_LATEST_FIXTURE_ROOT")
+        .expect("SF_GREENEYE_LATEST_FIXTURE_ROOT must point to staged original files on E:"));
+    validate_e_path(&originals, true, true).unwrap();
+    let profile = &greeneye_profiles::LATEST;
+    let package = fixture.manifest.packages.iter_mut()
+        .find(|p| p.component_id == "greeneye-host").unwrap();
+    let host_root = package.source_root.as_ref().unwrap();
+    fs::copy(originals.join("find/dbgcore.dll"), host_root.join("dbgcore.dll")).unwrap();
+    package.source_files = inventory(host_root).unwrap();
+    let host_stamp = package.source_files["dbgcore.dll"].clone();
+    assert_eq!(host_stamp.bytes, profile.host_bytes);
+    assert_eq!(host_stamp.sha256, profile.host_sha256);
+    let mut scan_inputs = Vec::new();
+    for (target, bytes, hash) in profile.scan_inputs {
+        let owner = if target.starts_with("greeneye/find/") { "find" } else { "teleport" };
+        let source = originals.join(owner).join(target);
+        let pin = stamp(&source).unwrap();
+        assert_eq!(pin.bytes, bytes);
+        assert_eq!(pin.sha256, hash);
+        scan_inputs.push(GreeneyeInputBinding { target: target.into(), stamp: pin.clone() });
+        fixture.manifest.root_files.push(RootFileInput {
+            component_id: "greeneye-host".into(), source, target: target.into(),
+            stamp: pin, runtime_binding: true,
+        });
+        fixture.manifest.contract_file_paths.push(target.into());
+    }
+    let artifact = |target: &str| {
+        let input = fixture.manifest.root_files.iter().find(|f| f.target == target).unwrap();
+        GreeneyeArtifactBinding { source: input.source.clone(), target: target.into(), stamp: input.stamp.clone() }
+    };
+    let route = GreeneyeRouteEvidence {
+        profile_id: profile.id.into(), profile_version: profile.version,
+        profile_definition: EvidencePin {
+            path: PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../docs/runtime/GREENEYE-ENTRY-CONTINUATION-V2.md"),
+            sha256: profile.definition_sha256.into(),
+        },
+        runtime_source_closure: fixture.manifest.runtime_source_closure.clone(),
+        runtime_artifact: artifact("shroudforge/shroudforge-runtime.dll"),
+        bootstrap_artifact: artifact("winmm.dll"),
+        host: GreeneyeInputBinding { target: host_target, stamp: host_stamp }, scan_inputs,
+    };
+    validate_greeneye_route(&fixture.manifest, &route).unwrap();
+    let mut changed = route.clone();
+    changed.host.stamp.sha256 = greeneye_profiles::LEGACY.host_sha256.into();
+    assert!(validate_greeneye_route(&fixture.manifest, &changed).is_err());
+    let mut changed = route.clone();
+    changed.profile_definition.sha256 = greeneye_profiles::LEGACY.definition_sha256.into();
+    assert!(validate_greeneye_route(&fixture.manifest, &changed).is_err());
+    for index in 0..profile.scan_inputs.len() {
+        let mut changed = route.clone();
+        changed.scan_inputs[index].stamp.sha256 = greeneye_profiles::LEGACY.scan_inputs[index].2.into();
+        assert!(validate_greeneye_route(&fixture.manifest, &changed).is_err());
+        let mut changed = fixture.manifest.clone();
+        changed.contract_file_paths.retain(|p| p != profile.scan_inputs[index].0);
+        assert!(validate_greeneye_route(&changed, &route).is_err());
+    }
+    let mut changed = fixture.manifest.clone();
+    let mut extra = changed.root_files.last().unwrap().clone();
+    extra.target = "greeneye/unknown/mod.json".into();
+    changed.root_files.push(extra);
+    assert!(validate_greeneye_route(&changed, &route).is_err());
+    // Original DLLs are read as data only. Alter only the fixture-owned host copy.
+    fs::write(fixture.base.join("approved-greeneye-host/dbgcore.dll"), b"changed").unwrap();
+    assert!(validate_greeneye_route(&fixture.manifest, &route).is_err());
 }
 
 #[test]

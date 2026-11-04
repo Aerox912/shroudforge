@@ -1,6 +1,7 @@
 //! Explicit current-composition startup policy. Never falls back to baselines.
 //! The installed recipe supplies original resource records from reviewed source,
 //! not from a snapshot of the user's asset files. Publication recovers forward.
+pub mod greeneye_profiles;
 use anyhow::{Context, Result, ensure};
 use kfc::{
     container::{KFCFile, KFCReader, KFCWriteOptions, KFCWriter},

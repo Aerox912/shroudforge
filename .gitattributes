@@ -1,3 +1,4 @@
 # This reviewed contract is hashed as bytes. Preserve its original line endings.
 docs/runtime/GREENEYE-ENTRY-CONTINUATION.md -text
+docs/runtime/GREENEYE-ENTRY-CONTINUATION-V2.md -text
 modules/mod-runtime/reflection/fixtures/current5d-refusal.json -text whitespace=cr-at-eol

@@ -2,13 +2,9 @@
 //! Tickets bind retained original work. They are not a native permission API.
 use super::*;
 use mod_loader::dll_manager::{DllLoadEntry,DllLoadMode};
-pub(super) const HOST_SHA:&str="7b97b41bd89d46528db9de4fb63b4f9fb32878192ade605c6da5e39da003687f";
-const INPUTS:[(&str,u64,&str);4]=[
-    ("greeneye/find/mod.json",265,"911775560b0a23fd8f8571c9f75b108562f358e6653752a246ebcfe917ac1293"),
-    ("greeneye/find/find.dll",519680,"0c25d97f36fb35b711e5e5240f53ea745c6077d2adf04420055dba049b03b299"),
-    ("greeneye/map-teleport/mod.json",279,"ca543192371fd1afc1537f12425ab1996303180b25c67d8e21184b1c5b6e92d3"),
-    ("greeneye/map-teleport/map-teleport.dll",444928,"9138d31acab0623a63824390ab0418fb18183709df9758f7f4c89670cc836c78"),
-];
+use crate::current_assets::greeneye_profiles::{self, Profile};
+#[cfg(test)] const HOST_SHA:&str=greeneye_profiles::LEGACY.host_sha256;
+const INPUTS:[(&str,u64,&str);4]=greeneye_profiles::LEGACY.scan_inputs;
 #[repr(C)]
 #[derive(Clone,Copy,Debug,Default,PartialEq,Eq)]
 pub struct EntryTicketV1 {pub bytes:u32,pub version:u32,pub kind:u32,pub reserved:u32,pub binding:[u8;32]}
@@ -25,14 +21,14 @@ impl Work {
     pub fn retains(&self,name:&str)->bool {INPUTS.iter().any(|(p,_,_)|*p==name)}
     pub fn check(&self,ticket:&EntryTicketV1)->Result<()> {ensure!(*ticket==self.ticket,"original Greeneye continuation ticket differs");Ok(())}
 }
-fn validate_pins(c:&Contract)->Result<()> {
+fn validate_pins(c:&Contract)->Result<&'static Profile> {
     ensure!(c.greeneye_paths.len()==1,"exactly one qualified Greeneye host required");
     let host=&c.greeneye_paths[0];
     ensure!(host.starts_with("mods/")&&host.ends_with("/dbgcore.dll"),"Greeneye host must be an explicitly selected private Library");
     let pin=c.files.get(host).context("Greeneye host is unbound")?;
-    ensure!(pin.bytes==288256&&pin.sha256==HOST_SHA,"Greeneye entrypoint profile is unsupported");
-    for(path,bytes,hash)in INPUTS {let pin=c.files.get(path).context("Greeneye scan input is unbound")?;ensure!(pin.bytes==bytes&&pin.sha256==hash,"Greeneye scan input profile differs: {path}");}
-    Ok(())
+    let profile=greeneye_profiles::for_host(pin.bytes,&pin.sha256).context("Greeneye entrypoint profile is unsupported")?;
+    for(path,bytes,hash)in profile.scan_inputs {let pin=c.files.get(path).context("Greeneye scan input is unbound")?;ensure!(pin.bytes==bytes&&pin.sha256==hash,"Greeneye scan input profile differs: {path}");}
+    Ok(profile)
 }
 fn pin_directory(path:&Path)->Result<fs::File> {
     ensure!(plain(path)?.is_dir(),"Greeneye namespace is not a plain directory");
@@ -60,7 +56,7 @@ fn not_loaded(path:&Path)->Result<()> {
 fn not_loaded(_: &Path)->Result<()> {Ok(())}
 pub(super) fn capture(root:&Path,c:&Contract,plan:&crate::native_dlls::IntendedNativePlan)->Result<Option<Work>> {
     if c.greeneye_paths.is_empty(){return Ok(None);}
-    validate_pins(c)?;
+    let profile=validate_pins(c)?;
     let path=fs::canonicalize(joined(root,&c.greeneye_paths[0])?)?;
     let entries:Vec<_>=plan.ordinary.iter().filter(|e|e.path==path).collect();
     ensure!(entries.len()==1&&entries[0].mode==DllLoadMode::Library,"Greeneye host must be original ordinary Library work");
@@ -70,7 +66,7 @@ pub(super) fn capture(root:&Path,c:&Contract,plan:&crate::native_dlls::IntendedN
     let mut parent=path.parent();
     while let Some(p)=parent {if p==root{break;}ensure!(p.starts_with(root),"Greeneye host escapes root");directories.push(pin_directory(p)?);parent=p.parent();}
     let binding: [u8;32]=Sha256::digest(serde_json::to_vec(&serde_json::json!({"root":root,"plan":c.dll_plan,"files":c.files,"request":c.prepared_request_sha256,"receipt":c.prepared_receipt_sha256}))?).into();
-    Ok(Some(Work{entry:entries[0].clone(),ticket:EntryTicketV1{bytes:48,version:1,kind:1,reserved:0,binding},queued:false,handle:None,confirmed:false,_directories:directories}))
+    Ok(Some(Work{entry:entries[0].clone(),ticket:EntryTicketV1{bytes:48,version:1,kind:profile.ticket_kind,reserved:0,binding},queued:false,handle:None,confirmed:false,_directories:directories}))
 }
 pub(super) fn load(root:&Path,entry:&DllLoadEntry)->(Option<isize>,Result<()>) {
     let validate=(||{not_loaded(&entry.path)?;namespace(root)?;Ok(())})();
@@ -103,6 +99,24 @@ pub(super) fn fixture(entry:DllLoadEntry)->Work {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test] fn greeneye_latest_and_legacy_sets_cannot_mix() {
+        for profile in [&greeneye_profiles::LEGACY,&greeneye_profiles::LATEST] {
+            let mut c=super::super::tests::contract();
+            c.greeneye_paths=vec!["mods/qualified-host/dbgcore.dll".into()];
+            c.files.insert(c.greeneye_paths[0].clone(),NativeFile{bytes:profile.host_bytes,sha256:profile.host_sha256.into()});
+            for(p,b,h)in profile.scan_inputs{c.files.insert(p.into(),NativeFile{bytes:b,sha256:h.into()});}
+            assert_eq!(validate_pins(&c).unwrap().ticket_kind,profile.ticket_kind);
+            for(p,_,_)in profile.scan_inputs {
+                let mut changed=c.clone();changed.files.get_mut(p).unwrap().sha256="0".repeat(64);
+                assert!(validate_pins(&changed).is_err());
+                let mut changed=c.clone();changed.files.get_mut(p).unwrap().bytes+=1;
+                assert!(validate_pins(&changed).is_err());
+            }
+            let other=if profile.ticket_kind==1{&greeneye_profiles::LATEST}else{&greeneye_profiles::LEGACY};
+            c.files.insert(c.greeneye_paths[0].clone(),NativeFile{bytes:other.host_bytes,sha256:other.host_sha256.into()});
+            assert!(validate_pins(&c).is_err());
+        }
+    }
     #[test] fn greeneye_entry_namespace_refuses_alternate_scan_and_root_host() {
         let root=PathBuf::from("E:/Build/sf177-release-rebase-20261103/greeneye-entry-r1/fixtures").join(format!("namespace-{}",std::process::id()));
         for dir in ["find","map-teleport"]{fs::create_dir_all(root.join("greeneye").join(dir)).unwrap();}

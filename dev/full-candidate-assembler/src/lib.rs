@@ -35,35 +35,12 @@ const PRESERVED_PATCH_CONFIG_FIELDS: [&str; 3] = [
     "exact leaf inventory preserved; no action",
 ];
 const PRESERVED_PATCH_CONFIG_DISPOSITION: &str = "Preserve observed target config unchanged; requiredPoststate is a desired installation condition, not an observed after-state. No payload write or runtime-contract binding. Controller must freshly validate exact leaf before/after and reject every action touching it.";
-const GREENEYE_PROFILE_ID: &str = "greeneye-entry-continuation-v1";
-const GREENEYE_PROFILE_VERSION: u32 = 1;
-const GREENEYE_PROFILE_SHA256: &str =
-    "dae3fcd2185451c97d1e9f4d41676f6748eaecc8cb194eb9a438c6a7f5d038d2";
-const GREENEYE_HOST_BYTES: u64 = 288_256;
-const GREENEYE_HOST_SHA256: &str =
-    "7b97b41bd89d46528db9de4fb63b4f9fb32878192ade605c6da5e39da003687f";
-const GREENEYE_SCAN_INPUTS: [(&str, u64, &str); 4] = [
-    (
-        "greeneye/find/mod.json",
-        265,
-        "911775560b0a23fd8f8571c9f75b108562f358e6653752a246ebcfe917ac1293",
-    ),
-    (
-        "greeneye/find/find.dll",
-        519_680,
-        "0c25d97f36fb35b711e5e5240f53ea745c6077d2adf04420055dba049b03b299",
-    ),
-    (
-        "greeneye/map-teleport/mod.json",
-        279,
-        "ca543192371fd1afc1537f12425ab1996303180b25c67d8e21184b1c5b6e92d3",
-    ),
-    (
-        "greeneye/map-teleport/map-teleport.dll",
-        444_928,
-        "9138d31acab0623a63824390ab0418fb18183709df9758f7f4c89670cc836c78",
-    ),
-];
+use shroudforge_api::current_assets::greeneye_profiles;
+#[cfg(test)] const GREENEYE_PROFILE_ID: &str = greeneye_profiles::LEGACY.id;
+#[cfg(test)] const GREENEYE_PROFILE_VERSION: u32 = greeneye_profiles::LEGACY.version;
+#[cfg(test)] const GREENEYE_PROFILE_SHA256: &str = greeneye_profiles::LEGACY.definition_sha256;
+#[cfg(test)] const GREENEYE_HOST_BYTES: u64 = greeneye_profiles::LEGACY.host_bytes;
+#[cfg(test)] const GREENEYE_HOST_SHA256: &str = greeneye_profiles::LEGACY.host_sha256;
 const XHL_CORE_PATH: &str = "mods/xhl-core/xhl-core.dll";
 const XHL_CHAIN_PATH: &str = "mods/xhl-core/dinput8-chain.ini";
 const XHL_SCAN_PREFIX: &str = "mods/xhl-core/mods/";
@@ -1547,15 +1524,17 @@ fn validate_greeneye_dll_plan(
 }
 
 fn validate_greeneye_route(manifest: &InputManifest, route: &GreeneyeRouteEvidence) -> Result<()> {
+    let profile = greeneye_profiles::for_route(&route.profile_id, route.profile_version, &route.profile_definition.sha256)
+        .context("unsupported exact Greeneye route profile")?;
     ensure!(
-        route.profile_id == GREENEYE_PROFILE_ID
-            && route.profile_version == GREENEYE_PROFILE_VERSION
-            && route.profile_definition.sha256 == GREENEYE_PROFILE_SHA256,
+        route.profile_id == profile.id
+            && route.profile_version == profile.version
+            && route.profile_definition.sha256 == profile.definition_sha256,
         "Greeneye route profile identity is not the accepted versioned continuation"
     );
     check_raw_evidence(
         &route.profile_definition.path,
-        GREENEYE_PROFILE_SHA256,
+        profile.definition_sha256,
         1024 * 1024,
     )?;
     ensure!(
@@ -1622,8 +1601,8 @@ fn validate_greeneye_route(manifest: &InputManifest, route: &GreeneyeRouteEviden
         "Greeneye host path differs from the exact selected ordinary Library route"
     );
     ensure!(
-        route.host.stamp.bytes == GREENEYE_HOST_BYTES
-            && route.host.stamp.sha256 == GREENEYE_HOST_SHA256,
+        route.host.stamp.bytes == profile.host_bytes
+            && route.host.stamp.sha256 == profile.host_sha256,
         "Greeneye host image differs from the accepted versioned profile"
     );
     let package = manifest
@@ -1667,11 +1646,11 @@ fn validate_greeneye_route(manifest: &InputManifest, route: &GreeneyeRouteEviden
     )?;
 
     ensure!(
-        route.scan_inputs.len() == GREENEYE_SCAN_INPUTS.len(),
+        route.scan_inputs.len() == profile.scan_inputs.len(),
         "Greeneye profile requires exactly four root scan inputs"
     );
     let mut expected_scan_paths = BTreeSet::new();
-    for (index, (target, bytes, sha256)) in GREENEYE_SCAN_INPUTS.iter().enumerate() {
+    for (index, (target, bytes, sha256)) in profile.scan_inputs.iter().enumerate() {
         let binding = &route.scan_inputs[index];
         ensure!(
             binding.target == *target
@@ -1749,16 +1728,18 @@ fn validate_greeneye_template(template: &Template, contract: &Contract) -> Resul
         .greeneye_route
         .as_ref()
         .context("Greeneye template lacks its typed route evidence")?;
+    let profile = greeneye_profiles::for_route(&route.profile_id, route.profile_version, &route.profile_definition.sha256)
+        .context("unsupported exact Greeneye template profile")?;
     ensure!(
-        route.profile_id == GREENEYE_PROFILE_ID
-            && route.profile_version == GREENEYE_PROFILE_VERSION
-            && route.profile_definition.sha256 == GREENEYE_PROFILE_SHA256
+        route.profile_id == profile.id
+            && route.profile_version == profile.version
+            && route.profile_definition.sha256 == profile.definition_sha256
             && route.runtime_source_closure == template.runtime_source_closure,
         "Greeneye template profile or runtime source identity differs"
     );
     check_raw_evidence(
         &route.profile_definition.path,
-        GREENEYE_PROFILE_SHA256,
+        profile.definition_sha256,
         1024 * 1024,
     )?;
     let package_directory = selected[0]
@@ -1768,8 +1749,8 @@ fn validate_greeneye_template(template: &Template, contract: &Contract) -> Resul
     let host_target = format!("mods/{package_directory}/dbgcore.dll");
     ensure!(
         route.host.target.eq_ignore_ascii_case(&host_target)
-            && route.host.stamp.bytes == GREENEYE_HOST_BYTES
-            && route.host.stamp.sha256 == GREENEYE_HOST_SHA256
+            && route.host.stamp.bytes == profile.host_bytes
+            && route.host.stamp.sha256 == profile.host_sha256
             && template.greeneye_paths.len() == 1
             && template.greeneye_paths[0].eq_ignore_ascii_case(&host_target)
             && contract.greeneye_paths.len() == 1
@@ -1800,11 +1781,11 @@ fn validate_greeneye_template(template: &Template, contract: &Contract) -> Resul
     )?;
 
     ensure!(
-        route.scan_inputs.len() == GREENEYE_SCAN_INPUTS.len(),
+        route.scan_inputs.len() == profile.scan_inputs.len(),
         "Greeneye template lacks the exact four scan inputs"
     );
     let mut expected_scan_paths = BTreeSet::new();
-    for (index, (target, bytes, sha256)) in GREENEYE_SCAN_INPUTS.iter().enumerate() {
+    for (index, (target, bytes, sha256)) in profile.scan_inputs.iter().enumerate() {
         let binding = &route.scan_inputs[index];
         ensure!(
             binding.target == *target

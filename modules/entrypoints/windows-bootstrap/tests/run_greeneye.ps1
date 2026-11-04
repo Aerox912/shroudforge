@@ -9,9 +9,9 @@ Push-Location $Output
 try {
     & cl /nologo /std:c++20 /EHsc /W4 /WX /MT (Join-Path $PSScriptRoot 'greeneye_entry_tests.cpp') /Fe:greeneye_entry_tests.exe /Fo:greeneye_entry_tests.obj
     if($LASTEXITCODE){throw 'Greeneye inert gate fixture build failed'}
-    foreach($case in 0..4) {
+    foreach($case in 0..8) {
         & (Join-Path $Output 'greeneye_entry_tests.exe') $case
-        $expected=if($case -ge 2){1114}else{0}
+        $expected=if($case -in @(0,1,5)){0}else{1114}
         if($LASTEXITCODE -ne $expected){throw "Scenario $case returned $LASTEXITCODE expected $expected"}
         Write-Host "Scenario $case expected exit $expected"
     }
