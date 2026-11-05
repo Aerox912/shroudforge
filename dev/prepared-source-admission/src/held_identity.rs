@@ -46,12 +46,19 @@ pub fn pin_chain(path: &Path) -> Result<Vec<PinnedDirectory>> {
 
 impl PinnedDirectory {
     pub fn open(path: &Path) -> Result<Self> {
+        Self::open_with_access(path, false)
+    }
+    #[cfg(feature = "ikea-server-prepared")]
+    pub fn open_sealed(path: &Path) -> Result<Self> {
+        Self::open_with_access(path, true)
+    }
+    fn open_with_access(path: &Path, sealed: bool) -> Result<Self> {
         let mut options = OpenOptions::new();
         #[cfg(windows)]
         {
             use std::os::windows::fs::OpenOptionsExt;
             options
-                .access_mode(0x80)
+                .access_mode(if sealed { 0x80000080 } else { 0x80 })
                 .share_mode(3)
                 .custom_flags(0x02200000);
         }
@@ -74,6 +81,17 @@ impl PinnedDirectory {
         );
         Ok(())
     }
+}
+
+#[cfg(feature = "ikea-server-prepared")]
+pub fn pin_server_chain(path: &Path) -> Result<Vec<PinnedDirectory>> {
+    ensure!(path.is_absolute() && !path.components().any(|c|matches!(c, Component::ParentDir|Component::CurDir)),
+        "plain server source path required");
+    let text = path.to_str().context("server source UTF8")?.replace('\\', "/");
+    let remote = "D:/GameServers/staging/ikea-server-assets-20261105-r1/environment";
+    ensure!(text.eq_ignore_ascii_case(remote) || text.starts_with("E:/"),
+        "server source is outside private staging");
+    path.ancestors().map(PinnedDirectory::open_sealed).collect()
 }
 
 #[cfg(windows)]

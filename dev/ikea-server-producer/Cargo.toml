@@ -1,0 +1,23 @@
+[package]
+name = "ikea-server-producer"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+publish = false
+
+[workspace]
+
+[dependencies]
+anyhow = "1.0"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+sha2 = "0.10"
+shroudforge-api = { path = "../../modules/mod-runtime", features = ["ikea-server-prepared"] }
+shroudforge-package = { path = "../../modules/modloader" }
+shroudforge-game-assets = { path = "../../modules/game-files" }
+prepared-source-admission = { path = "../prepared-source-admission", features = ["ikea-server-prepared"] }
+
+[profile.release]
+debug = 0
+incremental = false
+strip = true

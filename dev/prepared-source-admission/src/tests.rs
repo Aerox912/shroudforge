@@ -2,6 +2,36 @@ use super::*;
 use std::sync::atomic::{AtomicU64, Ordering};
 static NEXT: AtomicU64 = AtomicU64::new(0);
 
+#[cfg(feature = "ikea-server-prepared")]
+#[test]
+fn server_route_holds_directory_names_and_refuses_unstaged_replacements() {
+    let mut fixture = Fixture::new();
+    assert!(SourceLease::admit_ikea_server(fixture.plan.clone(), fixture.limits()).is_err());
+    fixture.plan.replacements.clear();
+    reseal(&mut fixture.plan);
+    let mut lease = SourceLease::admit_ikea_server(fixture.plan.clone(), fixture.limits()).unwrap();
+    let root = &fixture.plan.environment_root;
+    for directory in [root.clone(), root.join("mods"), root.join("mods/example/src")] {
+        assert!(fs::rename(&directory, directory.with_extension("moved")).is_err(), "held server directory renamed");
+    }
+    assert!(OpenOptions::new().write(true).open(root.join("mods/example/src/profile.lua")).is_err());
+    assert_eq!(lease.read_control("control.json", 1024).unwrap().unwrap(), b"{\"mode\":1}");
+    assert!(lease.finalize().unwrap().verified);
+    drop(lease);
+    // Prove failure came from held handles, rather than a generally unwritable fixture.
+    let moved = fixture.outer.join("renamed-environment");
+    fs::rename(root, &moved).unwrap();
+    fs::rename(&moved, root).unwrap();
+}
+
+#[cfg(feature = "ikea-server-prepared")]
+#[test]
+fn server_route_refuses_other_remote_roots_before_opening_sources() {
+    for path in ["D:/GameServers/IKEA", "D:/GameServers/staging/another-server/environment", "D:/GameServers/staging/ikea-server-assets-20261105-r1/environment/../escape"] {
+        assert!(held_identity::pin_server_chain(Path::new(path)).is_err());
+    }
+}
+
 #[test]
 fn control_snapshot_reads_only_admitted_bytes_or_proved_absence_and_route_is_explicit() {
     let fixture = Fixture::new();

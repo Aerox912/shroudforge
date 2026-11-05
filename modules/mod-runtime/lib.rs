@@ -177,3 +177,6 @@ pub use startup::run_startup_mods::run_prepared_with_external_registry;
 
 pub use startup::run_startup_mods::run_prepared_with_verified_registry;
 pub use startup::run_startup_mods::run_prepared_effective_sources;
+
+#[cfg(feature = "ikea-server-prepared")]
+pub use reflection::external_registry::{ServerRegistryInput, admit_ikea_server_registry};

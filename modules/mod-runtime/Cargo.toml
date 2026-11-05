@@ -9,6 +9,10 @@ rust-version.workspace = true
 [lib]
 path = "lib.rs"
 
+[features]
+# Private offline server producer only. Ordinary clients retain their existing path.
+ikea-server-prepared = ["prepared-source-admission/ikea-server-prepared"]
+
 [dependencies]
 shroudforge-hotkeys.workspace = true
 shroudforge-runtime-bridge = { path = "../game-runtime/bridge" }

@@ -366,6 +366,7 @@ pub struct SourceLease {
     directories: Vec<PinnedDirectory>,
     budget: PreparedReadBudget,
     finalized: bool,
+    sealed_directories: bool,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
@@ -427,6 +428,15 @@ impl SourceLease {
     /// E-only environment sources. Caller must separately bind exact plan,
     /// source/artifact/registry/current assets and operation authority.
     pub fn admit(plan: SourcePlan, limits: ReadLimits) -> Result<Self> {
+        Self::admit_internal(plan, limits, false)
+    }
+    /// Separate private server route. The existing E-only entrypoint is unchanged.
+    #[cfg(feature = "ikea-server-prepared")]
+    pub fn admit_ikea_server(plan: SourcePlan, limits: ReadLimits) -> Result<Self> {
+        ensure!(plan.replacements.is_empty(), "server replacements must be staged and pinned first");
+        Self::admit_internal(plan, limits, true)
+    }
+    fn admit_internal(plan: SourcePlan, limits: ReadLimits, sealed_directories: bool) -> Result<Self> {
         plan.validate()?;
         let bytes = plan.required_final_bytes()?;
         let calls = plan.required_final_calls()?;
@@ -451,7 +461,12 @@ impl SourceLease {
             limits.final_reserve_bytes,
             limits.final_reserve_calls,
         )?;
-        let directories = held_identity::pin_chain(&plan.environment_root)?;
+        let directories = if sealed_directories {
+            #[cfg(feature = "ikea-server-prepared")]
+            { held_identity::pin_server_chain(&plan.environment_root)? }
+            #[cfg(not(feature = "ikea-server-prepared"))]
+            { anyhow::bail!("private server source feature absent"); }
+        } else { held_identity::pin_chain(&plan.environment_root)? };
         let mut lease = Self {
             plan,
             raw: BTreeMap::new(),
@@ -459,6 +474,7 @@ impl SourceLease {
             directories,
             budget,
             finalized: false,
+            sealed_directories,
         };
         if let Err(error) = lease.admit_members() {
             let finalization = lease.finalize()?;
@@ -482,8 +498,14 @@ impl SourceLease {
             .iter()
             .filter(|name| !name.is_empty() && !plan.raw_files.contains_key(*name))
         {
-            self.directories
-                .push(PinnedDirectory::open(&plan.environment_root.join(name))?);
+            let path = plan.environment_root.join(name);
+            let directory = if self.sealed_directories {
+                #[cfg(feature = "ikea-server-prepared")]
+                { PinnedDirectory::open_sealed(&path)? }
+                #[cfg(not(feature = "ikea-server-prepared"))]
+                { anyhow::bail!("private server source feature absent"); }
+            } else { PinnedDirectory::open(&path)? };
+            self.directories.push(directory);
         }
         let mut identities = BTreeSet::new();
         for (name, stamp) in &plan.raw_files {

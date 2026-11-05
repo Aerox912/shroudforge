@@ -1,4 +1,9 @@
 //! Explicit prepared-only external schema admission. Default cache loading never calls this module.
+#[cfg(feature = "ikea-server-prepared")]
+#[path = "server_registry.rs"]
+mod server;
+#[cfg(feature = "ikea-server-prepared")]
+pub use server::{ServerRegistryInput, admit_ikea_server_registry};
 use anyhow::{Context, Result, ensure};
 use kfc::reflection::TypeRegistry;
 use serde::{Deserialize, Serialize};
