@@ -79,7 +79,7 @@ fn directories(path: &Path) -> Result<Vec<File>> {
     ensure!(held.len() <= 32, "directory depth");
     Ok(held)
 }
-fn identity(f: &File) -> Result<[u32; 13]> {
+fn raw_identity(f: &File) -> Result<[u32; 13]> {
     use std::os::windows::io::AsRawHandle;
     #[link(name = "kernel32")]
     unsafe extern "system" {
@@ -95,6 +95,16 @@ fn identity(f: &File) -> Result<[u32; 13]> {
         "ordinary single-link file required"
     );
     Ok(v)
+}
+fn stable_identity(mut value: [u32; 13]) -> [u32; 13] {
+    // LastAccessTime can change from reading the held file. Keep attributes,
+    // creation/write times, volume, size, links and file index unchanged.
+    value[3] = 0;
+    value[4] = 0;
+    value
+}
+fn identity(f: &File) -> Result<[u32; 13]> {
+    Ok(stable_identity(raw_identity(f)?))
 }
 struct Held {
     f: File,
@@ -137,8 +147,12 @@ impl Held {
             n -= len as u64;
         }
         ensure!(
-            format!("{:x}", s.finalize()) == self.sha && identity(&self.f)? == self.id,
+            format!("{:x}", s.finalize()) == self.sha,
             "input hash drift"
+        );
+        ensure!(
+            identity(&self.f)? == self.id,
+            "input identity drift after hash"
         );
         use std::os::windows::fs::OpenOptionsExt;
         let p = OpenOptions::new()
@@ -289,7 +303,7 @@ fn main() -> Result<()> {
     let bytes: u64 = args[0].parse()?;
     ensure!(bytes <= 65536, "request extent");
     let root = Path::new(PRIVATE);
-    let out = root.join("readback-r1");
+    let out = root.join("readback-r2");
     let stage = root.join("generated/.enshrouded_server.shroudforge-stage");
     let source = Path::new(SOURCE);
     let mut guards = directories(&out)?;
@@ -522,6 +536,89 @@ fn main() -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn held_identity_ignores_access_only_and_keeps_content_guards() {
+        use std::os::windows::{fs::OpenOptionsExt, io::AsRawHandle};
+        #[link(name = "kernel32")]
+        unsafe extern "system" {
+            fn SetFileTime(
+                handle: *mut std::ffi::c_void,
+                creation: *const u32,
+                access: *const u32,
+                write: *const u32,
+            ) -> i32;
+        }
+        let path = temp().join("access-fixture");
+        fs::write(&path, b"unchanged contents").unwrap();
+        let mut held = Held::open(&path, 18, &hash(b"unchanged contents")).unwrap();
+        let before = raw_identity(&held.f).unwrap();
+        let attributes = OpenOptions::new()
+            .access_mode(0x100)
+            .share_mode(1)
+            .open(&path)
+            .unwrap();
+        let access = [before[3].wrapping_sub(10_000_000), before[4]];
+        assert_ne!(
+            unsafe {
+                SetFileTime(
+                    attributes.as_raw_handle(),
+                    std::ptr::null(),
+                    access.as_ptr(),
+                    std::ptr::null(),
+                )
+            },
+            0
+        );
+        let after = raw_identity(&held.f).unwrap();
+        assert_ne!(
+            before, after,
+            "old whole-record comparison must reject changed access time"
+        );
+        assert_eq!(stable_identity(before), stable_identity(after));
+        held.verify().unwrap();
+        for index in 0..13 {
+            let mut changed = before;
+            changed[index] ^= 1;
+            assert_eq!(
+                stable_identity(before) == stable_identity(changed),
+                matches!(index, 3 | 4)
+            );
+        }
+        let write = [before[5].wrapping_sub(10_000_000), before[6]];
+        assert_ne!(
+            unsafe {
+                SetFileTime(
+                    attributes.as_raw_handle(),
+                    std::ptr::null(),
+                    std::ptr::null(),
+                    write.as_ptr(),
+                )
+            },
+            0
+        );
+        assert!(
+            held.verify()
+                .unwrap_err()
+                .to_string()
+                .contains("input identity drift")
+        );
+        drop(attributes);
+        drop(held);
+        assert!(
+            Held::open(&path, 18, &hash(b"different contents"))
+                .err()
+                .expect("different hash refused")
+                .to_string()
+                .contains("input hash drift")
+        );
+        assert!(
+            Held::open(&path, 17, &hash(b"unchanged contents"))
+                .err()
+                .expect("different length refused")
+                .to_string()
+                .contains("input length")
+        );
+    }
     #[test]
     fn prepared_stage_accepts_only_fixed_drive_spellings() {
         let expected = Path::new(PRIVATE).join("generated/.enshrouded_server.shroudforge-stage");
