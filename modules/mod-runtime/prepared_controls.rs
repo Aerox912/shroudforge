@@ -28,13 +28,19 @@ impl PreparedControls {
         if generation.is_empty()
             || generation.len() > 128
             || !generation.is_ascii()
-            || generation.contains('|')
             || generation.chars().any(char::is_control)
         {
             return Err("invalid prepared generation identity".into());
         }
         self.expected_generation = Some(generation.to_owned());
         Ok(())
+    }
+    /// Bind the complete KFC generation before the caller opens original assets.
+    /// The branch and timestamp separators are part of the identity, not delimiters
+    /// for a shorter build-only identity. Actual asset equality is checked later.
+    pub fn with_generation(mut self, generation: &str) -> Result<Self, String> {
+        self.bind_generation(generation)?;
+        Ok(self)
     }
     pub(crate) fn expected_generation(&self) -> Option<&str> {
         self.expected_generation.as_deref()
@@ -109,6 +115,33 @@ impl PreparedControls {
 mod tests {
     use super::*;
     use std::{cell::Cell, rc::Rc};
+
+    #[test]
+    fn complete_kfc_generation_survives_prepared_control_admission() {
+        let generation = "1287369|^/game38/branches/release_1.0|2026-11-04T11:17:54.051725Z";
+        let controls = PreparedControls::from_admitted_bytes(None)
+            .unwrap()
+            .with_generation(generation)
+            .unwrap();
+        assert_eq!(controls.expected_generation(), Some(generation));
+        assert_ne!(controls.expected_generation(), Some("1287369"));
+        assert_ne!(controls.expected_generation(), Some("1287369|other|2026-11-04T11:17:54.051725Z"));
+        assert_ne!(controls.expected_generation(), Some("1287369|^/game38/branches/release_1.0|2026-11-04T11:17:54.051726Z"));
+    }
+
+    #[test]
+    fn generation_limits_stay_closed_and_failed_binding_keeps_previous_identity() {
+        let mut controls = PreparedControls::from_admitted_bytes(None).unwrap();
+        controls.bind_generation("legacy-build").unwrap();
+        for bad in ["", "a\nb", "a\rb", "a\0b", "a\tb", "a\u{7f}b", "génération", &"a".repeat(129)] {
+            assert_eq!(controls.bind_generation(bad).unwrap_err(), "invalid prepared generation identity");
+            assert_eq!(controls.expected_generation(), Some("legacy-build"));
+            assert!(PreparedControls::from_admitted_bytes(None).unwrap().with_generation(bad).is_err());
+        }
+        let maximum = "a".repeat(128);
+        controls.bind_generation(&maximum).unwrap();
+        assert_eq!(controls.expected_generation(), Some(maximum.as_str()));
+    }
 
     #[test]
     fn present_and_known_absent_snapshots_never_consult_later_disk_settings() {

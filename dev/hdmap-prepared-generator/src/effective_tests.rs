@@ -131,6 +131,11 @@ fn effective_full_kfc_generation_is_preserved_without_truncation() {
     original.validate().unwrap();
     let roundtrip: EffectiveRequest = serde_json::from_slice(&serde_json::to_vec(&original).unwrap()).unwrap();
     assert_eq!(roundtrip.expected_generation, CURRENT_KFC_GENERATION);
+    // Exercise the actual prepared-control boundary, not only request JSON.
+    shroudforge_api::PreparedControls::from_admitted_bytes(None)
+        .unwrap()
+        .with_generation(&roundtrip.expected_generation)
+        .unwrap();
     assert_eq!(original.canonical_sha256().unwrap(), roundtrip.canonical_sha256().unwrap());
     for invalid in [String::new(), "x".repeat(129), "generation\nmetadata".into(), "g\u{00e9}n".into()] {
         let mut changed = request(); changed.expected_generation = invalid;

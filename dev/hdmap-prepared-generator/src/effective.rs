@@ -731,6 +731,7 @@ pub fn prepare_effective(
         let loader =
             sources.read_control("shroudforge/config/modloader-config.json", 1024 * 1024)?;
         let controls = shroudforge_api::PreparedControls::from_admitted_bytes(loader.as_deref())
+            .and_then(|controls| controls.with_generation(&request.expected_generation))
             .map_err(anyhow::Error::msg)?;
         ensure!(
             controls.manifest_policy() == sources.manifest_policy(),
