@@ -20,8 +20,9 @@ captured registry. The strict negative schema decision remains visible.
 Held identity checks exclude only Windows last-access time, which reads can
 change. Attributes, creation/write times, volume, size, link count and file index
 remain bound. Hash and post-read identity failures have separate diagnostics.
-This successor writes only to the fresh `readback-r2` directory; the spent first
-attempt and its empty output directory remain intact.
+This successor reads `controls/READBACK-REQUEST-R2.json` and writes only to the
+fresh `readback-r2` directory; the spent first attempt, request and empty output
+directory remain intact.
 
 The report preserves original container/content mappings and resource identities,
 and checks that new content points to generated containers. It does not decode

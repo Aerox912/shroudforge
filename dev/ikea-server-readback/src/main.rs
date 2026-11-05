@@ -313,7 +313,7 @@ fn main() -> Result<()> {
     guards.extend(directories(&root.join("evidence"))?);
     guards.extend(directories(&root.join("operation-r1"))?);
     let mut req = Held::open(
-        &root.join("controls/READBACK-REQUEST.json"),
+        &root.join("controls/READBACK-REQUEST-R2.json"),
         bytes,
         &args[1],
     )?;
