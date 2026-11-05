@@ -805,9 +805,84 @@ fn inventory(root: &Path) -> Result<BTreeMap<String, Stamp>> {
     visit(root, root, &mut result, &mut total)?;
     Ok(result)
 }
-fn raw_request_receipt(
-    manifest: &InputManifest,
-) -> Result<(Vec<u8>, Vec<u8>, AssetRequest, AssetReceipt)> {
+struct PreparedEvidencePair {
+    request: AssetRequest,
+    receipt: AssetReceipt,
+    request_canonical_sha256: String,
+    receipt_canonical_sha256: String,
+    effective: bool,
+}
+
+struct RawPreparedEvidence {
+    request_bytes: Vec<u8>,
+    receipt_bytes: Vec<u8>,
+    pair: PreparedEvidencePair,
+}
+
+/// Preserve genuine outer evidence while validating the nested stage separately.
+/// Parsing source-stage evidence grants no postimage, native or install approval.
+fn parse_prepared_evidence(
+    request_json: &str,
+    receipt_json: &str,
+    producer: &str,
+) -> Result<PreparedEvidencePair> {
+    let document: Value = serde_json::from_str(request_json).context("parse prepared request schema")?;
+    if document.get("schema").and_then(Value::as_u64) == Some(3) {
+        let pair = shroudforge_api::prepared_effective_protocol::parse_effective::<
+            AssetRequest,
+            AssetReceipt,
+        >(request_json, receipt_json)?;
+        let genuine: hdmap_prepared_generator::effective::EffectiveRequest =
+            serde_json::from_str(request_json).context("parse genuine effective producer request")?;
+        genuine.validate()?;
+        ensure!(
+            genuine.canonical_sha256()? == pair.request_canonical_sha256,
+            "effective producer and consumer canonical request differ"
+        );
+        let request = &pair.request.base;
+        let receipt = &pair.receipt.stage;
+        ensure!(
+            request.schema == 2
+                && receipt.schema == 3
+                && request.external_registry.is_some()
+                && request.external_registry == receipt.external_registry,
+            "effective nested request/receipt registry differs"
+        );
+        pair.validate_stage_binding(producer, &receipt.source_closure, &receipt.request_sha256)?;
+        Ok(PreparedEvidencePair {
+            request: pair.request.base,
+            receipt: pair.receipt.stage,
+            request_canonical_sha256: pair.request_canonical_sha256,
+            receipt_canonical_sha256: pair.receipt_canonical_sha256,
+            effective: true,
+        })
+    } else {
+        let request: AssetRequest =
+            serde_json::from_str(request_json).context("parse legacy prepared asset request")?;
+        let receipt: AssetReceipt =
+            serde_json::from_str(receipt_json).context("parse legacy prepared asset receipt")?;
+        ensure!(
+            request.schema == 1 && receipt.schema == 2
+                && request.external_registry.is_none() && receipt.external_registry.is_none(),
+            "legacy preparation requires request schema 1 / DAT-bound receipt schema 2"
+        );
+        let request_canonical_sha256 = digest(&serde_json::to_vec(&request)?);
+        ensure!(
+            valid_digest(producer) && receipt.source_closure == producer
+                && receipt.request_sha256 == request_canonical_sha256,
+            "legacy prepared producer/request differs"
+        );
+        Ok(PreparedEvidencePair {
+            request,
+            receipt_canonical_sha256: digest(&serde_json::to_vec(&receipt)?),
+            receipt,
+            request_canonical_sha256,
+            effective: false,
+        })
+    }
+}
+
+fn raw_request_receipt(manifest: &InputManifest) -> Result<RawPreparedEvidence> {
     let request_bytes = check_raw_evidence(
         &manifest.request.path,
         &manifest.request.sha256,
@@ -818,13 +893,16 @@ fn raw_request_receipt(
         &manifest.asset_receipt.sha256,
         32 * 1024 * 1024,
     )?;
-    let request: AssetRequest =
-        serde_json::from_slice(&request_bytes).context("parse prepared asset request")?;
-    let receipt: AssetReceipt =
-        serde_json::from_slice(&receipt_bytes).context("parse prepared asset receipt")?;
+    let pair = parse_prepared_evidence(
+        std::str::from_utf8(&request_bytes).context("prepared request is not UTF-8 JSON")?,
+        std::str::from_utf8(&receipt_bytes).context("prepared receipt is not UTF-8 JSON")?,
+        &manifest.prepared_producer_closure,
+    )?;
+    let request = &pair.request;
+    let receipt = &pair.receipt;
     ensure!(
-        request.schema == 1 && receipt.schema == 2,
-        "only prepared request schema 1 / DAT-bound receipt schema 2 is accepted"
+        !pair.effective || manifest.derived_environment_evidence.is_none(),
+        "effective evidence cannot use the legacy derived cache binding"
     );
     ensure!(
         manifest.prepared_producer_closure == receipt.source_closure
@@ -946,7 +1024,7 @@ fn raw_request_receipt(
             && request.inputs.contains_key("enshrouded.kfc_resources"),
         "prepared request lacks required base identity inputs"
     );
-    Ok((request_bytes, receipt_bytes, request, receipt))
+    Ok(RawPreparedEvidence { request_bytes, receipt_bytes, pair })
 }
 
 fn required_json_string<'a>(value: &'a Value, key: &str) -> Result<&'a str> {
@@ -4404,7 +4482,10 @@ pub fn prepare_template(manifest_bytes: &[u8], expected_manifest_sha256: &str) -
         .parent()
         .context("candidate output parent is missing")?;
     validate_e_path(parent, true, true)?;
-    let (request_bytes, receipt_bytes, request, receipt) = raw_request_receipt(&manifest)?;
+    let RawPreparedEvidence { request_bytes, receipt_bytes, pair } = raw_request_receipt(&manifest)?;
+    let PreparedEvidencePair {
+        request, receipt, request_canonical_sha256, receipt_canonical_sha256, ..
+    } = pair;
     let plan_bytes = check_raw_evidence(
         &manifest.xhl_plan.path,
         &manifest.xhl_plan.sha256,
@@ -4482,11 +4563,11 @@ pub fn prepare_template(manifest_bytes: &[u8], expected_manifest_sha256: &str) -
         request_json: String::from_utf8(request_bytes.clone())
             .context("prepared request is not UTF-8 JSON")?,
         request_raw_sha256: digest(&request_bytes),
-        request_canonical_sha256: receipt.request_sha256.clone(),
+        request_canonical_sha256,
         receipt_json: String::from_utf8(receipt_bytes.clone())
             .context("prepared receipt is not UTF-8 JSON")?,
         receipt_raw_sha256: digest(&receipt_bytes),
-        receipt_canonical_sha256: digest(&serde_json::to_vec(&receipt)?),
+        receipt_canonical_sha256,
         source_dat_membership_sha256: receipt.source_dat_membership_sha256.clone(),
         prepared_stage: receipt.output_stage.clone(),
         asset_postimages: postimages(&receipt),
@@ -4770,14 +4851,18 @@ pub fn finalize_policy(
             .as_ref()
             .context("template has no complete runtime contract")?,
     )?;
-    let request: AssetRequest =
-        serde_json::from_str(&template.request_json).context("template request JSON is invalid")?;
+    let prepared = parse_prepared_evidence(
+        &template.request_json,
+        &template.receipt_json,
+        &template.prepared_producer_closure,
+    )?;
+    let request = &prepared.request;
     ensure!(
         digest(template.request_json.as_bytes()) == template.request_raw_sha256,
         "template raw request digest differs"
     );
     ensure!(
-        digest(&serde_json::to_vec(&request)?) == template.request_canonical_sha256,
+        prepared.request_canonical_sha256 == template.request_canonical_sha256,
         "template canonical request digest differs"
     );
     validate_preserved_patch_config_template(&template, &request)?;
@@ -4856,18 +4941,17 @@ pub fn finalize_policy(
         "XHL Core or disabled chain is not runtime-bound"
     );
     // Re-parse immutable generation evidence; keep raw and typed digests distinct.
-    let asset_receipt: AssetReceipt = serde_json::from_str(&template.receipt_json)
-        .context("template asset receipt JSON is invalid")?;
+    let asset_receipt = &prepared.receipt;
     ensure!(
-        asset_receipt.request_sha256 == template.request_canonical_sha256,
-        "prepared asset receipt binds another canonical request"
+        asset_receipt.request_sha256 == digest(&serde_json::to_vec(request)?),
+        "prepared asset receipt binds another canonical base request"
     );
     ensure!(
         digest(template.receipt_json.as_bytes()) == template.receipt_raw_sha256,
         "template raw asset receipt digest differs"
     );
     ensure!(
-        digest(&serde_json::to_vec(&asset_receipt)?) == template.receipt_canonical_sha256,
+        prepared.receipt_canonical_sha256 == template.receipt_canonical_sha256,
         "template canonical asset receipt digest differs"
     );
     ensure!(

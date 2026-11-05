@@ -20,6 +20,7 @@ shroudforge-game-assets = { path = "../game-files" }
 shroudforge-compatibility = { path = "../game-runtime/compatibility" }
 kfc = { path = "../../kfc-parser/crates/kfc", features = ["resource", "content"] }
 mod-loader = { package = "shroudforge-package", path = "../modloader" }
+prepared-source-admission = { path = "../../dev/prepared-source-admission" }
 
 thiserror = "2.0"
 walkdir = "2.5"

@@ -15,13 +15,13 @@ struct PreparedRequest {
 #[serde(deny_unknown_fields)]
 struct PreparedReceipt {
     schema:u32,source_closure:String,request_sha256:String,target_root:PathBuf,
-    #[serde(default,skip_serializing_if="Option::is_none")]
-    external_registry:Option<crate::ExternalRegistryInput>,
     output_stage:PathBuf,staged:BTreeMap<String,FileStamp>,prepared_marker:FileStamp,
     #[serde(default,skip_serializing_if="Option::is_none")]
     source_dat_membership:Option<BTreeMap<String,FileStamp>>,
     #[serde(default,skip_serializing_if="Option::is_none")]
     source_dat_membership_sha256:Option<String>,
+    #[serde(default,skip_serializing_if="Option::is_none")]
+    external_registry:Option<crate::ExternalRegistryInput>,
 }
 #[derive(Clone,Serialize,Deserialize)]
 #[serde(rename_all="camelCase",deny_unknown_fields)]
@@ -94,6 +94,34 @@ pub(super) fn verify(root:&Path)->Result<()> {
 pub(super) fn verify_full(root:&Path)->Result<()> {
     verify_mode(root,true)
 }
+fn parse_prepared_pair(request_json:&str,receipt_json:&str,full:bool,producer:&str)->Result<(PreparedRequest,PreparedReceipt)> {
+    let shape:serde_json::Value=serde_json::from_str(request_json)?;
+    if shape.get("schema").and_then(serde_json::Value::as_u64)==Some(3) {
+        ensure!(full,"effective source envelope requires full prepared mode");
+        let pair=crate::prepared_effective_protocol::parse_effective::<PreparedRequest,PreparedReceipt>(request_json,receipt_json)?;
+        let request=&pair.request.base;let receipt=&pair.receipt.stage;
+        ensure!(request.schema==2&&receipt.schema==3&&request.external_registry.is_some()
+            &&request.external_registry==receipt.external_registry,"effective base/stage registry differs");
+        pair.validate_stage_binding(producer,&receipt.source_closure,&receipt.request_sha256)?;
+        ensure!(pair.request.sources.environment_root==request.environment_root
+            &&pair.request.sources.raw_files.len()==request.environment_files.len()
+            &&pair.request.sources.raw_files.iter().all(|(name,s)|request.environment_files.get(name)
+                .is_some_and(|raw|raw.bytes==s.bytes&&raw.sha256==s.sha256)),"effective complete raw environment differs");
+        let selected:BTreeSet<_>=request.selected_ids.iter().collect();
+        let planned:BTreeSet<_>=pair.request.expected_load_order.iter().collect();
+        ensure!(selected.len()==request.selected_ids.len()&&selected==planned,"effective selected/planned identity differs");
+        let external=request.external_registry.as_ref().context("effective registry missing")?;
+        for pin in [&external.manifest,&external.producer_use_approval] {
+            ensure!(pair.request.registry_evidence_files.get(&pin.path)
+                .is_some_and(|s|s.bytes==pin.bytes&&s.sha256==pin.sha256),"effective registry control pin differs");
+        }
+        return Ok((pair.request.base,pair.receipt.stage));
+    }
+    let request:PreparedRequest=serde_json::from_str(request_json)?;
+    let receipt:PreparedReceipt=serde_json::from_str(receipt_json)?;
+    ensure!(receipt.source_closure==producer&&receipt.request_sha256==digest(&serde_json::to_vec(&request)?),"prepared receipt producer/request differs");
+    Ok((request,receipt))
+}
 fn verify_mode(root:&Path,full:bool)->Result<()> {
     // Optional at compile time; absence leaves only this new mode closed.
     let producer=if full {option_env!("SF_FULL_PREPARED_SOURCE_CLOSURE")}else{option_env!("HD_PREPARED_SOURCE_CLOSURE")}.context("prepared producer not compiled into runtime")?;
@@ -111,9 +139,7 @@ fn verify_mode(root:&Path,full:bool)->Result<()> {
     ensure!(policy.source_closure==producer&&fs::canonicalize(&policy.root)?==root,"prepared startup producer/root differs");
     ensure!(full==policy.runtime.is_some(),"runtime contract is exclusive to schema6");
     ensure!(valid_digest(&policy.request_sha256)&&digest(policy.request_json.as_bytes())==policy.request_sha256&&valid_digest(&policy.receipt_sha256)&&digest(policy.receipt_json.as_bytes())==policy.receipt_sha256,"prepared evidence digest differs");
-    let request:PreparedRequest=serde_json::from_str(&policy.request_json)?;
-    let receipt:PreparedReceipt=serde_json::from_str(&policy.receipt_json)?;
-    ensure!(receipt.source_closure==producer&&receipt.request_sha256==digest(&serde_json::to_vec(&request)?),"prepared receipt producer/request differs");
+    let (request,receipt)=parse_prepared_pair(&policy.request_json,&policy.receipt_json,full,producer)?;
     let source_dat_membership=validate_receipt_schema(&request,&receipt,full)?;
     ensure!(fs::canonicalize(&request.target_root)?==root&&fs::canonicalize(&request.asset_input_root)?==root&&receipt.target_root==root,"prepared receipt retargeting rejected");
     let source=path_key(&root)?;let environment=path_key(&request.environment_root)?;let output=path_key(&request.output_root)?;
@@ -177,6 +203,78 @@ fn verify_mode(root:&Path,full:bool)->Result<()> {
     let mask=u32::from(policy.preserved_loaders.contains_key("winmm.dll"))|(u32::from(policy.preserved_loaders.contains_key("dbgcore.dll"))<<1);
     LOADERS.with(|slot|*slot.borrow_mut()=Some((root,mask)));
     Ok(())
+}
+
+#[cfg(test)]
+mod effective_protocol_tests {
+    use super::*;
+    use crate::prepared_effective_protocol::{EffectiveRequest,EffectiveReceipt};
+    use prepared_source_admission::{SourcePlan,ProfilePolicy,ReadLimits,Stamp,SourceFinalization,FileFinalization};
+    fn fixture()->(String,String,String) {
+        let producer="a".repeat(64);
+        let stamp=Stamp{bytes:1,sha256:"b".repeat(64)};
+        let raw:BTreeMap<String,Stamp>=["mods/fixture/mod.json","registry.json","use.json"].into_iter().map(|s|(s.into(),stamp.clone())).collect();
+        let mut sources=SourcePlan{schema:1,kind:"prepared_effective_source_plan_v1".into(),environment_root:PathBuf::from("E:/Scratch/effective-protocol/environment"),raw_files:raw,entries:["","mods","mods/fixture","mods/fixture/mod.json","registry.json","use.json"].map(String::from).into(),package_roots:vec!["mods/fixture".into()],replacements:vec![],profile_policy:ProfilePolicy::RejectAmbientProfiles,allow_unknown_manifest_fields:false,raw_inventory_sha256:String::new(),effective_inventory_sha256:String::new()};
+        sources.raw_inventory_sha256=sources.inventory_digest(false).unwrap();sources.effective_inventory_sha256=sources.inventory_digest(true).unwrap();
+        let pin=|path:&str|crate::EvidencePin{path:path.into(),bytes:1,sha256:stamp.sha256.clone()};
+        let external=crate::ExternalRegistryInput{manifest:pin("registry.json"),producer_use_approval:pin("use.json")};
+        let environment_files=sources.raw_files.iter().map(|(name,s)|(name.clone(),FileStamp{bytes:s.bytes,sha256:s.sha256.clone()})).collect();
+        let base=PreparedRequest{schema:2,target_root:PathBuf::from("D:/SyntheticTarget"),asset_input_root:PathBuf::from("D:/SyntheticTarget"),environment_root:sources.environment_root.clone(),output_root:PathBuf::from("E:/Scratch/effective-protocol/output"),selected_ids:vec!["fixture".into()],inputs:BTreeMap::new(),environment_files,external_registry:Some(external.clone())};
+        let request=EffectiveRequest{schema:3,kind:"sf178_prepared_effective_source_request_v1".into(),base,sources,registry_evidence_files:[("registry.json".into(),stamp.clone()),("use.json".into(),stamp.clone())].into(),source_read_limits:ReadLimits{max_bytes:100,max_calls:100,final_reserve_bytes:3,final_reserve_calls:3},expected_load_order:vec!["fixture".into()],expected_generation:"1287369".into()};
+        let stage=PreparedReceipt{schema:3,source_closure:producer.clone(),request_sha256:digest(&serde_json::to_vec(&request.base).unwrap()),target_root:request.base.target_root.clone(),output_stage:request.base.output_root.join(".enshrouded.shroudforge-stage"),staged:BTreeMap::new(),prepared_marker:FileStamp{bytes:1,sha256:stamp.sha256.clone()},source_dat_membership:Some(BTreeMap::new()),source_dat_membership_sha256:Some(digest(b"{}")),external_registry:Some(external)};
+        let receipt=EffectiveReceipt{schema:4,kind:"sf178_prepared_effective_source_receipt_v1".into(),status:"SOURCE_STAGE_ONLY_PENDING_INDEPENDENT_ACCEPTANCE".into(),request_sha256:digest(&serde_json::to_vec(&request).unwrap()),source_closure_sha256:"c".repeat(64),artifact_sha256:"d".repeat(64),operation_verdict_sha256:"e".repeat(64),base_candidate_sha256:"f".repeat(64),successor_sha256:"1".repeat(64),raw_inventory_sha256:request.sources.raw_inventory_sha256.clone(),effective_inventory_sha256:request.sources.effective_inventory_sha256.clone(),planned_ids:vec!["fixture".into()],generation:"1287369".into(),stage,source_finalization:SourceFinalization{verified:true,files:request.sources.raw_files.keys().map(|name|FileFinalization{name:name.clone(),identity_matched:Some(true),hash_matched:Some(true),error:None}).collect(),directories_matched:true,membership_matched:Some(true),phase_error:None,metadata_errors:vec![],charged_bytes:6,returned_bytes:6,calls:6,terminal_io:false},independent_postimage_accepted:false,current_native_accepted:false,installation_approved:false};
+        (serde_json::to_string_pretty(&request).unwrap(),serde_json::to_string_pretty(&receipt).unwrap(),producer)
+    }
+    #[test]
+    fn effective_outer_and_base_digests_remain_distinct_and_legacy_is_separate() {
+        let (request,receipt,producer)=fixture();let (base,stage)=parse_prepared_pair(&request,&receipt,true,&producer).unwrap();
+        assert_eq!(base.schema,2);assert_eq!(stage.schema,3);
+        let pair=crate::prepared_effective_protocol::parse_effective::<PreparedRequest,PreparedReceipt>(&request,&receipt).unwrap();
+        assert_ne!(pair.request_canonical_sha256,pair.base_request_canonical_sha256);
+        assert_ne!(digest(request.as_bytes()),pair.request_canonical_sha256);
+        assert_eq!(pair.receipt.request_sha256,pair.request_canonical_sha256);
+        assert_eq!(pair.receipt.stage.request_sha256,pair.base_request_canonical_sha256);
+        assert_eq!(pair.receipt.source_closure_sha256,"c".repeat(64));
+        assert!(parse_prepared_pair(&request,&receipt,false,&producer).is_err());
+        assert!(parse_prepared_pair(&serde_json::to_string(&base).unwrap(),&receipt,true,&producer).is_err());
+    }
+    #[test]
+    fn effective_receipt_rejects_changed_provenance_and_partial_finalization() {
+        let (request,receipt,producer)=fixture();
+        let changes=[("/request_sha256",serde_json::json!("0".repeat(64))),
+            ("/stage/request_sha256",serde_json::json!("0".repeat(64))),
+            ("/stage/source_closure",serde_json::json!("0".repeat(64))),
+            ("/stage/schema",serde_json::json!(2)),("/schema",serde_json::json!(2)),
+            ("/kind",serde_json::json!("legacy")),("/status",serde_json::json!("accepted")),
+            ("/artifact_sha256",serde_json::json!("invalid")),
+            ("/raw_inventory_sha256",serde_json::json!("0".repeat(64))),
+            ("/effective_inventory_sha256",serde_json::json!("0".repeat(64))),
+            ("/generation",serde_json::json!("old")),("/planned_ids",serde_json::json!(["other"])),
+            ("/independent_postimage_accepted",serde_json::json!(true)),
+            ("/current_native_accepted",serde_json::json!(true)),("/installation_approved",serde_json::json!(true)),
+            ("/source_finalization/verified",serde_json::json!(false)),
+            ("/source_finalization/files",serde_json::json!([])),
+            ("/source_finalization/files/0/hash_matched",serde_json::json!(false)),
+            ("/source_finalization/membership_matched",serde_json::json!(null)),
+            ("/source_finalization/terminal_io",serde_json::json!(true)),
+            ("/source_finalization/charged_bytes",serde_json::json!(101)),
+            ("/source_finalization/returned_bytes",serde_json::json!(5))];
+        for (path,value) in changes {let mut r:serde_json::Value=serde_json::from_str(&receipt).unwrap();*r.pointer_mut(path).unwrap()=value;
+            assert!(parse_prepared_pair(&request,&r.to_string(),true,&producer).is_err(),"accepted mutation {path}");}
+    }
+    #[test]
+    fn effective_request_cannot_separate_base_from_source_or_registry() {
+        let (request,receipt,producer)=fixture();
+        for path in ["/base/environment_root","/base/selected_ids","/base/environment_files/registry.json/sha256","/base/external_registry/manifest/sha256"] {
+            let mut r:serde_json::Value=serde_json::from_str(&request).unwrap();
+            *r.pointer_mut(path).unwrap()=if path.ends_with("selected_ids"){serde_json::json!(["other"])}else{serde_json::json!("0".repeat(64))};
+            let r:EffectiveRequest<PreparedRequest>=serde_json::from_value(r).unwrap();
+            let mut receipt:serde_json::Value=serde_json::from_str(&receipt).unwrap();
+            receipt["request_sha256"]=serde_json::json!(digest(&serde_json::to_vec(&r).unwrap()));
+            receipt["stage"]["request_sha256"]=serde_json::json!(digest(&serde_json::to_vec(&r.base).unwrap()));
+            assert!(parse_prepared_pair(&serde_json::to_string(&r).unwrap(),&receipt.to_string(),true,&producer).is_err(),"accepted {path}");
+        }
+    }
 }
 
 #[cfg(test)]

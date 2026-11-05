@@ -5,6 +5,189 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
+/// Model the real producer's outer3/base2 and outer4/stage3 formats. All files
+/// remain inert E: fixtures; no generator, target read or operation is invoked.
+fn effective_fixture(fixture: &mut Fixture) -> (String, String) {
+    let mut base: AssetRequest = serde_json::from_slice(&fs::read(&fixture.request_path).unwrap()).unwrap();
+    let mut stage: AssetReceipt = serde_json::from_slice(&fs::read(&fixture.asset_receipt_path).unwrap()).unwrap();
+    let evidence_names = ["registry/current.json", "registry/producer-use.json"];
+    let mut registry = BTreeMap::new();
+    for name in evidence_names {
+        let path = base.environment_root.join(name.replace('/', "\\"));
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(&path, br#"{"inert":"external registry control fixture"}"#).unwrap();
+        let value = stamp(&path).unwrap();
+        base.environment_files.insert(name.into(), value.clone());
+        registry.insert(name.to_string(), value);
+    }
+    let registry_pin = |name: &str| shroudforge_api::EvidencePin {
+        path: name.into(), bytes: registry[name].bytes, sha256: registry[name].sha256.clone(),
+    };
+    base.schema = 2;
+    base.external_registry = Some(shroudforge_api::ExternalRegistryInput {
+        manifest: registry_pin(evidence_names[0]),
+        producer_use_approval: registry_pin(evidence_names[1]),
+    });
+    stage.schema = 3;
+    stage.external_registry = base.external_registry.clone();
+    stage.request_sha256 = digest(&serde_json::to_vec(&base).unwrap());
+    let mut entries = BTreeSet::from([String::new()]);
+    for name in base.environment_files.keys() {
+        let mut current = String::new();
+        for part in name.split('/') {
+            if !current.is_empty() { current.push('/'); }
+            current.push_str(part);
+            entries.insert(current.clone());
+        }
+    }
+    let package_roots: BTreeSet<_> = base.environment_files.keys()
+        .filter_map(|name| name.strip_suffix("/mod.json").map(String::from)).collect();
+    let mut request: hdmap_prepared_generator::effective::EffectiveRequest = serde_json::from_value(json!({
+        "schema": 3,
+        "kind": "sf178_prepared_effective_source_request_v1",
+        "base": base,
+        "sources": {
+            "schema": 1, "kind": "prepared_effective_source_plan_v1",
+            "environment_root": base.environment_root,
+            "raw_files": base.environment_files,
+            "entries": entries, "package_roots": package_roots, "replacements": [],
+            "profile_policy": "RejectAmbientProfiles", "allow_unknown_manifest_fields": false,
+            "raw_inventory_sha256": "0".repeat(64), "effective_inventory_sha256": "0".repeat(64)
+        },
+        "registry_evidence_files": registry,
+        "source_read_limits": {"max_bytes": 1, "max_calls": 1, "final_reserve_bytes": 0, "final_reserve_calls": 0},
+        "expected_load_order": base.selected_ids, "expected_generation": "1287369"
+    })).unwrap();
+    request.sources.raw_inventory_sha256 = request.sources.inventory_digest(false).unwrap();
+    request.sources.effective_inventory_sha256 = request.sources.inventory_digest(true).unwrap();
+    let final_bytes = request.sources.required_final_bytes().unwrap();
+    let final_calls = request.sources.required_final_calls().unwrap();
+    request.source_read_limits.max_bytes = final_bytes * 3;
+    request.source_read_limits.max_calls = final_calls * 3;
+    request.source_read_limits.final_reserve_bytes = final_bytes;
+    request.source_read_limits.final_reserve_calls = final_calls;
+    request.validate().unwrap();
+    let receipt = json!({
+        "schema": 4, "kind": "sf178_prepared_effective_source_receipt_v1",
+        "status": "SOURCE_STAGE_ONLY_PENDING_INDEPENDENT_ACCEPTANCE",
+        "request_sha256": request.canonical_sha256().unwrap(),
+        "source_closure_sha256": "c".repeat(64), "artifact_sha256": "d".repeat(64),
+        "operation_verdict_sha256": "e".repeat(64), "base_candidate_sha256": "f".repeat(64),
+        "successor_sha256": "1".repeat(64),
+        "raw_inventory_sha256": request.sources.raw_inventory_sha256,
+        "effective_inventory_sha256": request.sources.effective_inventory_sha256,
+        "planned_ids": request.expected_load_order, "generation": request.expected_generation,
+        "stage": stage,
+        "source_finalization": {
+            "verified": true,
+            "files": request.sources.raw_files.keys().map(|name| json!({
+                "name":name,"identity_matched":true,"hash_matched":true,"error":null
+            })).collect::<Vec<_>>(),
+            "directories_matched":true,"membership_matched":true,"phase_error":null,
+            "metadata_errors":[],"charged_bytes":final_bytes,"returned_bytes":final_bytes,
+            "calls":final_calls,"terminal_io":false
+        },
+        "independent_postimage_accepted":false,"current_native_accepted":false,"installation_approved":false
+    });
+    let request_json = serde_json::to_string_pretty(&request).unwrap();
+    let receipt_json = serde_json::to_string_pretty(&receipt).unwrap();
+    fs::write(&fixture.request_path, &request_json).unwrap();
+    fs::write(&fixture.asset_receipt_path, &receipt_json).unwrap();
+    fixture.manifest.request.sha256 = digest(request_json.as_bytes());
+    fixture.manifest.asset_receipt.sha256 = digest(receipt_json.as_bytes());
+    (request_json, receipt_json)
+}
+
+#[test]
+fn effective_prepares_and_finalizes_preserving_outer_and_nested_identities() {
+    let mut fixture = Fixture::new(true);
+    let (request_json, receipt_json) = effective_fixture(&mut fixture);
+    let parsed = parse_prepared_evidence(&request_json, &receipt_json, &"a".repeat(64)).unwrap();
+    assert!(parsed.effective);
+    assert_ne!(parsed.request_canonical_sha256, parsed.receipt.request_sha256);
+    assert_ne!(parsed.receipt_canonical_sha256, digest(&serde_json::to_vec(&parsed.receipt).unwrap()));
+    let template = fixture.prepare();
+    assert_eq!(template.status, "NONINSTALLABLE_TEMPLATE");
+    assert_eq!(template.request_json, request_json);
+    assert_eq!(template.receipt_json, receipt_json);
+    assert_eq!(template.request_canonical_sha256, parsed.request_canonical_sha256);
+    assert_eq!(template.receipt_canonical_sha256, parsed.receipt_canonical_sha256);
+    let template_path = fixture.output_root.join("template.json");
+    let policy_path = template.payload_root.join("shroudforge/config/current-assets.json");
+    // A base-only canonical digest cannot replace the outer digest at finalization.
+    let mut altered: Value = serde_json::from_slice(&fs::read(&template_path).unwrap()).unwrap();
+    altered["requestCanonicalSha256"] = json!(parsed.receipt.request_sha256);
+    let altered_path = fixture.output_root.join("altered-template.json");
+    write_json(&altered_path, &altered);
+    let error = finalize_policy(&altered_path, &digest(&fs::read(&altered_path).unwrap()),
+        &fixture.xhl_plan_path, &fixture.xhl_receipt_path, &fixture.receipt_sha256).err().unwrap();
+    assert!(format!("{error:#}").contains("template canonical request digest differs"));
+    assert!(!policy_path.exists());
+    let result = finalize_policy(&template_path, &digest(&fs::read(&template_path).unwrap()),
+        &fixture.xhl_plan_path, &fixture.xhl_receipt_path, &fixture.receipt_sha256).unwrap();
+    assert!(!result.install_performed && result.deployment_target_recheck_required);
+    let policy: Value = serde_json::from_slice(&fs::read(policy_path).unwrap()).unwrap();
+    assert_eq!(policy["requestJson"], request_json);
+    assert_eq!(policy["receiptJson"], receipt_json);
+    assert_eq!(policy["runtime"]["preparedRequestSha256"], digest(request_json.as_bytes()));
+    assert_eq!(policy["runtime"]["preparedReceiptSha256"], digest(receipt_json.as_bytes()));
+    assert_eq!(serde_json::from_str::<Value>(policy["receiptJson"].as_str().unwrap()).unwrap()["installation_approved"], false);
+}
+
+#[test]
+fn effective_refuses_mixed_or_modified_evidence_without_legacy_downgrade() {
+    let mut fixture = Fixture::new(true);
+    let (request_json, receipt_json) = effective_fixture(&mut fixture);
+    let request: Value = serde_json::from_str(&request_json).unwrap();
+    let receipt: Value = serde_json::from_str(&receipt_json).unwrap();
+    for (pointer, value) in [
+        ("/request_sha256", json!("0".repeat(64))),
+        ("/stage/schema", json!(2)),
+        ("/stage/source_closure", json!("b".repeat(64))),
+        ("/stage/request_sha256", json!("0".repeat(64))),
+        ("/stage/external_registry", Value::Null),
+        ("/raw_inventory_sha256", json!("0".repeat(64))),
+        ("/generation", json!("other-generation")),
+        ("/independent_postimage_accepted", json!(true)),
+        ("/current_native_accepted", json!(true)),
+        ("/installation_approved", json!(true)),
+        ("/source_finalization/files/0/identity_matched", json!(false)),
+        ("/source_finalization/terminal_io", json!(true)),
+    ] {
+        let mut altered = receipt.clone();
+        *altered.pointer_mut(pointer).unwrap() = value;
+        assert!(parse_prepared_evidence(&request_json, &serde_json::to_string(&altered).unwrap(),
+            &"a".repeat(64)).is_err(), "altered receipt accepted: {pointer}");
+    }
+    for (pointer, value) in [
+        ("/base/schema", json!(1)),
+        ("/base/environment_root", json!(r"E:\UnrelatedEffectiveEnvironment")),
+        ("/registry_evidence_files", json!({})),
+        ("/expected_load_order", json!(["esm-real-map"])),
+    ] {
+        let mut altered = request.clone();
+        *altered.pointer_mut(pointer).unwrap() = value;
+        let typed: hdmap_prepared_generator::effective::EffectiveRequest = serde_json::from_value(altered.clone()).unwrap();
+        let mut altered_receipt = receipt.clone();
+        altered_receipt["request_sha256"] = json!(typed.canonical_sha256().unwrap());
+        assert!(parse_prepared_evidence(&serde_json::to_string(&altered).unwrap(),
+            &serde_json::to_string(&altered_receipt).unwrap(), &"a".repeat(64)).is_err(),
+            "altered genuine request accepted: {pointer}");
+    }
+    let base_json = serde_json::to_string(&request["base"]).unwrap();
+    let stage_json = serde_json::to_string(&receipt["stage"]).unwrap();
+    assert!(parse_prepared_evidence(&base_json, &receipt_json, &"a".repeat(64)).is_err());
+    assert!(parse_prepared_evidence(&request_json, &stage_json, &"a".repeat(64)).is_err());
+    // Genuine effective evidence cannot enter the historical raw-cache binding.
+    fixture.manifest.derived_environment_evidence = Some(DerivedEnvironmentEvidence {
+        bridge_manifest: fixture.manifest.request.clone(),
+        tester_verdict: fixture.manifest.asset_receipt.clone(),
+    });
+    let error = raw_request_receipt(&fixture.manifest).err().unwrap();
+    assert!(format!("{error:#}").contains("effective evidence cannot use the legacy derived cache binding"));
+    assert!(!fixture.output_root.exists());
+}
+
 #[test]
 fn greeneye_profile_pin_matches_reviewed_definition() {
     let definition = include_bytes!("../../../docs/runtime/GREENEYE-ENTRY-CONTINUATION.md");

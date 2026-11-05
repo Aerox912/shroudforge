@@ -1,4 +1,5 @@
 pub mod documents;
+pub use prepared_source_admission::protocol as prepared_effective_protocol;
 use kfc::{ResourceReference, TypeDefinition};
 use shroudforge_compatibility::GameContract;
 use std::path::PathBuf;

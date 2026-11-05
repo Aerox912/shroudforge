@@ -23,7 +23,7 @@ members = [
     "modules/window-management",
     "modules/hotkeys",
 ]
-exclude = ["kfc-parser", "kfc-parser/crates/*"]
+exclude = ["kfc-parser", "kfc-parser/crates/*", "dev/prepared-source-admission"]
 
 [workspace.package]
 version = "1.0.0"

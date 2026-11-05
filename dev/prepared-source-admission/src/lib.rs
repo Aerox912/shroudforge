@@ -19,6 +19,7 @@ use std::{
 };
 
 mod held_identity;
+pub mod protocol;
 use held_identity::{Identity, PinnedDirectory};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -376,7 +377,8 @@ pub struct ReadLimits {
     pub final_reserve_calls: u64,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct FileFinalization {
     pub name: String,
     pub identity_matched: Option<bool>,
@@ -384,7 +386,8 @@ pub struct FileFinalization {
     pub error: Option<String>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct SourceFinalization {
     pub verified: bool,
     pub files: Vec<FileFinalization>,
