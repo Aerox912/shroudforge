@@ -1,0 +1,43 @@
+{
+  "schemaVersion": 1,
+  "taskId": "ikea-server-schema-20261105-r1",
+  "purpose": "Static current dedicated-server schema and KFC namespace qualification for private no-backup asset preparation",
+  "sourceRoot": "D:\\GameServers\\staging\\ikea-game-update-20261105-r1\\official",
+  "outputParent": "D:/GameServers/staging/ikea-server-schema-observation-20261105-r1",
+  "outputChild": "current-acquisition-v1",
+  "inputs": [
+    {
+      "name": "enshrouded_server.exe",
+      "bytes": 22786048,
+      "sha256": "f0d824be7fcd48ebfe2458ff5c28da26060c2074e3ec1fcac587e5a1d508aeb2"
+    },
+    {
+      "name": "enshrouded_server.kfc",
+      "bytes": 4263936,
+      "sha256": "76da3e72911775d34aaf6a3403c173068f14c1b3906be343633db3cf24191ee0"
+    },
+    {
+      "name": "enshrouded_server.kfc_resources",
+      "bytes": 144056320,
+      "sha256": "f54f82d47545abe12ce5178e4302c78c88bcc948942b7d88a8f23d40ec4b0767"
+    }
+  ],
+  "maxSourceBytes": 369262592,
+  "maxSourceReads": 5640,
+  "reads": "Three exact held inputs hashed before and after; EXE/KFC parsed once from held bytes; resources hash only; DAT metadata only",
+  "output": "Derived registry, identity, bounded report and completion manifest only; fixed create-new child; no raw game copies, native execution, assets, backups or live writes",
+  "limits": {
+    "memoryBytes": 1073741824,
+    "cpuSeconds": 60,
+    "wallSeconds": 180,
+    "registryBytes": 67108864,
+    "reportBytes": 16777216,
+    "identityAndManifestBytes": 2097152
+  },
+  "schema": "Parent strict extraction/invariant/duplicate/reference accounting unchanged; missing prior server baseline explicitly unknown; no client baseline comparison in production",
+  "authority": "Source preparation only; Deployment operates after independent source/artifact review; no operation selected by this contract",
+  "nativeCompatibilityProven": false,
+  "modAssetCompatibilityProven": false,
+  "parentSourceClosure": "2de4a799e284391c46bd23a9221162afadd639514a310395428ba903a659d05d",
+  "retention": "Main owns source branch and test evidence until server candidate is independently accepted; preserve current client candidate unchanged"
+}

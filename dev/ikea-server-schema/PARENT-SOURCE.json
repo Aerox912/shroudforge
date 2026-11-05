@@ -1,0 +1,126 @@
+{
+  "taskId": "sf178-current5d-phasea-r1",
+  "sourceClosure": "2de4a799e284391c46bd23a9221162afadd639514a310395428ba903a659d05d",
+  "files": [
+    {
+      "path": "source/baseline-fingerprints.json",
+      "bytes": 1153638,
+      "sha256": "00fdc743b5ab122ccb85f40c5ff30c9fcd14829972307b1d1ff900e9f0fb3327"
+    },
+    {
+      "path": "source/Cargo.lock",
+      "bytes": 15457,
+      "sha256": "b5d9e2152291a14ff62b73c1136f669cd6020968c350185b878ca60e0d9c8c2e"
+    },
+    {
+      "path": "source/Cargo.toml",
+      "bytes": 719,
+      "sha256": "4d44676d5856e85e6406104f649a89c9b8a01554bdf67772a4ce0821d7dd1dc1"
+    },
+    {
+      "path": "source/input-manifest.json",
+      "bytes": 2219,
+      "sha256": "a189bc1cef5499f3dd5f8ce7d7d847699f09fa5dcfa7f9132920fd34f8da9e22"
+    },
+    {
+      "path": "source/LICENSE",
+      "bytes": 35148,
+      "sha256": "8b1ba204bb69a0ade2bfcf65ef294a920f6bb361b317dba43c7ef29d96332b9b"
+    },
+    {
+      "path": "source/NOTICE.md",
+      "bytes": 407,
+      "sha256": "f97b8037a0cc4bd48ed2f05f7caa0eb96a56ae90b6af8fb97ff5b92c4f5202ce"
+    },
+    {
+      "path": "source/src/acquire.rs",
+      "bytes": 12548,
+      "sha256": "e806412848d178cde1e0ff239a95a113b783ef7d5ed66f8bd83327e41ba6c12f"
+    },
+    {
+      "path": "source/src/baseline-fixture.json",
+      "bytes": 712,
+      "sha256": "5c5e0d50065eb96b5d717e2a7615c555124e342806df1fab37773008613eaefb"
+    },
+    {
+      "path": "source/src/containment.rs",
+      "bytes": 2139,
+      "sha256": "dca0cdf90584ad8dca4afdaed55ac56a27afbcb3bca43f527bbd6936190de0d2"
+    },
+    {
+      "path": "source/src/diagnostics.rs",
+      "bytes": 1720,
+      "sha256": "370dae4cf21627b8caae5cc1ba9fee295f2c12d73c18e616e864c65833667e68"
+    },
+    {
+      "path": "source/src/extractor/budget.rs",
+      "bytes": 4036,
+      "sha256": "3b0579318ab2a72c5cfd6c9638902f33144e2730aac757c253d94b37fcaf10dc"
+    },
+    {
+      "path": "source/src/extractor/error.rs",
+      "bytes": 1329,
+      "sha256": "67628302aa2ae81f0181bab862da93b3ef7a55cb8af2478d797b909a13c7a8fc"
+    },
+    {
+      "path": "source/src/extractor/mod.rs",
+      "bytes": 406,
+      "sha256": "50c3091ac1417a4759ee5a8e171d8df156a83645f331b6dd35fbf5ca7363d1c5"
+    },
+    {
+      "path": "source/src/extractor/parser.rs",
+      "bytes": 13362,
+      "sha256": "66f0885fe8bf4849dceb2ae941afa528d2a02dad54af1b2e93bafcdb0a619ded"
+    },
+    {
+      "path": "source/src/extractor/pe_file.rs",
+      "bytes": 8959,
+      "sha256": "02316be3f0e4b07b230aba6be11b077ea4e136f3758eaf40df6ea2173ff53c36"
+    },
+    {
+      "path": "source/src/extractor/tests.rs",
+      "bytes": 5579,
+      "sha256": "9b2a576452a75453c0d6a313a0b4832b7cbf464b6a9f72fa983b3ce11ecf3301"
+    },
+    {
+      "path": "source/src/extractor/util.rs",
+      "bytes": 242,
+      "sha256": "80e60414ad51c82a0ecd584f36a8cc022fb44eed59ff6310b116ed7699a2ec12"
+    },
+    {
+      "path": "source/src/guard.rs",
+      "bytes": 13749,
+      "sha256": "4bc022a98affb267abb1bf25e8c074133ffd72c3186f2bd24c1378127fefb4fd"
+    },
+    {
+      "path": "source/src/lib.rs",
+      "bytes": 228,
+      "sha256": "6d1b3a937e644fcfe12e4ecf6e0f78020052f48e713d800e3ca433ed2ac6bcd1"
+    },
+    {
+      "path": "source/src/main.rs",
+      "bytes": 1334,
+      "sha256": "607288f2639699a59c9374a8879709d2e48735d40d3d87df97c7ee9dac0dce4d"
+    },
+    {
+      "path": "source/src/metadata.rs",
+      "bytes": 16215,
+      "sha256": "ee70644111a2feaf781f9279d9881ee953734722d075d04768b18331ca9b0487"
+    },
+    {
+      "path": "source/src/read_budget.rs",
+      "bytes": 11999,
+      "sha256": "9da16bc0ed60e2e4716d40f1f5332e5e60bb720aef3597e92e3b59a0f87e5a5e"
+    },
+    {
+      "path": "source/src/schema.rs",
+      "bytes": 9168,
+      "sha256": "91e220944bb3c39a3e0099740a8ac8b0f15b2cab0492fc9decbfbcc29edc8fe9"
+    },
+    {
+      "path": "CONTRACT.json",
+      "bytes": 10047,
+      "sha256": "0108fa9855a97e5ebf744a979d492bd0eccb882c0dbd72c29ee000f83fd5ad2f"
+    }
+  ]
+}
