@@ -13,9 +13,9 @@ std::atomic<std::uintptr_t> hud_image{};std::atomic<std::size_t> hud_size{};
 std::atomic<bool> hud_active{};std::atomic<std::uint64_t> hud_epoch{},observation{};
 bool hud_prepared{};
 PublicCreativeCompat::FiniteGraph::ApprovedProviderLeases provider_leases;
-bool current_hud() noexcept{return Current0403981f::Selected(KfcRuntimeCompatibility::EnshroudedClient::image_sha256);}
-std::size_t call_rva() noexcept{return current_hud()?Current0403981f::HudCall:0xbc24ba;}
-std::size_t renderer_rva() noexcept{return current_hud()?Current0403981f::Renderer:0xc4fc40;}
+bool current_hud() noexcept{return Current5d9ef2f1::Selected(KfcRuntimeCompatibility::EnshroudedClient::image_sha256);}
+std::size_t call_rva() noexcept{return current_hud()?Current5d9ef2f1::HudCall:0xbc24ba;}
+std::size_t renderer_rva() noexcept{return current_hud()?Current5d9ef2f1::Renderer:0xc4fc40;}
 struct Ownership {unsigned kind{};PublicCreativeCompat::Digest identity{};};
 bool GuardRead(const std::uint8_t* source,void* output,std::size_t size) {return source && output && size<=64 && PublicCreativeCompat::GuardCopy(source,output,size);}
 void HudRender();
@@ -25,7 +25,7 @@ bool OwnershipSample(Ownership& sample,bool retained,PublicCreativeCompat::Proof
     std::uint8_t original_call[5]{0xe8};const auto displacement=std::int32_t(renderer_rva()-call_rva()-5);std::memcpy(original_call+1,&displacement,4);
     if(retained && !SharedCallOwned(call_rva(),renderer_rva(),reinterpret_cast<void*>(&HudRender)))return refuse();
     const auto guards=[&](const std::uint8_t* prefix,std::size_t prefix_size){
-        if(current_hud())return CurrentHud0403981f::Match(reinterpret_cast<const std::uint8_t*>(base),size,
+        if(current_hud())return CurrentHud5d9ef2f1::Match(reinterpret_cast<const std::uint8_t*>(base),size,
             prefix,prefix_size,retained?original_call:nullptr,retained?5:0,GuardRead);
         return MinimapMenu10::MatchGuardsWithRendererPrefix(reinterpret_cast<const std::uint8_t*>(base),size,
             prefix,prefix_size,retained?original_call:nullptr,retained?5:0,GuardRead,true);};
@@ -39,7 +39,7 @@ bool OwnershipSample(Ownership& sample,bool retained,PublicCreativeCompat::Proof
 bool Screen(std::uint8_t& screen,std::array<std::uintptr_t,4>& chain) {
     using PublicCreativeCompat::Copy;using PublicCreativeCompat::Range;
     std::uintptr_t context{},holder{},state{},play{};const auto base=hud_image.load();
-    if(!base || !Copy(base+(current_hud()?Current0403981f::UiGlobal:0x281e498),&context,8) || !Range(context,0xd8) || !Copy(context+0xd0,&holder,8) ||
+    if(!base || !Copy(base+(current_hud()?Current5d9ef2f1::UiGlobal:0x281e498),&context,8) || !Range(context,0xd8) || !Copy(context+0xd0,&holder,8) ||
         !Copy(holder,&state,8) || !Range(state,0x40) || !Copy(state+0x38,&play,8) || !Range(play,0x1cd9) ||
         !Copy(play+0x1cd8,&screen,1) || !screen || screen>53)return false;
     chain={context,holder,state,play};return true;

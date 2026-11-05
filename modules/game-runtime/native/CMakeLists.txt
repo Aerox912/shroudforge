@@ -13,6 +13,21 @@ if(NOT SHROUDFORGE_NATIVE_COMPILE_JOBS MATCHES "^[1-9][0-9]*$" OR
    SHROUDFORGE_NATIVE_COMPILE_JOBS GREATER 65536)
     message(FATAL_ERROR "SHROUDFORGE_NATIVE_COMPILE_JOBS must be an integer from 1 to 65536")
 endif()
+# Current Steam profile admission and private callback behavior over inert fixtures.
+foreach(map_test IN ITEMS profile capture)
+    add_executable(kfc-runtime-test-current-map-${map_test} EXCLUDE_FROM_ALL ../tests/current_map_${map_test}_test.cpp
+        map/read_map_frame.cpp map/hud_visibility.cpp engine-hooks/write_executable_bytes.cpp)
+    target_include_directories(kfc-runtime-test-current-map-${map_test} PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
+    target_compile_features(kfc-runtime-test-current-map-${map_test} PRIVATE cxx_std_20)
+    target_compile_definitions(kfc-runtime-test-current-map-${map_test} PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX)
+    set_property(TARGET kfc-runtime-test-current-map-${map_test} PROPERTY MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+endforeach()
+add_executable(kfc-runtime-test-current-hud-profile EXCLUDE_FROM_ALL ../tests/current_hud_profile_test.cpp)
+target_include_directories(kfc-runtime-test-current-hud-profile PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
+target_compile_features(kfc-runtime-test-current-hud-profile PRIVATE cxx_std_20)
+target_compile_definitions(kfc-runtime-test-current-hud-profile PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX)
+set_property(TARGET kfc-runtime-test-current-hud-profile PROPERTY MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+
 add_executable(kfc-runtime-test-map-service-lifetime EXCLUDE_FROM_ALL ../tests/map_service_lifetime_test.cpp
     map/read_map_frame.cpp graphics/render_overlay.cpp)
 target_include_directories(kfc-runtime-test-map-service-lifetime PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")

@@ -40,7 +40,7 @@ void Reset(unsigned capacity,bool valid){
 }
 }
 int main(){using namespace MapRuntime;namespace Profile=KfcRuntimeCompatibility::EnshroudedClient;
- Profile::image_sha256="0403981fd2e8ad18bd8c5698dff03c8d505b5a46677832c496db9c645513f2a6";
+ Profile::image_sha256="5d9ef2f140b8ed49e30dbee655841b89d08baec20f799a1817e171a18a850c77";
  iter_init=Init;iter_next=Next;accepting=true;capture_generation=9;store.SetAdmission(SF_MAP_FEATURE_PLAYER);store.SetSession(9,true,false,true,GetTickCount64());
  player.quaternion[3]=camera.quaternion[3]=1;player.xyz[0]=camera.xyz[0]=INT64_C(300)*4294967296;player.xyz[1]=camera.xyz[1]=INT64_C(100)*4294967296;player.xyz[2]=camera.xyz[2]=INT64_C(400)*4294967296;
  using Callback=void(__fastcall*)(void*,void*,void*,void*);

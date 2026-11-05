@@ -624,7 +624,7 @@ bool PrepareGraphicsBoot(bool demand) {
     if(!demand){BootUnavailable(SF_OVERLAY_REASON_BOOT_NOT_ARMED,"native overlay was not requested at startup; enable its package/service and restart");return true;}
     namespace Profile=KfcRuntimeCompatibility::EnshroudedClient;
     auto* image=reinterpret_cast<std::uint8_t*>(GetModuleHandleW(nullptr));
-    const bool renderer_admitted=MapRuntime::Current0403981f::Selected(Profile::image_sha256)
+    const bool renderer_admitted=MapRuntime::Current5d9ef2f1::Selected(Profile::image_sha256)
         ? MapRuntime::PreparedRendererAdmitted()
         : MapRuntime::InspectMapImage({image,Profile::image_size},Profile::image_sha256,true).renderer;
     if(!renderer_admitted) {
