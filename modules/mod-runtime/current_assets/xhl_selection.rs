@@ -79,16 +79,22 @@ impl Selection {
             directories:vec![DirectoryPin{relative:String::new(),volume:1,id:[2;16]}],
             files:PLUGINS.iter().flat_map(|(p,_)|[p.to_string(),format!("{}/native-plugin.ini",p.rsplit_once('/').unwrap().0)]).collect()}
     }
-    #[test] fn exact_loader_contract_keeps_native_v2_and_refuses_other_images_or_members(){
+    pub(crate) fn contract_fixture()->Contract {
         let mut c=super::super::tests::contract();c.schema_version=3;c.host="sf-winmm-selected-services-v3".into();
         let x=fixture();c.selection.xhl=Some(x.clone());c.files.insert(CORE.into(),NativeFile{bytes:588800,sha256:CORE_SHA.into()});c.files.insert("dinput8.dll".into(),NativeFile{bytes:1,sha256:"a".repeat(64)});
         c.files.insert(CHAIN.into(),NativeFile{bytes:xhl_tree::DISABLED_CHAIN.len()as u64,sha256:format!("{:x}",Sha256::digest(xhl_tree::DISABLED_CHAIN))});
         for name in &x.files{c.files.insert(format!("{SCAN}/{name}"),NativeFile{bytes:if name==GIFTING_PATH{GIFTING_BYTES}else{1},sha256:PLUGINS.iter().find(|(p,_)|p==name).map(|(_,s)|s.to_string()).unwrap_or_else(||"b".repeat(64))});}
+        c
+    }
+    #[test] fn exact_loader_contract_keeps_native_v2_and_refuses_other_images_or_members(){
+        let c=contract_fixture();let x=c.selection.xhl.clone().unwrap();
         x.validate(&c).unwrap();let native=selected_services::plan(&c).unwrap();assert_eq!(native.version,2);assert_eq!(native.struct_bytes,24);
         let producer="e".repeat(64);validate_contract_pair(&c,&producer,&"b".repeat(64),&"c".repeat(64),&"a".repeat(64),None).unwrap();
         let mut bad=c.clone();bad.schema_version=2;bad.host="sf-winmm-selected-services-v2".into();assert!(x.validate(&bad).is_err());
         bad=c.clone();bad.files.get_mut(CORE).unwrap().sha256="0".repeat(64);assert!(x.validate(&bad).is_err());
-        bad=c.clone();bad.files.get_mut(&format!("{SCAN}/{GIFTING_PATH}")).unwrap().sha256="3f5fedc265ea2df70e0789dab8f76af838040016c80b69dff13321f7762b995c".into();assert!(x.validate(&bad).is_err());
+        for stale in ["3f5fedc265ea2df70e0789dab8f76af838040016c80b69dff13321f7762b995c","6049751069281134704447909cb7a34e13607309c5fa09b9ba63ea3bb8509280"] {
+            bad=c.clone();bad.files.get_mut(&format!("{SCAN}/{GIFTING_PATH}")).unwrap().sha256=stale.into();assert!(x.validate(&bad).is_err());
+        }
         bad=c.clone();bad.files.get_mut(&format!("{SCAN}/{GIFTING_PATH}")).unwrap().bytes=GIFTING_BYTES-1;assert!(x.validate(&bad).is_err());
         bad=c.clone();bad.files.remove(CHAIN);assert!(x.validate(&bad).is_err());
         bad=c.clone();bad.files.get_mut(CHAIN).unwrap().sha256=format!("{:x}",Sha256::digest(b"[Options]\r\nEnabled=1\r\n"));assert!(x.validate(&bad).is_err());

@@ -1,7 +1,7 @@
 //! Canonical data-only XHL selection pins, shared with the private installer.
 pub const CORE_SHA:&str="98bb1f5506f6d15097c55de274e8b8079e8b901fd3d7b934f6433dde14d3c052";
 pub const GIFTING_PATH:&str="XHL-Unlimited-Gifting-Range/XHL-Unlimited-Gifting-Range.dll";
-pub const GIFTING_SHA:&str="6049751069281134704447909cb7a34e13607309c5fa09b9ba63ea3bb8509280";
+pub const GIFTING_SHA:&str="55b8e508cbb866b1233f7a2c1b9f8d5be70412a11d2144931a9dfe3d9366d1b5";
 pub const GIFTING_BYTES:u64=142_848;
 pub const PLUGINS:[(&str,&str);3]=[
     ("XHL-Remote-Altar-Close/XHL-Remote-Altar-Close.dll","a92ddfff748a8c80c7a9b6237cf27e0b2f82024fb7dccc1a733b1342e4ec0ed5"),

@@ -5,6 +5,12 @@ use std::time::SystemTime;
 use std::time::UNIX_EPOCH;
 
 fn main() -> std::io::Result<()> {
+    println!("cargo:rerun-if-env-changed=HD_PREPARED_SOURCE_CLOSURE");
+    println!("cargo:rerun-if-env-changed=SF_FULL_PREPARED_SOURCE_CLOSURE");
+    validate_prepared_source_pair(
+        env::var("HD_PREPARED_SOURCE_CLOSURE").ok().as_deref(),
+        env::var("SF_FULL_PREPARED_SOURCE_CLOSURE").ok().as_deref(),
+    )?;
     generate_definitions_file()?;
 
     // does not change unless definitions change, so this may need to be changed in the future
@@ -15,6 +21,33 @@ fn main() -> std::io::Result<()> {
     println!("cargo:rustc-env=BUILD_ID={now}");
 
     Ok(())
+}
+
+fn validate_prepared_source_pair(legacy: Option<&str>, full: Option<&str>) -> std::io::Result<()> {
+    if full.is_some() && full == legacy {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "HD_PREPARED_SOURCE_CLOSURE and SF_FULL_PREPARED_SOURCE_CLOSURE must identify distinct producers; omit the unused historical HD binding for a full-runtime-only build",
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::validate_prepared_source_pair;
+
+    #[test]
+    fn rejects_a_full_producer_registered_as_legacy() {
+        assert!(validate_prepared_source_pair(Some("producer"), Some("producer")).is_err());
+    }
+
+    #[test]
+    fn accepts_distinct_or_unselected_prepared_modes() {
+        for (legacy, full) in [(None, None), (Some("legacy"), None), (None, Some("full")), (Some("legacy"), Some("full"))] {
+            validate_prepared_source_pair(legacy, full).unwrap();
+        }
+    }
 }
 
 fn generate_definitions_file() -> std::io::Result<()> {

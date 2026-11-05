@@ -440,6 +440,17 @@ mod tests {
         let mut c=contract();c.runtime_source_closure="0".repeat(64);
         assert!(validate_contract(&c,&"d".repeat(64),&"b".repeat(64),&"c".repeat(64)).is_err());
     }
+    #[test]
+    #[ignore="requires the explicitly selected full-runtime build identities"]
+    fn selected_compiled_full_pair_accepts_and_preserves_legacy_rejection() {
+        let producer=option_env!("SF_FULL_PREPARED_SOURCE_CLOSURE").expect("selected full producer");
+        let runtime=option_env!("SF_FULL_RUNTIME_SOURCE_CLOSURE").expect("selected full runtime");
+        let mut c=xhl_selection::tests::contract_fixture();c.runtime_source_closure=runtime.into();
+        validate_contract(&c,producer,&"b".repeat(64),&"c".repeat(64)).unwrap();
+        assert!(validate_contract_pair(&c,producer,&"b".repeat(64),&"c".repeat(64),runtime,Some(producer)).is_err());
+        c.runtime_source_closure=if runtime=="0".repeat(64){"1".repeat(64)}else{"0".repeat(64)};
+        assert!(validate_contract(&c,producer,&"b".repeat(64),&"c".repeat(64)).is_err());
+    }
     #[test] fn greeneye_entry_original_queue_restore_load_confirm_and_failure_paths() {
         use mod_loader::dll_manager::{DllLoadEntry,DllLoadMode};
         let fixture=PathBuf::from("E:/Build/sf177-release-rebase-20261103/greeneye-entry-r1/fixtures").join(format!("rust-{}",std::process::id()));
