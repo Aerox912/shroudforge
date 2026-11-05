@@ -4,7 +4,7 @@ use anyhow::{Context, Result, ensure};
 use kfc::{
     container::{KFCFile, KFCReader},
     reflection::{LookupKey, TypeIndex, TypeRegistry},
-    resource::value::Value as ResourceValue,
+    resource::value::{ConversionOptions, Value as ResourceValue, VariantOptions},
 };
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
@@ -430,7 +430,11 @@ fn main() -> Result<()> {
                         "resource read"
                     );
                     hashes.push(Some(hash(&b)));
-                    let mut v = serde_json::to_value(ResourceValue::from_bytes(&r, ty, &b)?)?;
+                    let mut options = ConversionOptions::HUMAN_READABLE;
+                    options.variant = VariantOptions::COMPACT;
+                    let mut v = serde_json::to_value(ResourceValue::from_bytes_with_options(
+                        &r, ty, &b, options,
+                    )?)?;
                     annotate(&mut v, &r, 0)?;
                     values.push(v);
                 } else {
@@ -544,22 +548,21 @@ mod tests {
     }
     #[test]
     fn content_dedup_preserved_but_remapping_rejected() {
-        use kfc::{
-            container::{
-                StaticMapBuilder,
-                header::{ContainerInfo, ContentEntry},
-            },
-            guid::ContentHash,
-        };
+        use kfc::{container::StaticMapBuilder, guid::ContentHash};
+        fn one<T: Default>(_: &[T]) -> Vec<T> {
+            vec![T::default()]
+        }
         let key = ContentHash::new(10, 1, 2, 3);
         let make = |offset| {
-            let mut map = StaticMapBuilder::default();
-            map.insert(key, ContentEntry::new(offset, 0, 0));
             let mut f = KFCFile::default();
-            f.set_containers(vec![ContainerInfo {
-                size: 100,
-                count: 1,
-            }]);
+            let mut rows = one(f.contents().values());
+            rows[0].offset = offset;
+            let mut map = StaticMapBuilder::default();
+            map.insert(key, rows.pop().unwrap());
+            let mut containers = one(f.containers());
+            containers[0].size = 100;
+            containers[0].count = 1;
+            f.set_containers(containers);
             f.set_contents(map.build());
             f
         };
@@ -569,10 +572,9 @@ mod tests {
         assert!(preserve_index(&old, &same, &outputs).is_ok());
         assert!(preserve_index(&old, &make(10), &outputs).is_err());
         let mut changed = same.clone();
-        changed.set_containers(vec![ContainerInfo {
-            size: 200,
-            count: 1,
-        }]);
+        let mut containers = changed.containers().to_vec();
+        containers[0].size = 200;
+        changed.set_containers(containers);
         assert!(preserve_index(&old, &changed, &outputs).is_err());
         assert!(preserve_index(&old, &KFCFile::default(), &outputs).is_err());
     }
