@@ -188,6 +188,123 @@ fn effective_refuses_mixed_or_modified_evidence_without_legacy_downgrade() {
     assert!(!fixture.output_root.exists());
 }
 
+fn effective_package_projection_fixture() -> Fixture {
+    let mut fixture = Fixture::new(true);
+    let mut base: AssetRequest = serde_json::from_slice(&fs::read(&fixture.request_path).unwrap()).unwrap();
+    let runtime = fixture.manifest.packages.iter_mut().find(|p| p.component_id == "minimap-frontend").unwrap();
+    let runtime_root = base.environment_root.join("mods").join(&runtime.package_directory);
+    fs::create_dir_all(runtime_root.join("src")).unwrap();
+    fs::write(runtime_root.join("mod.json"), br#"{"id":"minimap-frontend","name":"Minimap fixture","version":"1.0.0","capabilities":["runtime"]}"#).unwrap();
+    fs::write(runtime_root.join("extended.mod.json"), br#"{"schemaVersion":1,"enabled":true,"targets":["client"]}"#).unwrap();
+    fs::write(runtime_root.join("src/mod.lua"), b"return {}\n").unwrap();
+    runtime.source_root = Some(runtime_root.clone());
+    runtime.source_files = inventory(&runtime_root).unwrap();
+    fixture.manifest.components.iter_mut().find(|c| c.id == "minimap-frontend").unwrap().kind = ComponentKind::RuntimeOnly;
+    let hd = fixture.manifest.packages.iter_mut().find(|p| p.component_id == "esm-real-map").unwrap();
+    let hd_root = base.environment_root.join("mods").join(&hd.package_directory);
+    fs::create_dir_all(hd_root.join("src")).unwrap();
+    fs::write(hd_root.join("src/profile.lua"), b"return 'old generation'\n").unwrap();
+    hd.source_files = inventory(&hd_root).unwrap();
+    base.environment_files = inventory(&base.environment_root).unwrap();
+    base.inputs.extend(base.environment_files.clone());
+    write_json(&fixture.request_path, &base);
+    let (request_json, receipt_json) = effective_fixture(&mut fixture);
+    let mut request: hdmap_prepared_generator::effective::EffectiveRequest = serde_json::from_str(&request_json).unwrap();
+    let mut receipt: Value = serde_json::from_str(&receipt_json).unwrap();
+    let hd = fixture.manifest.packages.iter_mut().find(|p| p.component_id == "esm-real-map").unwrap();
+    let logical = format!("mods/{}/src/profile.lua", hd.package_directory);
+    let replacement_path = fixture.base.join("new-profile.lua");
+    fs::write(&replacement_path, b"return 'current full generation'\n").unwrap();
+    let replacement = stamp(&replacement_path).unwrap();
+    request.sources.replacements.push(serde_json::from_value(json!({
+        "logical_path": logical, "raw": request.sources.raw_files[&logical],
+        "path": replacement_path, "replacement": replacement,
+    })).unwrap());
+    hd.overlays.push(IntendedOverlay { path:"src/profile.lua".into(), source:replacement_path,
+        stamp:replacement.clone(), replaces:true, evidence:vec![fixture.manifest.selected_manifest.clone()],
+        fields:vec!["exact effective generation".into()], disposition:"fixture admitted override".into() });
+    fixture.manifest.preservation_evidence.push(fixture.manifest.selected_manifest.clone());
+    fixture.manifest.preservation.push(PreservationEntry {
+        component_id:"esm-real-map".into(),target:logical.clone(),
+        evidence_sha256:fixture.manifest.selected_manifest.sha256.clone(),
+        fields:vec!["exact effective generation".into()],disposition:"fixture admitted override".into(),
+    });
+    request.sources.effective_inventory_sha256 = request.sources.inventory_digest(true).unwrap();
+    let bytes = request.sources.required_final_bytes().unwrap();
+    let calls = request.sources.required_final_calls().unwrap();
+    request.source_read_limits.max_bytes = bytes * 3;
+    request.source_read_limits.max_calls = calls * 3;
+    request.source_read_limits.final_reserve_bytes = bytes;
+    request.source_read_limits.final_reserve_calls = calls;
+    request.validate().unwrap();
+    receipt["request_sha256"] = json!(request.canonical_sha256().unwrap());
+    receipt["effective_inventory_sha256"] = json!(request.sources.effective_inventory_sha256);
+    receipt["source_finalization"]["files"].as_array_mut().unwrap().push(json!({
+        "name":format!("override:{logical}"),"identity_matched":true,"hash_matched":true,"error":null
+    }));
+    receipt["source_finalization"]["charged_bytes"] = json!(bytes);
+    receipt["source_finalization"]["returned_bytes"] = json!(bytes);
+    receipt["source_finalization"]["calls"] = json!(calls);
+    write_json(&fixture.request_path, &request);
+    write_json(&fixture.asset_receipt_path, &receipt);
+    fixture.manifest.request.sha256 = digest(&fs::read(&fixture.request_path).unwrap());
+    fixture.manifest.asset_receipt.sha256 = digest(&fs::read(&fixture.asset_receipt_path).unwrap());
+    fixture
+}
+
+#[test]
+fn effective_package_projection_preserves_runtime_members_and_replacements() {
+    let fixture = effective_package_projection_fixture();
+    let template = fixture.prepare();
+    assert_eq!(template.status, "NONINSTALLABLE_TEMPLATE");
+    assert!(template.canonical_runtime_mod_order.contains(&"minimap-frontend".into()));
+    let hd = fixture.manifest.packages.iter().find(|p| p.component_id == "esm-real-map").unwrap();
+    let name = format!("mods/{}/src/profile.lua", hd.package_directory);
+    assert_eq!(fs::read(template.payload_root.join(&name)).unwrap(), b"return 'current full generation'\n");
+    let template_path = fixture.output_root.join("template.json");
+    finalize_policy(&template_path, &digest(&fs::read(&template_path).unwrap()),
+        &fixture.xhl_plan_path, &fixture.xhl_receipt_path, &fixture.receipt_sha256).unwrap();
+    // Raw preparation evidence remains unchanged and is never relabeled.
+    let raw: Value = serde_json::from_str(&template.request_json).unwrap();
+    assert_ne!(raw["base"]["inputs"][&name]["sha256"], json!(template.payload_files[&name].sha256));
+}
+
+#[test]
+fn effective_package_projection_rejects_missing_changed_or_extra_overlays_and_wrong_runtime_root() {
+    for mutation in 0..5 {
+        let mut fixture = effective_package_projection_fixture();
+        let hd = fixture.manifest.packages.iter_mut().find(|p| p.component_id == "esm-real-map").unwrap();
+        match mutation {
+            0 => hd.overlays.clear(),
+            1 => hd.overlays[0].stamp.sha256 = "0".repeat(64),
+            2 => hd.overlays.push(hd.overlays[0].clone()),
+            3 => hd.overlays[0].source = fixture.base.join("wrong-source.lua"),
+            _ => fixture.manifest.packages.iter_mut().find(|p| p.component_id == "minimap-frontend")
+                .unwrap().source_root = Some(fixture.base.join("wrong-runtime-root")),
+        }
+        let bytes = serde_json::to_vec(&fixture.manifest).unwrap();
+        let error = prepare_template(&bytes, &digest(&bytes)).err().unwrap();
+        let detail = format!("{error:#}");
+        assert!(detail.contains(if mutation == 4 {"effective runtime source root differs"} else {"effective replacement"}), "mutation {mutation}: {detail}");
+        assert!(!fixture.output_root.exists(), "mutation {mutation} wrote a partial candidate");
+    }
+}
+
+#[test]
+fn effective_package_projection_finalization_rejects_raw_override_payload() {
+    let fixture = effective_package_projection_fixture();
+    let mut template = fixture.prepare();
+    let hd = fixture.manifest.packages.iter().find(|p| p.component_id == "esm-real-map").unwrap();
+    let name = format!("mods/{}/src/profile.lua", hd.package_directory);
+    let raw = &hd.source_files["src/profile.lua"];
+    template.payload_files.insert(name, FileBinding {bytes:raw.bytes,sha256:raw.sha256.clone()});
+    let path = fixture.output_root.join("tampered-effective-template.json");
+    write_json(&path, &template);
+    let error = finalize_policy(&path, &digest(&fs::read(&path).unwrap()),
+        &fixture.xhl_plan_path, &fixture.xhl_receipt_path, &fixture.receipt_sha256).err().unwrap();
+    assert!(format!("{error:#}").contains("effective package payload differs"));
+}
+
 #[test]
 fn greeneye_profile_pin_matches_reviewed_definition() {
     let definition = include_bytes!("../../../docs/runtime/GREENEYE-ENTRY-CONTINUATION.md");

@@ -659,6 +659,24 @@ pub fn admit_effective_use(
     })
 }
 
+fn prepared_mod_environment(
+    environment: &Path,
+    sources: &SourceLease,
+) -> Result<shroudforge_package::ModEnvironment> {
+    shroudforge_package::ModEnvironment::from_prepared_packages(
+        environment.to_str().context("environment UTF8")?.into(),
+        environment.join("shroudforge/cache").to_str().context("cache UTF8")?.into(),
+        environment.join("mods").to_str().context("mods UTF8")?.into(),
+        sources.package_views()?,
+        sources.manifest_policy(),
+    ).map_err(|report| {
+        let mut details = Vec::new();
+        if let Some(error) = report.error { details.push(error.to_string()); }
+        details.extend(report.mods.iter().map(|error| format!("{}: {}", error.path, error.error)));
+        anyhow::anyhow!("prepared environment: {}", details.join("; "))
+    })
+}
+
 /// Only stages on E. This does not accept a postimage, native profile, install
 /// or launch. The returned object retains both source graphs until serialized.
 pub fn prepare_effective(
@@ -718,24 +736,11 @@ pub fn prepare_effective(
             controls.manifest_policy() == sources.manifest_policy(),
             "manifest/control detection policy differs"
         );
-        let (source, environment, output, handles, dats) = qualify(&request.base)?;
-        asset_handles = handles;
-        let env = shroudforge_package::ModEnvironment::from_prepared_packages(
-            environment.to_str().context("environment UTF8")?.into(),
-            environment
-                .join("shroudforge/cache")
-                .to_str()
-                .context("cache UTF8")?
-                .into(),
-            environment
-                .join("mods")
-                .to_str()
-                .context("mods UTF8")?
-                .into(),
-            sources.package_views()?,
-            sources.manifest_policy(),
-        )
-        .map_err(|e| anyhow::anyhow!("prepared environment: {e}"))?;
+        // Held views retain the sealed request's path spelling. Windows
+        // canonicalization adds a verbatim prefix, which is not lexically
+        // equal to those roots. Resolve the prepared package plan before any
+        // original hashing, using that same admitted source root throughout.
+        let env = prepared_mod_environment(&request.sources.environment_root, &sources)?;
         let (planned, issues) = env.plan_report(false, shroudforge_api::API_VERSION);
         ensure!(
             issues.is_empty(),
@@ -751,6 +756,8 @@ pub fn prepare_effective(
             ids == request.expected_load_order,
             "effective ordered plan differs"
         );
+        let (source, environment, output, handles, dats) = qualify(&request.base)?;
+        asset_handles = handles;
         let args = shroudforge_api::RunArgs {
             file_name: STEM.into(),
             options: shroudforge_api::RunOptions {

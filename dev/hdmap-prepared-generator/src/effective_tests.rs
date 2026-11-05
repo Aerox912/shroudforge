@@ -4,6 +4,47 @@ use serde_json::json;
 
 const CURRENT_KFC_GENERATION: &str = "1287369|^/game38/branches/release_1.0|2026-11-04T11:17:54.051725Z";
 
+#[test]
+fn effective_environment_uses_sealed_windows_roots_and_reports_concrete_errors() {
+    for invalid_manifest in [false, true] {
+        let environment = PathBuf::from(r"E:\Scratch\sf178-effective-environment-root-tests").join(format!(
+            "{}-{}",std::process::id(),std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
+        fs::create_dir_all(environment.join("mods/fixture")).unwrap();
+        let body = if invalid_manifest {b"{".as_slice()} else {br#"{"id":"fixture","name":"Fixture","version":"1.0.0","capabilities":["patch"]}"#.as_slice()};
+        fs::write(environment.join("mods/fixture/mod.json"),body).unwrap();
+        let extension=br#"{"schemaVersion":1,"enabled":true,"targets":["client"]}"#;
+        fs::write(environment.join("mods/fixture/extended.mod.json"),extension).unwrap();
+        let mut r = request();
+        r.sources.environment_root = environment.clone();
+        r.sources.raw_files = [("mods/fixture/mod.json".into(),SourceStamp{bytes:body.len() as u64,sha256:format!("{:x}",Sha256::digest(body))})].into();
+        r.sources.raw_files.insert("mods/fixture/extended.mod.json".into(),SourceStamp{bytes:extension.len() as u64,sha256:format!("{:x}",Sha256::digest(extension))});
+        r.sources.entries = ["","mods","mods/fixture"].map(String::from).into();
+        r.sources.entries.extend(fs::read_dir(environment.join("mods/fixture")).unwrap().map(|entry|format!("mods/fixture/{}",entry.unwrap().file_name().to_str().unwrap())));
+        r.sources.raw_inventory_sha256 = r.sources.inventory_digest(false).unwrap();
+        r.sources.effective_inventory_sha256 = r.sources.inventory_digest(true).unwrap();
+        let limits = ReadLimits{max_bytes:65536,max_calls:1000,final_reserve_bytes:r.sources.required_final_bytes().unwrap(),final_reserve_calls:r.sources.required_final_calls().unwrap()};
+        let mut lease = SourceLease::admit(r.sources,limits).unwrap();
+        let canonical = super::super::root(&environment).unwrap();
+        assert_ne!(canonical,environment);
+        let error = prepared_mod_environment(&canonical,&lease).err().unwrap();
+        assert!(format!("{error:#}").contains("prepared package root mismatch"));
+        match prepared_mod_environment(&environment,&lease) {
+            Ok(env) => {
+                assert!(!invalid_manifest);
+                let (plan,issues)=env.plan_report(false,shroudforge_api::API_VERSION);
+                assert!(issues.is_empty());
+                assert_eq!(plan.iter().map(|p|p.info().id.as_str()).collect::<Vec<_>>(),vec!["fixture"]);
+            },
+            Err(error) => {
+                assert!(invalid_manifest);
+                let detail=format!("{error:#}");
+                assert!(detail.contains("fixture")&&detail.contains("JSON error"),"{detail}");
+            }
+        }
+        assert!(lease.finalize().unwrap().verified);
+    }
+}
+
 fn request() -> EffectiveRequest {
     let sha = "a".repeat(64);
     let environment =

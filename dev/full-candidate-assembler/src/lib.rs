@@ -741,7 +741,11 @@ struct PreparedPolicy {
     extended_zoom: bool,
     preserved_loaders: BTreeMap<String, String>,
     runtime: Contract,
+    preserved_patch_configs: BTreeMap<String, PreservedPatchPolicyBinding>,
 }
+
+#[derive(Clone, Serialize)]
+struct PreservedPatchPolicyBinding { source: Stamp, preserved: Stamp }
 
 fn inventory(root: &Path) -> Result<BTreeMap<String, Stamp>> {
     fn visit(
@@ -811,6 +815,7 @@ struct PreparedEvidencePair {
     request_canonical_sha256: String,
     receipt_canonical_sha256: String,
     effective: bool,
+    effective_request: Option<hdmap_prepared_generator::effective::EffectiveRequest>,
 }
 
 struct RawPreparedEvidence {
@@ -855,6 +860,7 @@ fn parse_prepared_evidence(
             request_canonical_sha256: pair.request_canonical_sha256,
             receipt_canonical_sha256: pair.receipt_canonical_sha256,
             effective: true,
+            effective_request: Some(genuine),
         })
     } else {
         let request: AssetRequest =
@@ -878,6 +884,7 @@ fn parse_prepared_evidence(
             receipt,
             request_canonical_sha256,
             effective: false,
+            effective_request: None,
         })
     }
 }
@@ -1957,11 +1964,75 @@ fn validate_greeneye_template(template: &Template, contract: &Contract) -> Resul
     Ok(())
 }
 
+/// Keep the raw request immutable while requiring the selected package payload
+/// to carry exactly its admitted replacements. Native packages outside the
+/// preparation environment retain their independently pinned source rules.
+fn validate_effective_packages(
+    manifest: &InputManifest,
+    effective: &hdmap_prepared_generator::effective::EffectiveRequest,
+) -> Result<()> {
+    let request = &effective.base;
+    let mut represented = BTreeSet::new();
+    for package in &manifest.packages {
+        let raw = package_environment_files(request, &package.package_directory)?;
+        if raw.is_empty() { continue; }
+        let component = manifest.components.iter().find(|row| row.id == package.component_id)
+            .context("effective package component missing")?;
+        ensure!(matches!(component.kind, ComponentKind::AssetProvider | ComponentKind::RuntimeOnly),
+            "effective environment package has unsupported component kind");
+        ensure!(raw == package.source_files, "effective package raw membership differs");
+        if package.origin == PackageOrigin::ApprovedE {
+            ensure!(same_path(package.source_root.as_deref().context("effective runtime source missing")?,
+                &request.environment_root.join("mods").join(&package.package_directory)),
+                "effective runtime source root differs");
+        }
+        let prefix = format!("mods/{}/", package.package_directory);
+        represented.extend(raw.keys().map(|name| format!("{prefix}{name}")));
+        let replacements: Vec<_> = effective.sources.replacements.iter()
+            .filter(|row| row.logical_path.starts_with(&prefix)).collect();
+        ensure!(package.overlays.len() == replacements.len(), "effective replacement count differs");
+        for replacement in replacements {
+            let relative = replacement.logical_path.strip_prefix(&prefix).unwrap();
+            let overlay = package.overlays.iter().find(|row| row.path == relative)
+                .context("effective replacement overlay missing")?;
+            ensure!(overlay.replaces && same_path(&overlay.source, &replacement.path)
+                && overlay.stamp.bytes == replacement.replacement.bytes
+                && overlay.stamp.sha256 == replacement.replacement.sha256,
+                "effective replacement overlay differs");
+        }
+    }
+    ensure!(represented == request.environment_files.keys().filter(|name| name.starts_with("mods/"))
+        .cloned().collect(), "effective package projection is incomplete");
+    Ok(())
+}
+
+fn validate_effective_payload(
+    effective: &hdmap_prepared_generator::effective::EffectiveRequest,
+    payload: &BTreeMap<String, FileBinding>,
+    preserved: &[PreservedPatchConfig],
+) -> Result<()> {
+    for (name, raw) in &effective.sources.raw_files {
+        if !name.starts_with("mods/") { continue; }
+        let replacement = effective.sources.replacements.iter().find(|row| row.logical_path == *name);
+        if preserved.iter().any(|row| row.target == *name) {
+            ensure!(replacement.is_none() && !payload.contains_key(name),
+                "effective replacement conflicts with preserved patch config");
+            continue;
+        }
+        let expected = replacement.map(|row| &row.replacement).unwrap_or(raw);
+        let actual = payload.get(name).context("effective package member missing from payload")?;
+        ensure!(actual.bytes == expected.bytes && actual.sha256 == expected.sha256,
+            "effective package payload differs: {name}");
+    }
+    Ok(())
+}
+
 fn collect_staged_sources(
     manifest: &InputManifest,
     request: &AssetRequest,
     receipt: &AssetReceipt,
     xhl_files: &BTreeMap<String, FileBinding>,
+    effective_packages: bool,
 ) -> Result<Vec<StagedSource>> {
     validate_feature_unit_mapping(manifest)?;
     ensure!(
@@ -2107,7 +2178,7 @@ fn collect_staged_sources(
                 package.package_directory
             );
         }
-        if component.kind != ComponentKind::AssetProvider {
+        if component.kind != ComponentKind::AssetProvider && !effective_packages {
             ensure!(
                 !request
                     .environment_files
@@ -4484,7 +4555,7 @@ pub fn prepare_template(manifest_bytes: &[u8], expected_manifest_sha256: &str) -
     validate_e_path(parent, true, true)?;
     let RawPreparedEvidence { request_bytes, receipt_bytes, pair } = raw_request_receipt(&manifest)?;
     let PreparedEvidencePair {
-        request, receipt, request_canonical_sha256, receipt_canonical_sha256, ..
+        request, receipt, request_canonical_sha256, receipt_canonical_sha256, effective_request, ..
     } = pair;
     let plan_bytes = check_raw_evidence(
         &manifest.xhl_plan.path,
@@ -4501,7 +4572,8 @@ pub fn prepare_template(manifest_bytes: &[u8], expected_manifest_sha256: &str) -
         manifest.runtime_source_closure.len() == 64,
         "runtime source closure is malformed"
     );
-    let sources = collect_staged_sources(&manifest, &request, &receipt, &xhl_files)?;
+    if let Some(effective) = &effective_request { validate_effective_packages(&manifest, effective)?; }
+    let sources = collect_staged_sources(&manifest, &request, &receipt, &xhl_files, effective_request.is_some())?;
     let payload_root = manifest.output_root.join("payload");
     fs::create_dir(&manifest.output_root).with_context(|| {
         format!(
@@ -4511,6 +4583,9 @@ pub fn prepare_template(manifest_bytes: &[u8], expected_manifest_sha256: &str) -
     })?;
     ordinary(&manifest.output_root, true)?;
     let payload_files = copy_payload(&payload_root, &sources)?;
+    if let Some(effective) = &effective_request {
+        validate_effective_payload(effective, &payload_files, &manifest.preserved_patch_configs)?;
+    }
     let mut missing = manifest.missing_requirements.clone();
     let greeneye_selected = manifest
         .components
@@ -4857,6 +4932,9 @@ pub fn finalize_policy(
         &template.prepared_producer_closure,
     )?;
     let request = &prepared.request;
+    if let Some(effective) = &prepared.effective_request {
+        validate_effective_payload(effective, &template.payload_files, &template.preserved_patch_configs)?;
+    }
     ensure!(
         digest(template.request_json.as_bytes()) == template.request_raw_sha256,
         "template raw request digest differs"
@@ -4970,6 +5048,12 @@ pub fn finalize_policy(
         extended_zoom: template.extended_zoom,
         preserved_loaders: BTreeMap::new(),
         runtime: contract,
+        preserved_patch_configs: template.preserved_patch_configs.iter().map(|entry| (
+            entry.target.clone(), PreservedPatchPolicyBinding {
+                source: entry.source_stamp.clone(),
+                preserved: Stamp {bytes: entry.required_poststate.bytes, sha256: entry.required_poststate.sha256.clone()},
+            }
+        )).collect(),
     };
     let policy_path = template
         .payload_root

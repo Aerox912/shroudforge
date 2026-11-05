@@ -31,6 +31,32 @@ struct PreparedPolicy {
     extended_zoom:bool,preserved_loaders:BTreeMap<String,String>,
     #[serde(default,skip_serializing_if="Option::is_none")]
     runtime:Option<super::super::full_runtime::Contract>,
+    #[serde(default,skip_serializing_if="BTreeMap::is_empty")]
+    preserved_patch_configs:BTreeMap<String,PreservedPatchBinding>,
+}
+
+#[derive(Clone,Serialize,Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PreservedPatchBinding {source:FileStamp,preserved:FileStamp}
+
+// These pregame-only settings are retained user files. Their exact poststate is
+// selected by the assembler's independently qualified preservation evidence.
+// No other source input can be replaced through this policy field.
+fn bind_preserved_patch_configs(request:&PreparedRequest,bindings:&BTreeMap<String,PreservedPatchBinding>,environment:&mut BTreeMap<String,FileStamp>,full:bool)->Result<()> {
+    ensure!(full||bindings.is_empty(),"patch preservation requires full prepared mode");
+    if bindings.is_empty(){return Ok(());}
+    let allowed=[("mods/xhl-rested-enhanced/config.txt","xhl-rested-enhanced"),("mods/xhl-workshop-speed-20x/config.txt","xhl-workshop-speed-20x")];
+    ensure!(bindings.len()==allowed.len(),"incomplete preserved patch configuration");
+    for (path,id) in allowed {
+        let binding=bindings.get(path).context("unselected patch preservation target")?;
+        ensure!(request.selected_ids.iter().any(|selected|selected==id)
+            &&request.inputs.get(path).is_some_and(|raw|same(raw,&binding.source))
+            &&environment.get(path).is_some_and(|raw|same(raw,&binding.source)),
+            "preserved patch source differs from immutable generation");
+        ensure!(binding.preserved.bytes>0&&binding.preserved.bytes<=1024*1024&&valid_digest(&binding.preserved.sha256),"invalid preserved patch stamp");
+        environment.insert(path.into(),binding.preserved.clone());
+    }
+    Ok(())
 }
 
 fn path_key(path:&Path)->Result<String> {
@@ -94,7 +120,7 @@ pub(super) fn verify(root:&Path)->Result<()> {
 pub(super) fn verify_full(root:&Path)->Result<()> {
     verify_mode(root,true)
 }
-fn parse_prepared_pair(request_json:&str,receipt_json:&str,full:bool,producer:&str)->Result<(PreparedRequest,PreparedReceipt)> {
+fn parse_prepared_pair(request_json:&str,receipt_json:&str,full:bool,producer:&str)->Result<(PreparedRequest,PreparedReceipt,Option<BTreeMap<String,FileStamp>>)> {
     let shape:serde_json::Value=serde_json::from_str(request_json)?;
     if shape.get("schema").and_then(serde_json::Value::as_u64)==Some(3) {
         ensure!(full,"effective source envelope requires full prepared mode");
@@ -115,12 +141,22 @@ fn parse_prepared_pair(request_json:&str,receipt_json:&str,full:bool,producer:&s
             ensure!(pair.request.registry_evidence_files.get(&pin.path)
                 .is_some_and(|s|s.bytes==pin.bytes&&s.sha256==pin.sha256),"effective registry control pin differs");
         }
-        return Ok((pair.request.base,pair.receipt.stage));
+        // Registry evidence and preparation controls belong to E-only source
+        // admission. Only package members are installed; apply the sealed D1
+        // projection without mutating the original request or its digest.
+        let mut installed:BTreeMap<_,_>=request.environment_files.iter()
+            .filter(|(name,_)|name.starts_with("mods/")).map(|(name,s)|(name.clone(),s.clone())).collect();
+        for replacement in &pair.request.sources.replacements {
+            ensure!(installed.get(&replacement.logical_path).is_some_and(|raw|
+                raw.bytes==replacement.raw.bytes&&raw.sha256==replacement.raw.sha256),"effective installed replacement source differs");
+            installed.insert(replacement.logical_path.clone(),FileStamp{bytes:replacement.replacement.bytes,sha256:replacement.replacement.sha256.clone()});
+        }
+        return Ok((pair.request.base,pair.receipt.stage,Some(installed)));
     }
     let request:PreparedRequest=serde_json::from_str(request_json)?;
     let receipt:PreparedReceipt=serde_json::from_str(receipt_json)?;
     ensure!(receipt.source_closure==producer&&receipt.request_sha256==digest(&serde_json::to_vec(&request)?),"prepared receipt producer/request differs");
-    Ok((request,receipt))
+    Ok((request,receipt,None))
 }
 fn verify_mode(root:&Path,full:bool)->Result<()> {
     // Optional at compile time; absence leaves only this new mode closed.
@@ -139,7 +175,9 @@ fn verify_mode(root:&Path,full:bool)->Result<()> {
     ensure!(policy.source_closure==producer&&fs::canonicalize(&policy.root)?==root,"prepared startup producer/root differs");
     ensure!(full==policy.runtime.is_some(),"runtime contract is exclusive to schema6");
     ensure!(valid_digest(&policy.request_sha256)&&digest(policy.request_json.as_bytes())==policy.request_sha256&&valid_digest(&policy.receipt_sha256)&&digest(policy.receipt_json.as_bytes())==policy.receipt_sha256,"prepared evidence digest differs");
-    let (request,receipt)=parse_prepared_pair(&policy.request_json,&policy.receipt_json,full,producer)?;
+    let (request,receipt,effective_environment)=parse_prepared_pair(&policy.request_json,&policy.receipt_json,full,producer)?;
+    let mut installed_environment=effective_environment.unwrap_or_else(||request.environment_files.clone());
+    bind_preserved_patch_configs(&request,&policy.preserved_patch_configs,&mut installed_environment,full)?;
     let source_dat_membership=validate_receipt_schema(&request,&receipt,full)?;
     ensure!(fs::canonicalize(&request.target_root)?==root&&fs::canonicalize(&request.asset_input_root)?==root&&receipt.target_root==root,"prepared receipt retargeting rejected");
     let source=path_key(&root)?;let environment=path_key(&request.environment_root)?;let output=path_key(&request.output_root)?;
@@ -168,7 +206,7 @@ fn verify_mode(root:&Path,full:bool)->Result<()> {
             // Startup retains the legacy presence/size check for these large files.
             ensure!(plain(&path)?.is_file()&&fs::metadata(path)?.len()==value.bytes,"baseline DAT membership/size differs");
         }
-        else if !receipt.staged.contains_key(name) {exact(&root,name,value)?;}
+        else if !receipt.staged.contains_key(name) {exact(&root,name,installed_environment.get(name).unwrap_or(value))?;}
     }
     aliases.clear();
     for (name,value) in &receipt.staged {
@@ -196,7 +234,7 @@ fn verify_mode(root:&Path,full:bool)->Result<()> {
     } else {ensure!(!policy.extended_zoom,"prepared zoom requires HD selection");}
     if let Some(contract)=policy.runtime {
         ensure!(policy.preserved_loaders.is_empty(),"full runtime cannot activate implicit preserved loaders");
-        let environment=request.environment_files.iter().map(|(name,value)|(name.clone(),(value.bytes,value.sha256.clone()))).collect();
+        let environment=installed_environment.iter().map(|(name,value)|(name.clone(),(value.bytes,value.sha256.clone()))).collect();
         super::super::full_runtime::verify_and_stage(&root,contract,&policy.request_sha256,&policy.receipt_sha256,producer,&environment)?;
     }
     zoom_demand::publish(&root,policy.extended_zoom,&request.inputs["enshrouded.exe"].sha256);
@@ -243,7 +281,7 @@ mod effective_protocol_tests {
     }
     #[test]
     fn effective_outer_and_base_digests_remain_distinct_and_legacy_is_separate() {
-        let (request,receipt,producer)=fixture();let (base,stage)=parse_prepared_pair(&request,&receipt,true,&producer).unwrap();
+        let (request,receipt,producer)=fixture();let (base,stage,_)=parse_prepared_pair(&request,&receipt,true,&producer).unwrap();
         assert_eq!(base.schema,2);assert_eq!(stage.schema,3);
         let pair=crate::prepared_effective_protocol::parse_effective::<PreparedRequest,PreparedReceipt>(&request,&receipt).unwrap();
         assert_ne!(pair.request_canonical_sha256,pair.base_request_canonical_sha256);
@@ -278,6 +316,62 @@ mod effective_protocol_tests {
         for (path,value) in changes {let mut r:serde_json::Value=serde_json::from_str(&receipt).unwrap();*r.pointer_mut(path).unwrap()=value;
             assert!(parse_prepared_pair(&request,&r.to_string(),true,&producer).is_err(),"accepted mutation {path}");}
     }
+    #[test]
+    fn effective_installed_projection_applies_overrides_without_installing_source_controls() {
+        let (request,receipt,producer)=fixture();
+        let mut request:EffectiveRequest<PreparedRequest>=serde_json::from_str(&request).unwrap();
+        let mut receipt:EffectiveReceipt<PreparedReceipt>=serde_json::from_str(&receipt).unwrap();
+        let name="mods/fixture/mod.json";
+        let raw=request.sources.raw_files[name].clone();
+        request.base.inputs.insert(name.into(),FileStamp{bytes:raw.bytes,sha256:raw.sha256.clone()});
+        request.sources.replacements.push(prepared_source_admission::Replacement{
+            logical_path:name.into(),raw:raw.clone(),path:PathBuf::from("E:/Scratch/effective-protocol/override/mod.json"),
+            replacement:prepared_source_admission::Stamp{bytes:2,sha256:"b".repeat(64)},
+        });
+        request.sources.effective_inventory_sha256=request.sources.inventory_digest(true).unwrap();
+        let bytes=request.sources.required_final_bytes().unwrap();let calls=request.sources.required_final_calls().unwrap();
+        request.source_read_limits=ReadLimits{max_bytes:bytes*3,max_calls:calls*3,final_reserve_bytes:bytes,final_reserve_calls:calls};
+        receipt.request_sha256=digest(&serde_json::to_vec(&request).unwrap());
+        receipt.stage.request_sha256=digest(&serde_json::to_vec(&request.base).unwrap());
+        receipt.effective_inventory_sha256=request.sources.effective_inventory_sha256.clone();
+        receipt.source_finalization.files.push(FileFinalization{name:format!("override:{name}"),identity_matched:Some(true),hash_matched:Some(true),error:None});
+        receipt.source_finalization.charged_bytes=bytes;receipt.source_finalization.returned_bytes=bytes;receipt.source_finalization.calls=calls;
+        let (base,_,installed)=parse_prepared_pair(&serde_json::to_string(&request).unwrap(),&serde_json::to_string(&receipt).unwrap(),true,&producer).unwrap();
+        let installed=installed.unwrap();assert_eq!(installed.len(),1);
+        assert_eq!(installed[name].sha256,"b".repeat(64));assert_eq!(installed[name].bytes,2);
+        assert_eq!(base.inputs[name].sha256,raw.sha256);
+        assert!(!installed.contains_key("registry.json"));assert!(!installed.contains_key("use.json"));
+    }
+
+    #[test]
+    fn effective_preserved_patch_configs_bind_exact_selected_poststates_only() {
+        let (request,receipt,producer)=fixture();
+        let (mut base,_,_)=parse_prepared_pair(&request,&receipt,true,&producer).unwrap();
+        let source=FileStamp{bytes:10,sha256:"a".repeat(64)};
+        let preserved=FileStamp{bytes:20,sha256:"b".repeat(64)};
+        let mut bindings=BTreeMap::new();
+        for id in ["xhl-rested-enhanced","xhl-workshop-speed-20x"] {
+            let name=format!("mods/{id}/config.txt");base.selected_ids.push(id.into());base.inputs.insert(name.clone(),source.clone());
+            bindings.insert(name,PreservedPatchBinding{source:source.clone(),preserved:preserved.clone()});
+        }
+        let original:BTreeMap<_,_>=bindings.keys().map(|name|(name.clone(),source.clone())).collect();
+        let mut environment=original.clone();bind_preserved_patch_configs(&base,&bindings,&mut environment,true).unwrap();
+        assert!(environment.values().all(|s|same(s,&preserved)));
+        assert!(base.inputs.values().all(|s|same(s,&source)));
+        assert!(bind_preserved_patch_configs(&base,&bindings,&mut original.clone(),false).is_err());
+        for mutation in 0..5 {
+            let mut changed=bindings.clone();let mut env=original.clone();
+            match mutation {
+                0=>{changed.pop_first();},
+                1=>{let value=changed.pop_first().unwrap().1;changed.insert("mods/fixture/mod.json".into(),value);},
+                2=>changed.values_mut().next().unwrap().source.sha256="c".repeat(64),
+                3=>changed.values_mut().next().unwrap().preserved.sha256="invalid".into(),
+                _=>env.values_mut().next().unwrap().sha256="d".repeat(64),
+            }
+            assert!(bind_preserved_patch_configs(&base,&changed,&mut env,true).is_err(),"mutation {mutation}");
+        }
+    }
+
     #[test]
     fn effective_request_cannot_separate_base_from_source_or_registry() {
         let (request,receipt,producer)=fixture();
@@ -326,7 +420,7 @@ mod tests {
             staged.insert("generated-inputs.json".into(),FileStamp{bytes:123,sha256:digest(b"synthetic durable generation preimages")});
             let receipt=PreparedReceipt {schema:1,source_closure:option_env!("HD_PREPARED_SOURCE_CLOSURE").unwrap().into(),request_sha256:digest(&serde_json::to_vec(&request).unwrap()),target_root:root.clone(),output_stage:output_root.join(".enshrouded.shroudforge-stage"),staged,prepared_marker:FileStamp{bytes:100,sha256:digest(b"synthetic prepared marker")},source_dat_membership:None,source_dat_membership_sha256:None,external_registry:None};
             let request_json=serde_json::to_string(&request).unwrap();let receipt_json=serde_json::to_string(&receipt).unwrap();
-            let policy=PreparedPolicy {schema_version:5,owner:"hdmap-prepared-generator".into(),root:root.clone(),source_closure:receipt.source_closure.clone(),request_sha256:digest(request_json.as_bytes()),receipt_sha256:digest(receipt_json.as_bytes()),request_json,receipt_json,extended_zoom:false,runtime:None,preserved_loaders:[("winmm.dll".into(),value("winmm.dll").sha256)].into_iter().collect()};
+            let policy=PreparedPolicy {schema_version:5,owner:"hdmap-prepared-generator".into(),root:root.clone(),source_closure:receipt.source_closure.clone(),request_sha256:digest(request_json.as_bytes()),receipt_sha256:digest(receipt_json.as_bytes()),request_json,receipt_json,extended_zoom:false,runtime:None,preserved_patch_configs:BTreeMap::new(),preserved_loaders:[("winmm.dll".into(),value("winmm.dll").sha256)].into_iter().collect()};
             Self {root,policy}
         }
         fn write(&self){fs::write(self.root.join(POLICY),serde_json::to_vec(&self.policy).unwrap()).unwrap();}
