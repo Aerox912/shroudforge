@@ -11,6 +11,9 @@ appended tail intact. It never opens the original EXE, DAT or resource file.
 The caller must first review and select the exact request, artifact, captured
 schema consumer and bounded outer process. The reader is not an operation
 approval mechanism. A lost/failed operation remains spent under that outer.
+The prepared stage must spell the exact fixed local drive path, either ordinary
+or with the Windows `\\?\` prefix. This comparison does not resolve aliases,
+dot segments, UNC paths or device namespaces; held directory checks still apply.
 The fixed request binds the prepared receipt and reader hash. All stage members
 are held and hash-verified before/after, along with the exact baseline index and
 captured registry. The strict negative schema decision remains visible.

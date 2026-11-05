@@ -30,6 +30,15 @@ const MAX_REPORT: u64 = 256 * 1024 * 1024;
 fn hash(b: &[u8]) -> String {
     format!("{:x}", Sha256::digest(b))
 }
+fn prepared_stage_matches(value: &str, expected: &Path) -> bool {
+    // canonicalize() records this fixed local drive with the Windows verbatim
+    // prefix. Compare only its two spellings; do not resolve aliases or dots.
+    let value = value
+        .strip_prefix(r"\\?\")
+        .unwrap_or(value)
+        .replace('\\', "/");
+    value.eq_ignore_ascii_case(&expected.to_string_lossy().replace('\\', "/"))
+}
 fn verify_prefix(file: &mut File, bytes: u64, expected: &str) -> Result<()> {
     ensure!(
         file.metadata()?.len() >= bytes,
@@ -325,12 +334,8 @@ fn main() -> Result<()> {
         prepared["status"] == "PRIVATE_SERVER_STAGE_PENDING_INDEPENDENT_READBACK",
         "prepared status"
     );
-    let stage_string = prepared["stage"]
-        .as_str()
-        .context("stage")?
-        .replace('\\', "/");
     ensure!(
-        stage_string.eq_ignore_ascii_case(stage.to_str().unwrap()),
+        prepared_stage_matches(prepared["stage"].as_str().context("stage")?, &stage),
         "prepared stage"
     );
     let mut inputs = Vec::new();
@@ -517,6 +522,33 @@ fn main() -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn prepared_stage_accepts_only_fixed_drive_spellings() {
+        let expected = Path::new(PRIVATE).join("generated/.enshrouded_server.shroudforge-stage");
+        let plain = expected.to_string_lossy().replace('/', "\\");
+        for accepted in [
+            plain.clone(),
+            format!(r"\\?\{plain}"),
+            plain.to_lowercase(),
+            expected.to_string_lossy().into_owned(),
+        ] {
+            assert!(prepared_stage_matches(&accepted, &expected), "{accepted}");
+        }
+        for rejected in [
+            format!(r"\\.\{plain}"),
+            format!(r"\\?\UNC\{plain}"),
+            format!("//?/{}", expected.display()),
+            plain.replacen("D:", "E:", 1),
+            plain.replacen(r"D:\", "D:", 1),
+            plain.replacen(r"\generated\", r"\other\..\generated\", 1),
+            format!("{plain}:data"),
+            format!("{plain}\\"),
+            format!("{plain} "),
+            format!(r"\\?\GLOBALROOT\{plain}"),
+        ] {
+            assert!(!prepared_stage_matches(&rejected, &expected), "{rejected}");
+        }
+    }
     fn temp() -> PathBuf {
         let p = PathBuf::from("E:/Build/ikea-server-readback-20261105-r1/fixtures").join(format!(
             "{}-{}",
