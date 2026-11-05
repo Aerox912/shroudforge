@@ -543,6 +543,7 @@ mod tests {
             assert_eq!(
                 verify_prefix(&mut file, 3, &hash(b"abc")).is_ok(),
                 accepted,
+                "{}",
                 name
             );
             if accepted {
