@@ -12,7 +12,7 @@
 
 namespace shroudweave::flight {
 
-inline constexpr std::uint64_t kClientFlightProfileId = 0x0403981FD2E8AD18ull;
+inline constexpr std::uint64_t kClientFlightProfileId = 0x5D9EF2F140B8ED49ull;
 inline constexpr std::uint32_t kHangGlidingState = 4;
 inline constexpr std::uint32_t kEnabledPitchScalarBits = 0xBFC8F5C3u;
 inline constexpr std::uint32_t kStockPitchScalarBits = 0x3DB2B8C2u;

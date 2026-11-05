@@ -48,7 +48,7 @@ static_assert(Fnv1a(kDynamicLocomotionName, sizeof(kDynamicLocomotionName) - 1) 
               "DynamicLocomotion native name hash changed");
 static_assert(static_cast<std::uint32_t>(kDynamicLocomotionFullKey) == kTypeKey,
               "DynamicLocomotion full reflection key differs from the pinned native key hash");
-constexpr std::uintptr_t kExpectedClientImageSize = 0x2A40000;
+constexpr std::uintptr_t kExpectedClientImageSize = 0x2A3F000;
 
 std::atomic_bool g_selectorEnabled{};
 std::atomic<std::uint64_t> g_selectorEpoch{1};
@@ -591,7 +591,7 @@ PitchDecision EvaluateCurrentPitch(
     const auto expectedEpoch = enableEpoch.load(std::memory_order_acquire);
     if (read == nullptr || !profile.admittedBeforePatch || profile.imageBase == 0 ||
         profile.imageSize != kExpectedClientImageSize || profile.generation == 0 ||
-        profile.imageBase > (std::numeric_limits<std::uintptr_t>::max)() - 0x26F61E) {
+        profile.imageBase > (std::numeric_limits<std::uintptr_t>::max)() - 0x26F6FE) {
         decision.path = PitchDecisionPath::invalid_profile;
         return decision;
     }
@@ -599,7 +599,7 @@ PitchDecision EvaluateCurrentPitch(
     // This small negative filter rejects every non-gliding state before the
     // typed registry and local-resource joins allocate their bounded cohort.
     CountedReader prefix{read, readContext};
-    const auto expectedSite = static_cast<std::uintptr_t>(profile.imageBase + 0x26F61E);
+    const auto expectedSite = static_cast<std::uintptr_t>(profile.imageBase + 0x26F6FE);
     NativeQueryFrame queryFrame{};
     if (!ValidateNativeQueryFrame(frame, expectedSite, stackLow, stackHigh,
                                   ReadCounted, &prefix, queryFrame)) {

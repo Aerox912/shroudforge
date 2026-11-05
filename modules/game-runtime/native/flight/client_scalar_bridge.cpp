@@ -30,21 +30,21 @@ using shroudweave::flight::ScanStatus;
 using shroudweave::flight::ScanStatusName;
 using shroudweave::flight::TargetLayout;
 
-constexpr std::uint32_t kClientImageSize = 0x2A40000;
-constexpr std::uint32_t kPitchSiteRva = 0x26F61E;
-constexpr std::uint32_t kLowerScalarRva = 0x1528D30;
-constexpr std::uint32_t kUpperScalarRva = 0x15218D0;
+constexpr std::uint32_t kClientImageSize = 0x2A3F000;
+constexpr std::uint32_t kPitchSiteRva = 0x26F6FE;
+constexpr std::uint32_t kLowerScalarRva = 0x1527D30;
+constexpr std::uint32_t kUpperScalarRva = 0x15208D0;
 constexpr std::size_t kClampSignatureSize = 48;
 constexpr std::uint8_t kClampSignature[kClampSignatureSize]{
-    0xF3, 0x0F, 0x10, 0x05, 0x0A, 0x97, 0x2B, 0x01,
+    0xF3, 0x0F, 0x10, 0x05, 0x2A, 0x86, 0x2B, 0x01,
     0xF2, 0x0F, 0x11, 0x4C, 0x24, 0x40, 0x77, 0x15,
     0x41, 0x0F, 0x2F, 0xC0, 0x77, 0x0F, 0xF3, 0x0F,
-    0x10, 0x35, 0x94, 0x22, 0x2B, 0x01, 0xF3, 0x41,
+    0x10, 0x35, 0xB4, 0x11, 0x2B, 0x01, 0xF3, 0x41,
     0x0F, 0x5D, 0xF0, 0xEB, 0x03, 0x0F, 0x28, 0xF0,
     0xF3, 0x0F, 0x10, 0x97, 0xD0, 0x04, 0x00, 0x00,
 };
 constexpr std::uint8_t kOriginalScalarInstruction[8]{
-    0xF3, 0x0F, 0x10, 0x05, 0x0A, 0x97, 0x2B, 0x01,
+    0xF3, 0x0F, 0x10, 0x05, 0x2A, 0x86, 0x2B, 0x01,
 };
 constexpr std::uint32_t kFinalScalarRemoveAttempts = 3;
 std::uint8_t g_callbackAnchor{};
@@ -134,12 +134,12 @@ bool MatchesLoadedImageBytes(std::uintptr_t imageBase, std::size_t imageSize,
 }
 
 bool ExactClientSemanticFields(std::uintptr_t imageBase, std::size_t imageSize) noexcept {
-    constexpr std::uintptr_t kDynamicType = 0x18EAB10;
-    constexpr std::uintptr_t kDynamicMembers = 0x18E37D0;
-    constexpr std::uintptr_t kStateMember = 0x18E3980;
-    constexpr std::uintptr_t kLocomotionStateType = 0x1AD9CF0;
-    constexpr std::uintptr_t kLocomotionStateEnum = 0x1AD8FE0;
-    constexpr std::uintptr_t kHangGlidingEntry = 0x1AD9080;
+    constexpr std::uintptr_t kDynamicType = 0x18E9B10;
+    constexpr std::uintptr_t kDynamicMembers = 0x18E27D0;
+    constexpr std::uintptr_t kStateMember = 0x18E2980;
+    constexpr std::uintptr_t kLocomotionStateType = 0x1AD8CF0;
+    constexpr std::uintptr_t kLocomotionStateEnum = 0x1AD7FE0;
+    constexpr std::uintptr_t kHangGlidingEntry = 0x1AD8080;
     constexpr std::uint64_t kDynamicLocomotionFullKey = 0x717D8E414C234795ull;
     constexpr std::uint64_t kDynamicLocomotionSize = 0x1C8;
     constexpr std::uint64_t kHangGlidingValue = 4;
@@ -164,29 +164,29 @@ bool ExactClientSemanticFields(std::uintptr_t imageBase, std::size_t imageSize) 
         stateOffset != kStateOffset || hangGlidingValue != kHangGlidingValue) return false;
 
     return MatchesLoadedImageName(imageBase, imageSize, kDynamicType, 0x00, 0x08,
-                                  0x1C9E2C8, kDynamicLocomotionName,
+                                  0x1C9D2C8, kDynamicLocomotionName,
                                   sizeof(kDynamicLocomotionName) - 1) &&
            MatchesLoadedImageName(imageBase, imageSize, kDynamicType, 0x20, 0x28,
-                                  0x1C9E3F0, kDynamicLocomotionQualifiedName,
+                                  0x1C9D3F0, kDynamicLocomotionQualifiedName,
                                   sizeof(kDynamicLocomotionQualifiedName) - 1) &&
            MatchesRelocatedImagePointer(imageBase, imageSize, kDynamicType + 0x58,
                                         kDynamicMembers) &&
            MatchesLoadedImageName(imageBase, imageSize, kStateMember, 0x00, 0x08,
-                                  0x1526AA0, kStateName, sizeof(kStateName) - 1) &&
+                                  0x1525AA0, kStateName, sizeof(kStateName) - 1) &&
            MatchesRelocatedImagePointer(imageBase, imageSize, kStateMember + 0x10,
                                         kLocomotionStateType) &&
            MatchesLoadedImageName(imageBase, imageSize, kLocomotionStateType, 0x00, 0x08,
-                                  0x1D1B370, kLocomotionStateName,
+                                  0x1D1A370, kLocomotionStateName,
                                   sizeof(kLocomotionStateName) - 1) &&
            MatchesLoadedImageName(imageBase, imageSize, kLocomotionStateType, 0x20, 0x28,
-                                  0x1D1B558, kLocomotionStateQualifiedName,
+                                  0x1D1A558, kLocomotionStateQualifiedName,
                                   sizeof(kLocomotionStateQualifiedName) - 1) &&
            MatchesRelocatedImagePointer(imageBase, imageSize, kLocomotionStateType + 0x60,
                                         kLocomotionStateEnum) &&
            MatchesLoadedImageName(imageBase, imageSize, kHangGlidingEntry, 0x00, 0x08,
-                                  0x1C70330, kHangGlidingName,
+                                  0x1C6F330, kHangGlidingName,
                                   sizeof(kHangGlidingName) - 1) &&
-           MatchesLoadedImageBytes(imageBase, imageSize, 0x1D83FD0, kEcsPrefix,
+           MatchesLoadedImageBytes(imageBase, imageSize, 0x1D82FD0, kEcsPrefix,
                                    sizeof(kEcsPrefix) - 1);
 }
 
