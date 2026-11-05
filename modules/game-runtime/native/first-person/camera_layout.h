@@ -10,21 +10,21 @@
 
 namespace FirstPersonControl {
 
-inline constexpr std::uint32_t ClientTimestamp = 0x6ae4601e;
-inline constexpr std::size_t ClientImageSize = 0x2A40000;
+inline constexpr std::uint32_t ClientTimestamp = 0x6aeb144c;
+inline constexpr std::size_t ClientImageSize = 0x2A3F000;
 inline constexpr char ClientSha256[] =
-    "0403981fd2e8ad18bd8c5698dff03c8d505b5a46677832c496db9c645513f2a6";
+    "5d9ef2f140b8ed49e30dbee655841b89d08baec20f799a1817e171a18a850c77";
 
-inline constexpr std::size_t CameraSystemDescriptor = 0x1E25E00;
-inline constexpr std::size_t CameraSystemName = 0x1E26D70;
-inline constexpr std::size_t CameraSystemFunction = 0x2B7820;
-inline constexpr std::size_t CameraTransformCall = 0x2B7952;
-inline constexpr std::size_t CameraTransformFunction = 0xE98DE0;
+inline constexpr std::size_t CameraSystemDescriptor = 0x1E24E40;
+inline constexpr std::size_t CameraSystemName = 0x1E25DB0;
+inline constexpr std::size_t CameraSystemFunction = 0x2B7900;
+inline constexpr std::size_t CameraTransformCall = 0x2B7A32;
+inline constexpr std::size_t CameraTransformFunction = 0xE98EA0;
 inline constexpr std::size_t ShoulderOffset = 0x148C;
 inline constexpr std::size_t DistanceOffset = 0x14A4;
 
 inline constexpr std::array<std::uint8_t, 5> OriginalCameraCall = {
-    0xE8, 0x89, 0x14, 0xBE, 0x00,
+    0xE8, 0x69, 0x14, 0xBE, 0x00,
 };
 inline constexpr std::size_t CameraCallSize = 5;
 inline constexpr std::array<std::uint8_t, 18> CameraSystemEntry = {
@@ -115,10 +115,10 @@ inline bool MatchesCameraLayout(
     return MatchesBytes(image, imageSize, CameraSystemFunction, cameraSystemEntry) &&
         MatchesBytes(image, imageSize, CameraTransformCall, cameraCall) &&
         MatchesBytes(image, imageSize, CameraTransformFunction, CameraTransformEntry) &&
-        MatchesBytes(image, imageSize, 0xE98FF1, CameraDistanceRead) &&
-        MatchesBytes(image, imageSize, 0xE98F4D, CameraShoulderRead) &&
-        MatchesBytes(image, imageSize, 0x2B7935, CameraArgument) &&
-        MatchesBytes(image, imageSize, 0x2B793C, CameraOutputArgument);
+        MatchesBytes(image, imageSize, 0xE990B1, CameraDistanceRead) &&
+        MatchesBytes(image, imageSize, 0xE9900D, CameraShoulderRead) &&
+        MatchesBytes(image, imageSize, 0x2B7A15, CameraArgument) &&
+        MatchesBytes(image, imageSize, 0x2B7A1C, CameraOutputArgument);
 }
 
 } // namespace FirstPersonControl
