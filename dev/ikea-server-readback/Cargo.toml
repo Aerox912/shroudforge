@@ -1,0 +1,17 @@
+[package]
+name = "ikea-server-readback"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[workspace]
+
+[dependencies]
+anyhow = "1.0"
+serde_json = "1.0"
+sha2 = "0.10"
+kfc = { path = "../../kfc-parser/crates/kfc", features = ["resource"] }
+
+[profile.release]
+strip = true
+incremental = false
