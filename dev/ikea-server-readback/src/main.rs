@@ -30,6 +30,27 @@ const MAX_REPORT: u64 = 256 * 1024 * 1024;
 fn hash(b: &[u8]) -> String {
     format!("{:x}", Sha256::digest(b))
 }
+fn verify_prefix(file: &mut File, bytes: u64, expected: &str) -> Result<()> {
+    ensure!(
+        file.metadata()?.len() >= bytes,
+        "generated resource prefix truncated"
+    );
+    file.seek(SeekFrom::Start(0))?;
+    let mut remaining = bytes;
+    let mut buffer = [0u8; 65536];
+    let mut digest = Sha256::new();
+    while remaining > 0 {
+        let amount = remaining.min(buffer.len() as u64) as usize;
+        file.read_exact(&mut buffer[..amount])?;
+        digest.update(&buffer[..amount]);
+        remaining -= amount as u64;
+    }
+    ensure!(
+        format!("{:x}", digest.finalize()) == expected,
+        "generated resource prefix differs"
+    );
+    Ok(())
+}
 fn directories(path: &Path) -> Result<Vec<File>> {
     use std::os::windows::fs::{MetadataExt, OpenOptionsExt};
     let mut held = Vec::new();
@@ -358,6 +379,16 @@ fn main() -> Result<()> {
         "generation differs"
     );
     let preservation = preserve_index(&old, &new, outputs)?;
+    let prefix_path = stage.join(format!("{STEM}.kfc_resources"));
+    let prefix = inputs
+        .iter_mut()
+        .find(|h| h.path == prefix_path)
+        .context("held generated resource file")?;
+    verify_prefix(
+        &mut prefix.f,
+        144056320,
+        "f54f82d47545abe12ce5178e4302c78c88bcc948942b7d88a8f23d40ec4b0767",
+    )?;
     let mut baseline = KFCReader::new_with_resource_path(
         source,
         STEM,
@@ -375,7 +406,7 @@ fn main() -> Result<()> {
     let mut counts = BTreeMap::new();
     emit(
         &mut f,
-        &json!({"kind":"header","requestSha256":args[1],"preparedReceipt":p,"registrySha256":"fe74476f286d01fbd677b97abc6472ebb886313a7358ce0149cf1c6670bce4f3","strictSchemaQualification":false,"schemaDecision":"673f8cf8178e6cc35c3bc2ee2e8d478cae119e2119ca695cad1c6039d4fe133c","projectionOnly":true}),
+        &json!({"kind":"header","requestSha256":args[1],"preparedReceipt":p,"registrySha256":"fe74476f286d01fbd677b97abc6472ebb886313a7358ce0149cf1c6670bce4f3","strictSchemaQualification":false,"schemaDecision":"673f8cf8178e6cc35c3bc2ee2e8d478cae119e2119ca695cad1c6039d4fe133c","projectionOnly":true,"independentGeneratedPrefix":{"bytes":144056320,"sha256":"f54f82d47545abe12ce5178e4302c78c88bcc948942b7d88a8f23d40ec4b0767","verified":true}}),
         &mut total,
     )?;
     let mut selected = BTreeMap::new();
@@ -497,6 +528,28 @@ mod tests {
         ));
         fs::create_dir_all(&p).unwrap();
         p
+    }
+    #[test]
+    fn prefix_accepts_tail_rejects_changed_and_short() {
+        let root = temp();
+        for (name, bytes, accepted) in [
+            ("tail", b"abcappended".as_slice(), true),
+            ("changed", b"abdappended".as_slice(), false),
+            ("short", b"ab".as_slice(), false),
+        ] {
+            let path = root.join(name);
+            fs::write(&path, bytes).unwrap();
+            let mut file = File::open(&path).unwrap();
+            assert_eq!(
+                verify_prefix(&mut file, 3, &hash(b"abc")).is_ok(),
+                accepted,
+                name
+            );
+            if accepted {
+                assert_eq!(file.stream_position().unwrap(), 3);
+                assert_eq!(fs::read(path).unwrap(), bytes);
+            }
+        }
     }
     #[test]
     fn projection_preserves_false_zero_and_grapple_values() {

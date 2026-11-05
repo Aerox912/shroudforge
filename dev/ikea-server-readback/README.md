@@ -3,8 +3,10 @@
 This separate reader exports paired baseline/current typed resource projections
 for independent semantic checks. It never runs Lua or native game code. The
 baseline index is the exact current server index; both cursors read resource
-bytes from the generated resource file, whose original prefix was retained by
-the prepared writer. It never opens the original EXE, DAT or resource file.
+bytes from the generated resource file. Before interpreting the baseline, the
+reader independently hashes its first 144,056,320 bytes against the known
+original resource hash. It rejects a shorter or changed prefix and leaves the
+appended tail intact. It never opens the original EXE, DAT or resource file.
 
 The caller must first review and select the exact request, artifact, captured
 schema consumer and bounded outer process. The reader is not an operation
