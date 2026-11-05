@@ -208,6 +208,7 @@ fn verify_mode(root:&Path,full:bool)->Result<()> {
 #[cfg(test)]
 mod effective_protocol_tests {
     use super::*;
+    const CURRENT_KFC_GENERATION: &str = "1287369|^/game38/branches/release_1.0|2026-11-04T11:17:54.051725Z";
     use crate::prepared_effective_protocol::{EffectiveRequest,EffectiveReceipt};
     use prepared_source_admission::{SourcePlan,ProfilePolicy,ReadLimits,Stamp,SourceFinalization,FileFinalization};
     fn fixture()->(String,String,String) {
@@ -220,10 +221,25 @@ mod effective_protocol_tests {
         let external=crate::ExternalRegistryInput{manifest:pin("registry.json"),producer_use_approval:pin("use.json")};
         let environment_files=sources.raw_files.iter().map(|(name,s)|(name.clone(),FileStamp{bytes:s.bytes,sha256:s.sha256.clone()})).collect();
         let base=PreparedRequest{schema:2,target_root:PathBuf::from("D:/SyntheticTarget"),asset_input_root:PathBuf::from("D:/SyntheticTarget"),environment_root:sources.environment_root.clone(),output_root:PathBuf::from("E:/Scratch/effective-protocol/output"),selected_ids:vec!["fixture".into()],inputs:BTreeMap::new(),environment_files,external_registry:Some(external.clone())};
-        let request=EffectiveRequest{schema:3,kind:"sf178_prepared_effective_source_request_v1".into(),base,sources,registry_evidence_files:[("registry.json".into(),stamp.clone()),("use.json".into(),stamp.clone())].into(),source_read_limits:ReadLimits{max_bytes:100,max_calls:100,final_reserve_bytes:3,final_reserve_calls:3},expected_load_order:vec!["fixture".into()],expected_generation:"1287369".into()};
+        let request=EffectiveRequest{schema:3,kind:"sf178_prepared_effective_source_request_v1".into(),base,sources,registry_evidence_files:[("registry.json".into(),stamp.clone()),("use.json".into(),stamp.clone())].into(),source_read_limits:ReadLimits{max_bytes:100,max_calls:100,final_reserve_bytes:3,final_reserve_calls:3},expected_load_order:vec!["fixture".into()],expected_generation:CURRENT_KFC_GENERATION.into()};
         let stage=PreparedReceipt{schema:3,source_closure:producer.clone(),request_sha256:digest(&serde_json::to_vec(&request.base).unwrap()),target_root:request.base.target_root.clone(),output_stage:request.base.output_root.join(".enshrouded.shroudforge-stage"),staged:BTreeMap::new(),prepared_marker:FileStamp{bytes:1,sha256:stamp.sha256.clone()},source_dat_membership:Some(BTreeMap::new()),source_dat_membership_sha256:Some(digest(b"{}")),external_registry:Some(external)};
-        let receipt=EffectiveReceipt{schema:4,kind:"sf178_prepared_effective_source_receipt_v1".into(),status:"SOURCE_STAGE_ONLY_PENDING_INDEPENDENT_ACCEPTANCE".into(),request_sha256:digest(&serde_json::to_vec(&request).unwrap()),source_closure_sha256:"c".repeat(64),artifact_sha256:"d".repeat(64),operation_verdict_sha256:"e".repeat(64),base_candidate_sha256:"f".repeat(64),successor_sha256:"1".repeat(64),raw_inventory_sha256:request.sources.raw_inventory_sha256.clone(),effective_inventory_sha256:request.sources.effective_inventory_sha256.clone(),planned_ids:vec!["fixture".into()],generation:"1287369".into(),stage,source_finalization:SourceFinalization{verified:true,files:request.sources.raw_files.keys().map(|name|FileFinalization{name:name.clone(),identity_matched:Some(true),hash_matched:Some(true),error:None}).collect(),directories_matched:true,membership_matched:Some(true),phase_error:None,metadata_errors:vec![],charged_bytes:6,returned_bytes:6,calls:6,terminal_io:false},independent_postimage_accepted:false,current_native_accepted:false,installation_approved:false};
+        let receipt=EffectiveReceipt{schema:4,kind:"sf178_prepared_effective_source_receipt_v1".into(),status:"SOURCE_STAGE_ONLY_PENDING_INDEPENDENT_ACCEPTANCE".into(),request_sha256:digest(&serde_json::to_vec(&request).unwrap()),source_closure_sha256:"c".repeat(64),artifact_sha256:"d".repeat(64),operation_verdict_sha256:"e".repeat(64),base_candidate_sha256:"f".repeat(64),successor_sha256:"1".repeat(64),raw_inventory_sha256:request.sources.raw_inventory_sha256.clone(),effective_inventory_sha256:request.sources.effective_inventory_sha256.clone(),planned_ids:vec!["fixture".into()],generation:CURRENT_KFC_GENERATION.into(),stage,source_finalization:SourceFinalization{verified:true,files:request.sources.raw_files.keys().map(|name|FileFinalization{name:name.clone(),identity_matched:Some(true),hash_matched:Some(true),error:None}).collect(),directories_matched:true,membership_matched:Some(true),phase_error:None,metadata_errors:vec![],charged_bytes:6,returned_bytes:6,calls:6,terminal_io:false},independent_postimage_accepted:false,current_native_accepted:false,installation_approved:false};
         (serde_json::to_string_pretty(&request).unwrap(),serde_json::to_string_pretty(&receipt).unwrap(),producer)
+    }
+    #[test]
+    fn effective_full_kfc_generation_matches_build_branch_and_timestamp_exactly() {
+        let (request,receipt,producer)=fixture();
+        parse_prepared_pair(&request,&receipt,true,&producer).unwrap();
+        let pair=crate::prepared_effective_protocol::parse_effective::<PreparedRequest,PreparedReceipt>(&request,&receipt).unwrap();
+        assert_eq!(pair.request.expected_generation,CURRENT_KFC_GENERATION);
+        assert_eq!(pair.receipt.generation,CURRENT_KFC_GENERATION);
+        for changed in ["1287369".to_owned(), CURRENT_KFC_GENERATION.replacen("1287369","1287370",1),
+            CURRENT_KFC_GENERATION.replace("release_1.0","release_1.1"),
+            CURRENT_KFC_GENERATION.replace("051725Z","051726Z")] {
+            let mut value:serde_json::Value=serde_json::from_str(&receipt).unwrap();
+            value["generation"]=serde_json::json!(changed);
+            assert!(parse_prepared_pair(&request,&value.to_string(),true,&producer).is_err());
+        }
     }
     #[test]
     fn effective_outer_and_base_digests_remain_distinct_and_legacy_is_separate() {

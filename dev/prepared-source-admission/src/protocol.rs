@@ -15,6 +15,7 @@ pub struct EffectiveRequest<B> {
     pub registry_evidence_files: BTreeMap<String, Stamp>,
     pub source_read_limits: ReadLimits,
     pub expected_load_order: Vec<String>,
+    /// Exact full KFC generation; delimiters are data, not a reason to truncate identity.
     pub expected_generation: String,
 }
 
@@ -97,7 +98,7 @@ pub fn parse_effective<B: DeserializeOwned + Serialize, S: DeserializeOwned + Se
         "effective planned order differs");
     let generation = &request.expected_generation;
     ensure!(!generation.is_empty() && generation.len() <= 128 && generation.is_ascii()
-        && !generation.contains('|') && !generation.chars().any(char::is_control)
+        && !generation.chars().any(char::is_control)
         && &receipt.generation == generation, "effective generation differs");
     ensure!(!request.registry_evidence_files.is_empty() && request.registry_evidence_files.len() <= 64,
         "effective registry evidence bound");

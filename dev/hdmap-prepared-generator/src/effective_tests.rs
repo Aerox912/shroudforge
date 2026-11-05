@@ -2,6 +2,8 @@ use super::*;
 use prepared_source_admission::{ProfilePolicy, Stamp as SourceStamp};
 use serde_json::json;
 
+const CURRENT_KFC_GENERATION: &str = "1287369|^/game38/branches/release_1.0|2026-11-04T11:17:54.051725Z";
+
 fn request() -> EffectiveRequest {
     let sha = "a".repeat(64);
     let environment =
@@ -78,8 +80,23 @@ fn request() -> EffectiveRequest {
             external_registry: Some(serde_json::from_value(json!({"manifest":{"path":"manifest","bytes":1,"sha256":"a".repeat(64)},"producer_use_approval":{"path":"approval","bytes":1,"sha256":"b".repeat(64)}})).unwrap()),
         }, sources,registry_evidence_files,
         source_read_limits: ReadLimits {max_bytes:100, max_calls:100, final_reserve_bytes:1, final_reserve_calls:1},
-        expected_load_order: vec!["fixture".into()], expected_generation:"fictional-generation".into(),
+        expected_load_order: vec!["fixture".into()], expected_generation:CURRENT_KFC_GENERATION.into(),
     }
+}
+
+#[test]
+fn effective_full_kfc_generation_is_preserved_without_truncation() {
+    let original = request();
+    original.validate().unwrap();
+    let roundtrip: EffectiveRequest = serde_json::from_slice(&serde_json::to_vec(&original).unwrap()).unwrap();
+    assert_eq!(roundtrip.expected_generation, CURRENT_KFC_GENERATION);
+    assert_eq!(original.canonical_sha256().unwrap(), roundtrip.canonical_sha256().unwrap());
+    for invalid in [String::new(), "x".repeat(129), "generation\nmetadata".into(), "g\u{00e9}n".into()] {
+        let mut changed = request(); changed.expected_generation = invalid;
+        assert!(changed.validate().is_err());
+    }
+    let mut truncated = request(); truncated.expected_generation = "1287369".into();
+    assert_ne!(original.canonical_sha256().unwrap(), truncated.canonical_sha256().unwrap());
 }
 
 #[test]
@@ -104,7 +121,7 @@ fn effective_protocol_rejects_legacy_schema_graph_order_and_generation_mismatche
                 r.base.selected_ids = vec!["esm.auto.loot".into()];
                 r.expected_load_order = r.base.selected_ids.clone();
             }
-            6 => r.expected_generation = "fictional-generation|metadata".into(),
+            6 => r.expected_generation = "generation\nmetadata".into(),
             7 => r.base.inputs.get_mut("enshrouded.kfc").unwrap().bytes = 0,
             _ => unreachable!(),
         }

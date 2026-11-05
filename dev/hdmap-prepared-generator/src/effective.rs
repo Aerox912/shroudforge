@@ -17,6 +17,7 @@ pub struct EffectiveRequest {
     pub registry_evidence_files: BTreeMap<String, prepared_source_admission::Stamp>,
     pub source_read_limits: ReadLimits,
     pub expected_load_order: Vec<String>,
+    /// Exact full KFC game_version, including build, branch and timestamp when present.
     pub expected_generation: String,
 }
 
@@ -301,7 +302,6 @@ impl EffectiveRequest {
             !self.expected_generation.is_empty()
                 && self.expected_generation.len() <= 128
                 && self.expected_generation.is_ascii()
-                && !self.expected_generation.contains('|')
                 && !self.expected_generation.chars().any(char::is_control),
             "generation identity"
         );
